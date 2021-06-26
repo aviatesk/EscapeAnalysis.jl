@@ -73,10 +73,10 @@ let # more complex
         end
     end
 
-    i = findfirst(==(Vector{Condition}), ir.stmts.type)
+    i = findfirst(==(Vector{Condition}), src.stmts.type)
     @assert !isnothing(i)
     @test escapes.ssavalues[i] isa Escape
-    i = findfirst(==(Condition), ir.stmts.type)
+    i = findfirst(==(Condition), src.stmts.type)
     @assert !isnothing(i)
     @test escapes.ssavalues[i] isa Escape
 end
@@ -87,7 +87,7 @@ let # inter-procedural
         return cond.condition ? nothing : 1
     end
 
-    i = findfirst(==(Condition), ir.stmts.type) # allocation statement
+    i = findfirst(==(Condition), src.stmts.type) # allocation statement
     @assert !isnothing(i)
     @test_broken escapes.ssavalues[i] isa NoEscape # since we don't analyze inter-procedural information right now
 end

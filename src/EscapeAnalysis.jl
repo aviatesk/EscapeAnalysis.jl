@@ -1,6 +1,7 @@
 module EscapeAnalysis
 
 import Core:
+    CodeInstance,
     MethodInstance,
     Argument,
     SSAValue,
@@ -14,6 +15,8 @@ const CC = Core.Compiler
 import .CC:
     AbstractInterpreter,
     NativeInterpreter,
+    WorldView,
+    WorldRange,
     InferenceParams,
     OptimizationParams,
     get_world_counter,
@@ -24,6 +27,7 @@ import .CC:
     may_optimize,
     may_compress,
     may_discard_trees,
+    verbose_stmt_info,
     code_cache,
     get_inference_cache,
     OptimizationState,
@@ -61,8 +65,60 @@ CC.may_compress(interp::EscapeAnalyzer)      = may_compress(interp.native)
 CC.may_discard_trees(interp::EscapeAnalyzer) = may_discard_trees(interp.native)
 CC.verbose_stmt_info(interp::EscapeAnalyzer) = verbose_stmt_info(interp.native)
 
-CC.code_cache(interp::EscapeAnalyzer) = code_cache(interp.native)
 CC.get_inference_cache(interp::EscapeAnalyzer) = get_inference_cache(interp.native)
+
+CC.code_cache(interp::EscapeAnalyzer) = code_cache(interp.native)
+
+# TODO inter-procedural propagation
+#
+# const GLOBAL_CODE_CACHE = IdDict{MethodInstance,CodeInstance}()
+#
+# __clear_cache!() = empty!(GLOBAL_CODE_CACHE)
+#
+# function CC.code_cache(interp::EscapeAnalyzer)
+#     worlds = WorldRange(get_world_counter(interp))
+#     return WorldView(GlobalCache(), worlds)
+# end
+#
+# struct GlobalCache end
+#
+# CC.haskey(wvc::WorldView{GlobalCache}, mi::MethodInstance) = haskey(GLOBAL_CODE_CACHE, mi)
+#
+# CC.get(wvc::WorldView{GlobalCache}, mi::MethodInstance, default) = get(GLOBAL_CODE_CACHE, mi, default)
+#
+# CC.getindex(wvc::WorldView{GlobalCache}, mi::MethodInstance) = getindex(GLOBAL_CODE_CACHE, mi)
+#
+# function CC.setindex!(wvc::WorldView{GlobalCache}, ci::CodeInstance, mi::MethodInstance)
+#     GLOBAL_CODE_CACHE[mi] = ci
+#     add_callback!(mi) # register the callback on invalidation
+#     return nothing
+# end
+#
+# function add_callback!(linfo)
+#     if !isdefined(linfo, :callbacks)
+#         linfo.callbacks = Any[invalidate_cache!]
+#     else
+#         if !any(@nospecialize(cb)->cb===invalidate_cache!, linfo.callbacks)
+#             push!(linfo.callbacks, invalidate_cache!)
+#         end
+#     end
+#     return nothing
+# end
+#
+# function invalidate_cache!(replaced, max_world, depth = 0)
+#     delete!(GLOBAL_CODE_CACHE, replaced)
+#
+#     if isdefined(replaced, :backedges)
+#         for mi in replaced.backedges
+#             mi = mi::MethodInstance
+#             if !haskey(GLOBAL_CODE_CACHE, mi)
+#                 continue # otherwise fall into infinite loop
+#             end
+#             invalidate_cache!(mi, max_world, depth+1)
+#         end
+#     end
+#     return nothing
+# end
 
 # analysis
 # ========
@@ -119,6 +175,7 @@ Base.copy(s::EscapeState) = EscapeState(copy(s.arguments), copy(s.ssavalues))
     EscapeInformation[x ⊓ y for (x, y) in zip(X.arguments, Y.arguments)],
     EscapeInformation[x ⊓ y for (x, y) in zip(X.ssavalues, Y.ssavalues)])
 <(X::EscapeState, Y::EscapeState) = X⊓Y==X && X≠Y
+Base.:(==)(X::EscapeState, Y::EscapeState) = X.arguments == Y.arguments && X.ssavalues == Y.ssavalues
 
 # backward-analysis to find escape information
 
@@ -162,17 +219,25 @@ function find_escapes(ir::IRCode)
                 end
             elseif isa(stmt, PhiNode)
                 s = state.ssavalues[pc]
-                for x in stmt.values
-                    push!(changes, x => s)
+                values = stmt.values
+                for i in 1:length(values)
+                    if isassigned(values, i)
+                        push!(changes, values[i] => s)
+                    end
                 end
             elseif isa(stmt, PhiCNode)
                 s = state.ssavalues[pc]
-                for x in stmt.values
-                    push!(changes, x => s)
+                values = stmt.values
+                for i in 1:length(values)
+                    if isassigned(values, i)
+                        push!(changes, values[i] => s)
+                    end
                 end
             elseif isa(stmt, UpsilonNode)
-                s = state.ssavalues[pc]
-                push!(changes, stmt.val => s)
+                if isdefined(stmt, :val)
+                    s = state.ssavalues[pc]
+                    push!(changes, stmt.val => s)
+                end
             elseif isa(stmt, ReturnNode)
                 if isdefined(stmt, :val)
                     x = stmt.val
