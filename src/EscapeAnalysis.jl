@@ -32,7 +32,9 @@ import .CC:
     get_inference_cache,
     OptimizationState,
     IRCode,
-    optimize
+    optimize,
+    widenconst,
+    argextype
 
 import Base.Meta:
     isexpr
@@ -67,58 +69,55 @@ CC.verbose_stmt_info(interp::EscapeAnalyzer) = verbose_stmt_info(interp.native)
 
 CC.get_inference_cache(interp::EscapeAnalyzer) = get_inference_cache(interp.native)
 
-CC.code_cache(interp::EscapeAnalyzer) = code_cache(interp.native)
+# CC.code_cache(interp::EscapeAnalyzer) = code_cache(interp.native)
 
-# TODO inter-procedural propagation
-#
-# const GLOBAL_CODE_CACHE = IdDict{MethodInstance,CodeInstance}()
-#
-# __clear_cache!() = empty!(GLOBAL_CODE_CACHE)
-#
-# function CC.code_cache(interp::EscapeAnalyzer)
-#     worlds = WorldRange(get_world_counter(interp))
-#     return WorldView(GlobalCache(), worlds)
-# end
-#
-# struct GlobalCache end
-#
-# CC.haskey(wvc::WorldView{GlobalCache}, mi::MethodInstance) = haskey(GLOBAL_CODE_CACHE, mi)
-#
-# CC.get(wvc::WorldView{GlobalCache}, mi::MethodInstance, default) = get(GLOBAL_CODE_CACHE, mi, default)
-#
-# CC.getindex(wvc::WorldView{GlobalCache}, mi::MethodInstance) = getindex(GLOBAL_CODE_CACHE, mi)
-#
-# function CC.setindex!(wvc::WorldView{GlobalCache}, ci::CodeInstance, mi::MethodInstance)
-#     GLOBAL_CODE_CACHE[mi] = ci
-#     add_callback!(mi) # register the callback on invalidation
-#     return nothing
-# end
-#
-# function add_callback!(linfo)
-#     if !isdefined(linfo, :callbacks)
-#         linfo.callbacks = Any[invalidate_cache!]
-#     else
-#         if !any(@nospecialize(cb)->cb===invalidate_cache!, linfo.callbacks)
-#             push!(linfo.callbacks, invalidate_cache!)
-#         end
-#     end
-#     return nothing
-# end
-#
-# function invalidate_cache!(replaced, max_world, depth = 0)
-#     delete!(GLOBAL_CODE_CACHE, replaced)
-#
-#     if isdefined(replaced, :backedges)
-#         for mi in replaced.backedges
-#             mi = mi::MethodInstance
-#             if !haskey(GLOBAL_CODE_CACHE, mi)
-#                 continue # otherwise fall into infinite loop
-#             end
-#             invalidate_cache!(mi, max_world, depth+1)
-#         end
-#     end
-#     return nothing
-# end
+const GLOBAL_CODE_CACHE = IdDict{MethodInstance,CodeInstance}()
+__clear_code_cache!() = empty!(GLOBAL_CODE_CACHE)
+
+function CC.code_cache(interp::EscapeAnalyzer)
+    worlds = WorldRange(get_world_counter(interp))
+    return WorldView(GlobalCache(), worlds)
+end
+
+struct GlobalCache end
+
+CC.haskey(wvc::WorldView{GlobalCache}, mi::MethodInstance) = haskey(GLOBAL_CODE_CACHE, mi)
+
+CC.get(wvc::WorldView{GlobalCache}, mi::MethodInstance, default) = get(GLOBAL_CODE_CACHE, mi, default)
+
+CC.getindex(wvc::WorldView{GlobalCache}, mi::MethodInstance) = getindex(GLOBAL_CODE_CACHE, mi)
+
+function CC.setindex!(wvc::WorldView{GlobalCache}, ci::CodeInstance, mi::MethodInstance)
+    GLOBAL_CODE_CACHE[mi] = ci
+    add_callback!(mi) # register the callback on invalidation
+    return nothing
+end
+
+function add_callback!(linfo)
+    if !isdefined(linfo, :callbacks)
+        linfo.callbacks = Any[invalidate_cache!]
+    else
+        if !any(@nospecialize(cb)->cb===invalidate_cache!, linfo.callbacks)
+            push!(linfo.callbacks, invalidate_cache!)
+        end
+    end
+    return nothing
+end
+
+function invalidate_cache!(replaced, max_world, depth = 0)
+    delete!(GLOBAL_CODE_CACHE, replaced)
+
+    if isdefined(replaced, :backedges)
+        for mi in replaced.backedges
+            mi = mi::MethodInstance
+            if !haskey(GLOBAL_CODE_CACHE, mi)
+                continue # otherwise fall into infinite loop
+            end
+            invalidate_cache!(mi, max_world, depth+1)
+        end
+    end
+    return nothing
+end
 
 # analysis
 # ========
@@ -139,12 +138,8 @@ abstract type EscapeInformation end
 
 struct NoInformation <: EscapeInformation end
 struct Escape <: EscapeInformation end
-struct NoEscape <: EscapeInformation
-    stmt::Int
-end
-struct ReturnEscape <: EscapeInformation
-    stmt::Int
-end
+struct NoEscape <: EscapeInformation end
+struct ReturnEscape <: EscapeInformation end
 
 ⊑(x::EscapeInformation, y::EscapeInformation) = x == y
 ⊑(::Escape,             ::EscapeInformation)  = true
@@ -162,7 +157,7 @@ struct EscapeState
     ssavalues::Vector{EscapeInformation}
 end
 function EscapeState(narguments::Int, nssavalues::Int)
-    arguments = EscapeInformation[NoEscape(0) for _ in 1:narguments]
+    arguments = EscapeInformation[NoEscape() for _ in 1:narguments]
     ssavalues = EscapeInformation[NoInformation() for _ in 1:nssavalues]
     return EscapeState(arguments, ssavalues)
 end
@@ -176,6 +171,9 @@ Base.copy(s::EscapeState) = EscapeState(copy(s.arguments), copy(s.ssavalues))
     EscapeInformation[x ⊓ y for (x, y) in zip(X.ssavalues, Y.ssavalues)])
 <(X::EscapeState, Y::EscapeState) = X⊓Y==X && X≠Y
 Base.:(==)(X::EscapeState, Y::EscapeState) = X.arguments == Y.arguments && X.ssavalues == Y.ssavalues
+
+const GLOBAL_ESCAPE_CACHE = IdDict{MethodInstance,EscapeState}()
+__clear_escape_cache!() = empty!(GLOBAL_ESCAPE_CACHE)
 
 # backward-analysis to find escape information
 
@@ -201,11 +199,38 @@ function find_escapes(ir::IRCode)
             if isa(stmt, Expr)
                 head = stmt.head
                 if head === :call
-                    for arg in stmt.args[2:end]
-                        push!(changes, arg => Escape())
+                    ft = widenconst(argextype(first(stmt.args), ir, ir.sptypes, ir.argtypes))
+                    # TODO implement more builtins
+                    if ft === typeof(getfield) || ft === typeof(tuple)
+                        info = state.ssavalues[pc]
+                        info === NoInformation() && (info = NoEscape())
+                        for arg in stmt.args[2:end]
+                            push!(changes, arg => info)
+                        end
+                    else
+                        for arg in stmt.args[2:end]
+                            push!(changes, arg => Escape())
+                        end
+                    end
+                elseif head === :invoke
+                    linfo = first(stmt.args)
+                    escapes_for_call = get(GLOBAL_ESCAPE_CACHE, linfo, nothing)
+                    if isnothing(escapes_for_call)
+                        for arg in stmt.args[3:end]
+                            push!(changes, arg => Escape())
+                        end
+                    else
+                        # @assert length(escapes_for_call.arguments) == linfo.def.nargs
+                        for (arg, info) in zip(stmt.args[2:end], escapes_for_call.arguments)
+                            push!(changes, arg => info)
+                        end
                     end
                 elseif head === :new
-                    push!(changes, SSAValue(pc) => NoEscape(pc))
+                    info = state.ssavalues[pc]
+                    info === NoInformation() && (info = NoEscape())
+                    for arg in stmt.args[2:end]
+                        push!(changes, arg => info)
+                    end
                 elseif head === :(=)
                     lhs, rhs = stmt.args
                     if isa(lhs, GlobalRef)
@@ -218,30 +243,29 @@ function find_escapes(ir::IRCode)
                     end
                 end
             elseif isa(stmt, PhiNode)
-                s = state.ssavalues[pc]
+                info = state.ssavalues[pc]
                 values = stmt.values
                 for i in 1:length(values)
                     if isassigned(values, i)
-                        push!(changes, values[i] => s)
+                        push!(changes, values[i] => info)
                     end
                 end
             elseif isa(stmt, PhiCNode)
-                s = state.ssavalues[pc]
+                info = state.ssavalues[pc]
                 values = stmt.values
                 for i in 1:length(values)
                     if isassigned(values, i)
-                        push!(changes, values[i] => s)
+                        push!(changes, values[i] => info)
                     end
                 end
             elseif isa(stmt, UpsilonNode)
                 if isdefined(stmt, :val)
-                    s = state.ssavalues[pc]
-                    push!(changes, stmt.val => s)
+                    info = state.ssavalues[pc]
+                    push!(changes, stmt.val => info)
                 end
             elseif isa(stmt, ReturnNode)
                 if isdefined(stmt, :val)
-                    x = stmt.val
-                    push!(changes, x => ReturnEscape(pc))
+                    push!(changes, stmt.val => ReturnEscape())
                 end
             end
 
@@ -289,34 +313,36 @@ end
 
 # HACK enable copy and paste from Core.Compiler
 function run_passes_with_escape_analysis end
-let f() = @eval CC function $(EscapeAnalysis).run_passes_with_escape_analysis(interp::$(EscapeAnalyzer), ci::CodeInfo, nargs::Int, sv::OptimizationState)
-               preserve_coverage = coverage_enabled(sv.mod)
-               ir = convert_to_ircode(ci, copy_exprargs(ci.code), preserve_coverage, nargs, sv)
-               ir = slot2reg(ir, ci, nargs, sv)
-               #@Base.show ("after_construct", ir)
-               # TODO: Domsorting can produce an updated domtree - no need to recompute here
-               @timeit "compact 1" ir = compact!(ir)
-               @timeit "collect escape information" escapes = $find_escapes(ir)
-               interp.source = copy(ir)
-               interp.info = escapes
-               @timeit "Inlining" ir = ssa_inlining_pass!(ir, ir.linetable, sv.inlining, ci.propagate_inbounds)
-               #@timeit "verify 2" verify_ir(ir)
-               ir = compact!(ir)
-               #@Base.show ("before_sroa", ir)
-               @timeit "SROA" ir = getfield_elim_pass!(ir)
-               #@Base.show ir.new_nodes
-               #@Base.show ("after_sroa", ir)
-               ir = adce_pass!(ir)
-               #@Base.show ("after_adce", ir)
-               @timeit "type lift" ir = type_lift_pass!(ir)
-               @timeit "compact 3" ir = compact!(ir)
-               #@Base.show ir
-               if JLOptions().debug_level == 2
-                   @timeit "verify 3" (verify_ir(ir); verify_linetable(ir.linetable))
-               end
-               return ir
+let f() = @eval CC begin
+        function $(EscapeAnalysis).run_passes_with_escape_analysis(interp::$(EscapeAnalyzer), ci::CodeInfo, nargs::Int, sv::OptimizationState)
+            preserve_coverage = coverage_enabled(sv.mod)
+            ir = convert_to_ircode(ci, copy_exprargs(ci.code), preserve_coverage, nargs, sv)
+            ir = slot2reg(ir, ci, nargs, sv)
+            #@Base.show ("after_construct", ir)
+            # TODO: Domsorting can produce an updated domtree - no need to recompute here
+            @timeit "compact 1" ir = compact!(ir)
+            @timeit "Inlining" ir = ssa_inlining_pass!(ir, ir.linetable, sv.inlining, ci.propagate_inbounds)
+            #@timeit "verify 2" verify_ir(ir)
+            ir = compact!(ir)
+            @timeit "collect escape information" escapes = $find_escapes(ir)
+            $setindex!($GLOBAL_ESCAPE_CACHE, escapes, sv.linfo)
+            interp.source = copy(ir)
+            interp.info = escapes
+            #@Base.show ("before_sroa", ir)
+            @timeit "SROA" ir = getfield_elim_pass!(ir)
+            #@Base.show ir.new_nodes
+            #@Base.show ("after_sroa", ir)
+            ir = adce_pass!(ir)
+            #@Base.show ("after_adce", ir)
+            @timeit "type lift" ir = type_lift_pass!(ir)
+            @timeit "compact 3" ir = compact!(ir)
+            #@Base.show ir
+            if JLOptions().debug_level == 2
+                @timeit "verify 3" (verify_ir(ir); verify_linetable(ir.linetable))
+            end
+            return ir
         end
-
+    end
     push!(__init_hooks__, f)
 end
 

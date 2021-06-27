@@ -81,7 +81,7 @@ let # more complex
     @test escapes.ssavalues[i] isa Escape
 end
 
-let # inter-procedural
+let # simple allocation
     src, escapes = analyze_escapes((Bool,)) do c
         cond = Condition(c) # just allocated, never escapes
         return cond.condition ? nothing : 1
@@ -89,7 +89,41 @@ let # inter-procedural
 
     i = findfirst(==(Condition), src.stmts.type) # allocation statement
     @assert !isnothing(i)
-    @test_broken escapes.ssavalues[i] isa NoEscape # since we don't analyze inter-procedural information right now
+    @test escapes.ssavalues[i] isa NoEscape # since we don't analyze inter-procedural information right now
+end
+
+@testset "inter-procedural" begin
+    m = Module() # inter-procedural
+
+    @eval m @noinline f_noescape(x) = (broadcast(identity, x); nothing)
+    let
+        src, escapes = @eval m $analyze_escapes() do
+            f_noescape(Ref("Hi"))
+        end
+        i = findfirst(==(Base.RefValue{String}), src.stmts.type) # allocation statement
+        @assert !isnothing(i)
+        @test escapes.ssavalues[i] isa NoEscape # since we don't analyze inter-procedural information right now
+    end
+
+    @eval m @noinline f_returnescape(x) = broadcast(identity, x)
+    let
+        src, escapes = @eval m $analyze_escapes() do
+            f_returnescape(Ref("Hi"))
+        end
+        i = findfirst(==(Base.RefValue{String}), src.stmts.type) # allocation statement
+        @assert !isnothing(i)
+        @test escapes.ssavalues[i] isa ReturnEscape # since we don't analyze inter-procedural information right now
+    end
+
+    @eval m @noinline f_escape(x) = (global xx = x) # obvious escape
+    let
+        src, escapes = @eval m $analyze_escapes() do
+            f_escape(Ref("Hi"))
+        end
+        i = findfirst(==(Base.RefValue{String}), src.stmts.type) # allocation statement
+        @assert !isnothing(i)
+        @test escapes.ssavalues[i] isa Escape # since we don't analyze inter-procedural information right now
+    end
 end
 
 end
