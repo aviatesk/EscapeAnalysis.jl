@@ -1,6 +1,7 @@
 module EscapeAnalysis
 
 import Core:
+    CodeInfo,
     CodeInstance,
     MethodInstance,
     Argument,
@@ -137,9 +138,9 @@ will transition these elements from the top to the bottom.
 abstract type EscapeInformation end
 
 struct NoInformation <: EscapeInformation end
-struct Escape <: EscapeInformation end
-struct NoEscape <: EscapeInformation end
-struct ReturnEscape <: EscapeInformation end
+struct Escape        <: EscapeInformation end
+struct NoEscape      <: EscapeInformation end
+struct ReturnEscape  <: EscapeInformation end
 
 ⊑(x::EscapeInformation, y::EscapeInformation) = x == y
 ⊑(::Escape,             ::EscapeInformation)  = true
@@ -169,7 +170,6 @@ Base.copy(s::EscapeState) = EscapeState(copy(s.arguments), copy(s.ssavalues))
 ⊓(X::EscapeState, Y::EscapeState) = EscapeState(
     EscapeInformation[x ⊓ y for (x, y) in zip(X.arguments, Y.arguments)],
     EscapeInformation[x ⊓ y for (x, y) in zip(X.ssavalues, Y.ssavalues)])
-<(X::EscapeState, Y::EscapeState) = X⊓Y==X && X≠Y
 Base.:(==)(X::EscapeState, Y::EscapeState) = X.arguments == Y.arguments && X.ssavalues == Y.ssavalues
 
 const GLOBAL_ESCAPE_CACHE = IdDict{MethodInstance,EscapeState}()
@@ -178,9 +178,9 @@ __clear_escape_cache!() = empty!(GLOBAL_ESCAPE_CACHE)
 # backward-analysis to find escape information
 
 # TODO
-# - inter-procedural
-# - alias analysis ?
-# - we want flow-sensitivity (and state sparsity) ?
+# - implement more builtin handling
+# - (related to above) do alias analysis to some extent
+# - maybe flow-sensitivity (with sparse analysis state)
 function find_escapes(ir::IRCode)
     (; cfg, stmts) = ir
     n = length(stmts)
