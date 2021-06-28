@@ -150,6 +150,32 @@ end
         @assert !isnothing(i)
         @test escapes.ssavalues[i] isa Escape
     end
+
+    # if we can't determine the matching method statically, we should be conservative
+    let
+        src, escapes = @eval m $analyze_escapes((Some{Any},)) do a
+            may_exist(a)
+        end
+        @test escapes.arguments[2] isa Escape
+    end
+    let
+        src, escapes = @eval m $analyze_escapes((Some{Any},)) do a
+            Base.@invokelatest f_noescape(a)
+        end
+        @test escapes.arguments[2] isa Escape
+    end
+
+    # handling of simple union-split (just exploit the inliner's effort)
+    @eval m begin
+        @noinline unionsplit(_)      = string(nothing)
+        @noinline unionsplit(a::Int) = a + 10
+    end
+    let
+        src, escapes = @eval m $analyze_escapes((Union{Int,Regex},)) do a
+            return unionsplit(a)
+        end
+        @test escapes.arguments[2] isa NoEscape
+    end
 end
 
 end # @testset "EscapeAnalysis" begin
