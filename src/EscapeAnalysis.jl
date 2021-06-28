@@ -10,7 +10,9 @@ import Core:
     PhiNode,
     UpsilonNode,
     PhiCNode,
-    ReturnNode
+    ReturnNode,
+    GotoNode,
+    GotoIfNot
 
 const CC = Core.Compiler
 
@@ -282,6 +284,8 @@ function find_escapes(ir::IRCode)
             if isdefined(stmt, :val)
                 push!(changes, stmt.val => ReturnEscape())
             end
+        else # TODO remove me
+            @assert stmt isa GotoNode || stmt isa GotoIfNot || stmt isa GlobalRef || stmt === nothing
         end
 
         # propagate changes
