@@ -47,6 +47,18 @@ end
         @test escapes.arguments[2] isa ReturnEscape
     end
 
+    let # loop
+        src, escapes = analyze_escapes((Int, Regex,)) do n, r
+            rs = Regex[]
+            while n > 0
+                push!(rs, r)
+                n -= 1
+            end
+            return rs
+        end
+        @test escapes.arguments[3] isa Escape
+    end
+
     let # exception
         src, escapes = analyze_escapes((Any,)) do a
             try
@@ -59,14 +71,14 @@ end
     end
 end
 
-mutable struct Condition
-    condition::Bool
+mutable struct MyMutable
+    cond::Bool
 end
 
 let # more complex
     src, escapes = analyze_escapes((Bool,)) do c
-        x = Vector{Condition}() # escape
-        y = Condition(c) # escape
+        x = Vector{MyMutable}() # escape
+        y = MyMutable(c) # escape
         if c
             push!(x, y) # escape
             return nothing
@@ -75,21 +87,21 @@ let # more complex
         end
     end
 
-    i = findfirst(==(Vector{Condition}), src.stmts.type)
+    i = findfirst(==(Vector{MyMutable}), src.stmts.type)
     @assert !isnothing(i)
     @test escapes.ssavalues[i] isa Escape
-    i = findfirst(==(Condition), src.stmts.type)
+    i = findfirst(==(MyMutable), src.stmts.type)
     @assert !isnothing(i)
     @test escapes.ssavalues[i] isa Escape
 end
 
 let # simple allocation
     src, escapes = analyze_escapes((Bool,)) do c
-        cond = Condition(c) # just allocated, never escapes
-        return cond.condition ? nothing : 1
+        mm = MyMutable(c) # just allocated, never escapes
+        return mm.cond ? nothing : 1
     end
 
-    i = findfirst(==(Condition), src.stmts.type) # allocation statement
+    i = findfirst(==(MyMutable), src.stmts.type) # allocation statement
     @assert !isnothing(i)
     @test escapes.ssavalues[i] isa NoEscape
 end
