@@ -6,6 +6,7 @@ import Core:
     MethodInstance,
     Argument,
     SSAValue,
+    PiNode,
     PhiNode,
     UpsilonNode,
     PhiCNode,
@@ -129,7 +130,7 @@ end
 A lattice for escape information, which has the following elements:
 - `NoInformation`: the top element of this lattice, meaning no information is derived
 - `NoEscape`: the second topmost element of this lattice, meaning it will not escape from this local frame
-- `ReturnEscape`: a lattice that is lower than `NoEscape`, meaning it will escape to the callee
+- `ReturnEscape`: a lattice that is lower than `NoEscape`, meaning it will escape to the caller
 - `Escape`: the bottom element of this lattice, meaning it will escape to somewhere
 
 An abstract state will be initialized with the top(most) elements, and an escape analysis
@@ -206,6 +207,7 @@ function find_escapes(ir::IRCode)
                 ft = widenconst(argextype(first(stmt.args), ir, ir.sptypes, ir.argtypes))
                 # TODO implement more builtins
                 if ft <: Core.IntrinsicFunction
+                elseif ft === typeof(isa) || ft === typeof(typeof)
                 elseif ft === typeof(getfield) || ft === typeof(tuple)
                     info = state.ssavalues[pc]
                     info === NoInformation() && (info = NoEscape())
@@ -246,6 +248,11 @@ function find_escapes(ir::IRCode)
                 for arg in stmt.args
                     push!(changes, arg => Escape())
                 end
+            end
+        elseif isa(stmt, PiNode)
+            if isdefined(stmt, :val)
+                info = state.ssavalues[pc]
+                push!(changes, stmt.val => info)
             end
         elseif isa(stmt, PhiNode)
             info = state.ssavalues[pc]

@@ -9,7 +9,7 @@ Couple of notes about this escape analysis:
 The analysis will work on a lattice that has a finite height, and can express the following "escape properties":
 - `NoInformation`: the top element of this lattice, meaning no information is derived
 - `NoEscape`: the second topmost element of this lattice, meaning it will not escape from this local frame
-- `ReturnEscape`: a lattice that is lower than `NoEscape`, meaning it will escape to the callee
+- `ReturnEscape`: a lattice that is lower than `NoEscape`, meaning it will escape to the caller
 - `Escape`: the bottom element of this lattice, meaning it will escape to somewhere
 
 TODO:

@@ -47,6 +47,18 @@ end
         @test escapes.arguments[2] isa ReturnEscape
     end
 
+    let # π node
+        src, escapes = analyze_escapes((Any,)) do a
+            if isa(a, Regex)
+                identity(a) # compiler will introduce π node here
+                return a    # escape !
+            else
+                return nothing
+            end
+        end
+        @test escapes.arguments[2] isa ReturnEscape
+    end
+
     let # loop
         src, escapes = analyze_escapes((Int, Regex,)) do n, r
             rs = Regex[]
