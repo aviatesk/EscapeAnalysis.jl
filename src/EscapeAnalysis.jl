@@ -195,127 +195,125 @@ __clear_escape_cache!() = empty!(GLOBAL_ESCAPE_CACHE)
 # - (related to above) do alias analysis to some extent
 # - maybe flow-sensitivity (with sparse analysis state)
 function find_escapes(ir::IRCode, nargs::Int)
-    (; cfg, stmts, sptypes, argtypes) = ir
+    (; stmts, sptypes, argtypes) = ir
     nstmts = length(stmts)
     state = EscapeState(length(ir.argtypes), nargs, nstmts) # flow-insensitive, only manage a single state
 
-    W = collect(nstmts:-1:1) # worklist
+    while true
+        local anyupdate = false
+        local changes = Pair{Any,EscapeInformation}[]
 
-    for pc in W
-        stmt = stmts.inst[pc]
+        for pc in nstmts:-1:1
+            stmt = stmts.inst[pc]
 
-        changes = Pair{Any,EscapeInformation}[]
-
-        # collect escape information
-        if isa(stmt, Expr)
-            head = stmt.head
-            if head === :call
-                ft = widenconst(argextype(first(stmt.args), ir, sptypes, argtypes))
-                # TODO implement more builtins, make them more accurate
-                if ft === Core.IntrinsicFunction # XXX we may break soundness here, e.g. `pointerref`
-                    continue
-                elseif ft === typeof(isa) || ft === typeof(typeof)
-                    continue
-                elseif ft === typeof(getfield) || ft === typeof(tuple)
+            # collect escape information
+            if isa(stmt, Expr)
+                head = stmt.head
+                if head === :call
+                    ft = widenconst(argextype(first(stmt.args), ir, sptypes, argtypes))
+                    # TODO implement more builtins, make them more accurate
+                    if ft === Core.IntrinsicFunction # XXX we may break soundness here, e.g. `pointerref`
+                        continue
+                    elseif ft === typeof(isa) || ft === typeof(typeof)
+                        continue
+                    elseif ft === typeof(getfield) || ft === typeof(tuple)
+                        info = state.ssavalues[pc]
+                        info === NoInformation() && (info = NoEscape())
+                        for arg in stmt.args[2:end]
+                            push!(changes, arg => info)
+                        end
+                    else
+                        for arg in stmt.args[2:end]
+                            push!(changes, arg => Escape())
+                        end
+                    end
+                elseif head === :invoke
+                    linfo = first(stmt.args)
+                    escapes_for_call = get(GLOBAL_ESCAPE_CACHE, linfo, nothing)
+                    if isnothing(escapes_for_call)
+                        for arg in stmt.args[3:end]
+                            push!(changes, arg => Escape())
+                        end
+                    else
+                        for (arg, info) in zip(stmt.args[2:end], escapes_for_call.arguments)
+                            push!(changes, arg => info)
+                        end
+                    end
+                elseif head === :new
                     info = state.ssavalues[pc]
                     info === NoInformation() && (info = NoEscape())
                     for arg in stmt.args[2:end]
                         push!(changes, arg => info)
                     end
-                else
-                    for arg in stmt.args[2:end]
+                elseif head === :(=)
+                    lhs, rhs = stmt.args
+                    if isa(lhs, GlobalRef)
+                        push!(changes, rhs => Escape())
+                    end
+                elseif head === :enter || head === :leave || head === :pop_exception
+                    continue
+                else # TODO: this is too conservative
+                    for arg in stmt.args
                         push!(changes, arg => Escape())
                     end
                 end
-            elseif head === :invoke
-                linfo = first(stmt.args)
-                escapes_for_call = get(GLOBAL_ESCAPE_CACHE, linfo, nothing)
-                if isnothing(escapes_for_call)
-                    for arg in stmt.args[3:end]
-                        push!(changes, arg => Escape())
-                    end
-                else
-                    for (arg, info) in zip(stmt.args[2:end], escapes_for_call.arguments)
-                        push!(changes, arg => info)
-                    end
+            elseif isa(stmt, PiNode)
+                if isdefined(stmt, :val)
+                    info = state.ssavalues[pc]
+                    push!(changes, stmt.val => info)
                 end
-            elseif head === :new
+            elseif isa(stmt, PhiNode)
                 info = state.ssavalues[pc]
-                info === NoInformation() && (info = NoEscape())
-                for arg in stmt.args[2:end]
-                    push!(changes, arg => info)
+                values = stmt.values
+                for i in 1:length(values)
+                    if isassigned(values, i)
+                        push!(changes, values[i] => info)
+                    end
                 end
-            elseif head === :(=)
-                lhs, rhs = stmt.args
-                if isa(lhs, GlobalRef)
-                    push!(changes, rhs => Escape())
+            elseif isa(stmt, PhiCNode)
+                info = state.ssavalues[pc]
+                values = stmt.values
+                for i in 1:length(values)
+                    if isassigned(values, i)
+                        push!(changes, values[i] => info)
+                    end
                 end
-            elseif head === :enter || head === :leave || head === :pop_exception
+            elseif isa(stmt, UpsilonNode)
+                if isdefined(stmt, :val)
+                    info = state.ssavalues[pc]
+                    push!(changes, stmt.val => info)
+                end
+            elseif isa(stmt, ReturnNode)
+                if isdefined(stmt, :val)
+                    push!(changes, stmt.val => ReturnEscape())
+                end
+            else
+                @assert stmt isa GotoNode || stmt isa GotoIfNot || stmt isa GlobalRef || stmt === nothing # TODO remove me
                 continue
-            else # TODO: this is too conservative
-                for arg in stmt.args
-                    push!(changes, arg => Escape())
-                end
             end
-        elseif isa(stmt, PiNode)
-            if isdefined(stmt, :val)
-                info = state.ssavalues[pc]
-                push!(changes, stmt.val => info)
-            end
-        elseif isa(stmt, PhiNode)
-            info = state.ssavalues[pc]
-            values = stmt.values
-            for i in 1:length(values)
-                if isassigned(values, i)
-                    push!(changes, values[i] => info)
-                end
-            end
-        elseif isa(stmt, PhiCNode)
-            info = state.ssavalues[pc]
-            values = stmt.values
-            for i in 1:length(values)
-                if isassigned(values, i)
-                    push!(changes, values[i] => info)
-                end
-            end
-        elseif isa(stmt, UpsilonNode)
-            if isdefined(stmt, :val)
-                info = state.ssavalues[pc]
-                push!(changes, stmt.val => info)
-            end
-        elseif isa(stmt, ReturnNode)
-            if isdefined(stmt, :val)
-                push!(changes, stmt.val => ReturnEscape())
-            end
-        else
-            @assert stmt isa GotoNode || stmt isa GotoIfNot || stmt isa GlobalRef || stmt === nothing # TODO remove me
-            continue
-        end
 
-        # propagate changes
-        new = copy(state)
-        for (x, info) in changes
-            if isa(x, Argument)
-                new.arguments[x.n] = info
-            elseif isa(x, SSAValue)
-                new.ssavalues[x.id] = info
+            isempty(changes) && continue
+
+            # propagate changes
+            new = copy(state)
+            for (x, info) in changes
+                if isa(x, Argument)
+                    new.arguments[x.n] = new.arguments[x.n] ⊓ info
+                elseif isa(x, SSAValue)
+                    new.ssavalues[x.id] = new.ssavalues[x.id] ⊓ info
+                end
+            end
+            empty!(changes)
+
+            # convergence check and worklist update
+            if new != state
+                state = new
+
+                anyupdate |= true
             end
         end
 
-        # convergence check and worklist update
-        if new != state
-            state = new ⊓ state
-
-            i = findfirst(==(pc), cfg.index)
-            if !isnothing(i)
-                block = cfg.blocks[i+1]
-                for pred in block.preds
-                    push!(W, last(cfg.blocks[pred].stmts))
-                end
-            elseif pc ≠ 1
-                push!(W, pc-1)
-            end
-        end
+        anyupdate || break
     end
 
     return state
