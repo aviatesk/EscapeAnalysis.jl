@@ -210,9 +210,11 @@ function find_escapes(ir::IRCode)
             head = stmt.head
             if head === :call
                 ft = widenconst(argextype(first(stmt.args), ir, ir.sptypes, ir.argtypes))
-                # TODO implement more builtins
-                if ft <: Core.IntrinsicFunction
+                # TODO implement more builtins, make them more accurate
+                if ft === Core.IntrinsicFunction # XXX we may break soundless here, e.g. `pointerref`
+                    continue
                 elseif ft === typeof(isa) || ft === typeof(typeof)
+                    continue
                 elseif ft === typeof(getfield) || ft === typeof(tuple)
                     info = state.ssavalues[pc]
                     info === NoInformation() && (info = NoEscape())
@@ -249,6 +251,7 @@ function find_escapes(ir::IRCode)
                     push!(changes, rhs => Escape())
                 end
             elseif head === :enter || head === :leave || head === :pop_exception
+                continue
             else # TODO: this is too conservative
                 for arg in stmt.args
                     push!(changes, arg => Escape())
@@ -284,8 +287,9 @@ function find_escapes(ir::IRCode)
             if isdefined(stmt, :val)
                 push!(changes, stmt.val => ReturnEscape())
             end
-        else # TODO remove me
-            @assert stmt isa GotoNode || stmt isa GotoIfNot || stmt isa GlobalRef || stmt === nothing
+        else
+            @assert stmt isa GotoNode || stmt isa GotoIfNot || stmt isa GlobalRef || stmt === nothing # TODO remove me
+            continue
         end
 
         # propagate changes
@@ -330,7 +334,7 @@ end
 function run_passes_with_escape_analysis end
 register_init_hook!() do
 @eval CC begin
-    function $(EscapeAnalysis).run_passes_with_escape_analysis(interp::$EscapeAnalyzer, ci::CodeInfo, nargs::Int, sv::OptimizationState)
+    function $EscapeAnalysis.run_passes_with_escape_analysis(interp::$EscapeAnalyzer, ci::CodeInfo, nargs::Int, sv::OptimizationState)
         preserve_coverage = coverage_enabled(sv.mod)
         ir = convert_to_ircode(ci, copy_exprargs(ci.code), preserve_coverage, nargs, sv)
         ir = slot2reg(ir, ci, nargs, sv)
