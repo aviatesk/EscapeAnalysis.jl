@@ -163,9 +163,10 @@ struct EscapeState
     arguments::Vector{EscapeInformation}
     ssavalues::Vector{EscapeInformation}
 end
-function EscapeState(narguments::Int, nssavalues::Int)
-    arguments = EscapeInformation[NoEscape() for _ in 1:narguments]
-    ssavalues = EscapeInformation[NoInformation() for _ in 1:nssavalues]
+function EscapeState(nslots::Int, nargs::Int, nstmts::Int)
+    arguments = EscapeInformation[
+        i ≤ nargs ? ReturnEscape() : NoEscape() for i in 1:nslots]
+    ssavalues = EscapeInformation[NoInformation() for _ in 1:nstmts]
     return EscapeState(arguments, ssavalues)
 end
 Base.copy(s::EscapeState) = EscapeState(copy(s.arguments), copy(s.ssavalues))
@@ -193,12 +194,12 @@ __clear_escape_cache!() = empty!(GLOBAL_ESCAPE_CACHE)
 # - implement more builtin handling
 # - (related to above) do alias analysis to some extent
 # - maybe flow-sensitivity (with sparse analysis state)
-function find_escapes(ir::IRCode)
-    (; cfg, stmts) = ir
-    n = length(stmts)
-    state = EscapeState(length(ir.argtypes), n) # flow-insensitive, only manage a single state
+function find_escapes(ir::IRCode, nargs::Int)
+    (; cfg, stmts, sptypes, argtypes) = ir
+    nstmts = length(stmts)
+    state = EscapeState(length(ir.argtypes), nargs, nstmts) # flow-insensitive, only manage a single state
 
-    W = collect(n:-1:1) # worklist
+    W = collect(nstmts:-1:1) # worklist
 
     for pc in W
         stmt = stmts.inst[pc]
@@ -209,9 +210,9 @@ function find_escapes(ir::IRCode)
         if isa(stmt, Expr)
             head = stmt.head
             if head === :call
-                ft = widenconst(argextype(first(stmt.args), ir, ir.sptypes, ir.argtypes))
+                ft = widenconst(argextype(first(stmt.args), ir, sptypes, argtypes))
                 # TODO implement more builtins, make them more accurate
-                if ft === Core.IntrinsicFunction # XXX we may break soundless here, e.g. `pointerref`
+                if ft === Core.IntrinsicFunction # XXX we may break soundness here, e.g. `pointerref`
                     continue
                 elseif ft === typeof(isa) || ft === typeof(typeof)
                     continue
@@ -234,7 +235,6 @@ function find_escapes(ir::IRCode)
                         push!(changes, arg => Escape())
                     end
                 else
-                    # @assert length(escapes_for_call.arguments) == linfo.def.nargs
                     for (arg, info) in zip(stmt.args[2:end], escapes_for_call.arguments)
                         push!(changes, arg => info)
                     end
@@ -344,7 +344,7 @@ register_init_hook!() do
         @timeit "Inlining" ir = ssa_inlining_pass!(ir, ir.linetable, sv.inlining, ci.propagate_inbounds)
         #@timeit "verify 2" verify_ir(ir)
         ir = compact!(ir)
-        @timeit "collect escape information" escapes = $find_escapes(ir)
+        @timeit "collect escape information" escapes = $find_escapes(ir, nargs+1)
         $setindex!($GLOBAL_ESCAPE_CACHE, escapes, sv.linfo)
         interp.source = copy(ir)
         interp.info = escapes

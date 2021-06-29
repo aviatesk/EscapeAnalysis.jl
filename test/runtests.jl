@@ -14,10 +14,10 @@ end
 @testset "EscapeAnalysis" begin
 
 let # simplest
-    src, escapes = analyze_escapes((Any,)) do a # no escape
+    src, escapes = analyze_escapes((Any,)) do a # return to caller
         return nothing
     end
-    @test escapes.arguments[2] isa NoEscape
+    @test escapes.arguments[2] isa ReturnEscape
 end
 
 let # global assignement
@@ -128,7 +128,7 @@ end
         end
         i = findfirst(==(Base.RefValue{String}), src.stmts.type) # find allocation statement
         @assert !isnothing(i)
-        @test escapes.ssavalues[i] isa NoEscape
+        @test escapes.ssavalues[i] isa ReturnEscape
     end
 
     @eval m @noinline f_returnescape(x) = broadcast(identity, x)
@@ -174,7 +174,7 @@ end
         src, escapes = @eval m $analyze_escapes((Union{Int,Regex},)) do a
             return unionsplit(a)
         end
-        @test escapes.arguments[2] isa NoEscape
+        @test escapes.arguments[2] isa ReturnEscape
     end
 end
 
