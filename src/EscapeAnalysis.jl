@@ -398,9 +398,9 @@ end
 function print_with_info(io::IO, ir::IRCode, (; arguments, ssavalues)::EscapeState)
     function char_color(info::EscapeInformation)
         return info isa NoInformation ? ('◌', :plain) :
-               info isa NoEscape ? ('▲', :green) :
-               info isa ReturnEscape ? ('⮬', :yellow) :
-               info isa Escape ? ('➥', :red) :
+               info isa NoEscape ? ('↓', :green) :
+               info isa ReturnEscape ? ('↑', :yellow) :
+               info isa Escape ? ('→', :red) :
                throw("unhandled escape information: $c")
     end
 
