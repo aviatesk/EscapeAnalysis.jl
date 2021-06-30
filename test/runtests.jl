@@ -13,26 +13,28 @@ end
 
 @testset "EscapeAnalysis" begin
 
-let # simplest
-    src, escapes = analyze_escapes((Any,)) do a # return to caller
-        return nothing
+@testset "basics" begin
+    let # simplest
+        src, escapes = analyze_escapes((Any,)) do a # return to caller
+            return nothing
+        end
+        @test escapes.arguments[2] isa ReturnEscape
     end
-    @test escapes.arguments[2] isa ReturnEscape
-end
 
-let # global assignement
-    src, escapes = analyze_escapes((Any,)) do a
-        global aa = a
-        return nothing
+    let # global assignement
+        src, escapes = analyze_escapes((Any,)) do a
+            global aa = a
+            return nothing
+        end
+        @test escapes.arguments[2] isa Escape
     end
-    @test escapes.arguments[2] isa Escape
-end
 
-let # return
-    src, escapes = analyze_escapes((Any,)) do a
-        return a
+    let # return
+        src, escapes = analyze_escapes((Any,)) do a
+            return a
+        end
+        @test escapes.arguments[2] isa ReturnEscape
     end
-    @test escapes.arguments[2] isa ReturnEscape
 end
 
 @testset "control flows" begin
@@ -210,6 +212,16 @@ end
         i = findfirst(==(Base.RefValue{Nothing}), src.stmts.type) # find allocation statement
         @test !isnothing(i)
         @test escapes.ssavalues[i] isa NoEscape
+    end
+
+    let # arrayset
+        src, escapes = analyze_escapes((Vector{Any},Any,)) do a, ai
+            s = Some{Any}(ai) # => return escape
+            return a[1] = s
+        end
+        i = findfirst(==(Some{Any}), src.stmts.type) # find allocation statement
+        @assert !isnothing(i)
+        @test escapes.ssavalues[i] isa ReturnEscape
     end
 end
 

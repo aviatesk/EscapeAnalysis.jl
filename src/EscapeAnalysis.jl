@@ -237,6 +237,16 @@ function find_escapes(ir::IRCode, nargs::Int)
                         for arg in stmt.args[2:end]
                             push!(changes, (arg, info))
                         end
+                    elseif ft === typeof(Core.arrayset) && length(stmt.args) == 5
+                        f, boundscheck, ary, val, index = stmt.args
+                        if isa(ary, Argument)
+                            info = state.arguments[ary.n]
+                        elseif isa(ary, SSAValue)
+                            info = state.ssavalues[ary.id]
+                        else
+                            continue
+                        end
+                        push!(changes, (val, info))
                     else
                         for arg in stmt.args[2:end]
                             push!(changes, (arg, Escape()))
