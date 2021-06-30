@@ -373,11 +373,77 @@ function analyze_escapes(@nospecialize(f), @nospecialize(types=Tuple{});
     interp = EscapeAnalyzer{EscapeState}(interp, nothing, nothing)
 
     code_typed(f, types; optimize=true, world, interp)
-    return interp.source, interp.info
+    return EscapeAnalysisResult(interp.source, interp.info)
 end
+
+# utitlities
+# ==========
 
 # in order to run a whole analysis from ground zero (e.g. for benchmarking, etc.)
 __clear_caches!() = (__clear_code_cache!(); __clear_escape_cache!())
+
+struct EscapeAnalysisResult
+    ir::IRCode
+    state::EscapeState
+end
+Base.show(io::IO, result::EscapeAnalysisResult) = print_with_info(io, result.ir, result.state)
+
+function Base.iterate(result::EscapeAnalysisResult, state = nothing)
+    state == 2 && return nothing
+    isnothing(state) && return result.ir, 1
+    return result.state, 2
+end
+
+# adapted from https://github.com/JuliaDebug/LoweredCodeUtils.jl/blob/4612349432447e868cf9285f647108f43bd0a11c/src/codeedges.jl#L881-L897
+function print_with_info(io::IO, ir::IRCode, (; arguments, ssavalues)::EscapeState)
+    function char_color(info::EscapeInformation)
+        return info isa NoInformation ? ('◌', :plain) :
+               info isa NoEscape ? ('▲', :green) :
+               info isa ReturnEscape ? ('⮬', :yellow) :
+               info isa Escape ? ('➥', :red) :
+               throw("unhandled escape information: $c")
+    end
+
+    # print escape information on SSA values
+    function preprint(io::IO)
+        print(io, widenconst(ir.argtypes[1]), '(')
+        for (i, arg) in enumerate(arguments)
+            i == 1 && continue
+            c, color = char_color(arg)
+            printstyled(io, '_', i, "::", ir.argtypes[i], ' ', c; color)
+            i ≠ length(arguments) && print(io, ", ")
+        end
+        println(io, ')')
+    end
+
+    # print escape information on SSA values
+    nd = ndigits(length(ssavalues))
+    function preprint(io::IO, idx::Int)
+        c, color = char_color(ssavalues[idx])
+        printstyled(io, lpad(idx, nd), ' ', c, ' '; color)
+    end
+    print_with_info(preprint, (args...)->nothing, io, ir)
+end
+
+function print_with_info(preprint, postprint, io::IO, ir::IRCode)
+    io = IOContext(io, :displaysize=>displaysize(io))
+    used = BitSet()
+    used = Base.IRShow.stmts_used(ir)
+    line_info_preprinter = Base.IRShow.lineinfo_disabled
+    line_info_postprinter = Base.IRShow.default_expr_type_printer
+    preprint(io)
+    bb_idx_prev = bb_idx = 1
+    for idx = 1:length(ir.stmts)
+        preprint(io, idx)
+        bb_idx = Base.IRShow.show_ir_stmt(io, ir, idx, line_info_preprinter, line_info_postprinter, used, ir.cfg, bb_idx)
+        postprint(io, idx, bb_idx != bb_idx_prev)
+        bb_idx_prev = bb_idx
+    end
+    max_bb_idx_size = ndigits(length(ir.cfg.blocks))
+    line_info_preprinter(io, " "^(max_bb_idx_size + 2), 0)
+    postprint(io)
+    return nothing
+end
 
 export
     analyze_escapes,
