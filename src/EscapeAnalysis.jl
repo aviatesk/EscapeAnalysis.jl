@@ -376,6 +376,9 @@ function analyze_escapes(@nospecialize(f), @nospecialize(types=Tuple{});
     return interp.source, interp.info
 end
 
+# in order to run a whole analysis from ground zero (e.g. for benchmarking, etc.)
+__clear_caches!() = (__clear_code_cache!(); __clear_escape_cache!())
+
 export
     analyze_escapes,
     @analyze_escapes
