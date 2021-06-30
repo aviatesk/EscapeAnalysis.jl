@@ -4,6 +4,7 @@ import Core:
     CodeInfo,
     CodeInstance,
     MethodInstance,
+    Const,
     Argument,
     SSAValue,
     PiNode,
@@ -216,6 +217,20 @@ function find_escapes(ir::IRCode, nargs::Int)
                         continue
                     elseif ft === typeof(isa) || ft === typeof(typeof) || ft === typeof(Core.sizeof)
                         continue
+                    elseif ft === typeof(ifelse) && length(stmt.args) === 4
+                        f, cond, th, el = stmt.args
+                        info = state.ssavalues[pc]
+                        condt = argextype(cond, ir, sptypes, argtypes)
+                        if isa(condt, Const) && isa(condt.val, Bool)
+                            if condt.val
+                                push!(changes, (th, info))
+                            else
+                                push!(changes, (el, info))
+                            end
+                        else
+                            push!(changes, (th, info))
+                            push!(changes, (el, info))
+                        end
                     elseif ft === typeof(getfield) || ft === typeof(tuple)
                         info = state.ssavalues[pc]
                         info === NoInformation() && (info = NoEscape())
@@ -245,6 +260,7 @@ function find_escapes(ir::IRCode, nargs::Int)
                     for arg in stmt.args[2:end]
                         push!(changes, (arg, info))
                     end
+                    push!(changes, (SSAValue(pc), info)) # we will be interested in if this allocation is not escape or not
                 elseif head === :(=)
                     lhs, rhs = stmt.args
                     if isa(lhs, GlobalRef)
