@@ -178,13 +178,38 @@ end
     end
 end
 
-
 @testset "builtins" begin
     let # sizeof
         src, escapes = analyze_escapes((Vector{Int}, )) do itr
             sizeof(itr)
         end
         @test escapes.arguments[2] isa ReturnEscape
+    end
+
+    let # ifelse
+        src, escapes = analyze_escapes((Bool,)) do c
+            r = ifelse(c, Ref("yes"), Ref("no"))
+            return r
+        end
+        is = findall(==(Base.RefValue{String}), src.stmts.type) # find allocation statement
+        @test !isempty(is)
+        for i in is
+            @test escapes.ssavalues[i] isa ReturnEscape
+        end
+    end
+    let # ifelse (with constant condition)
+        src, escapes = analyze_escapes((String,)) do s
+            r = ifelse(isa(s, String), Ref("yes"), Ref(nothing))
+            return r
+        end
+        is = findall(==(Base.RefValue{String}), src.stmts.type) # find allocation statement
+        @test !isempty(is)
+        for i in is
+            @test escapes.ssavalues[i] isa ReturnEscape
+        end
+        i = findfirst(==(Base.RefValue{Nothing}), src.stmts.type) # find allocation statement
+        @test !isnothing(i)
+        @test escapes.ssavalues[i] isa NoEscape
     end
 end
 
