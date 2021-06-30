@@ -214,7 +214,7 @@ function find_escapes(ir::IRCode, nargs::Int)
                     # TODO implement more builtins, make them more accurate
                     if ft === Core.IntrinsicFunction # XXX we may break soundness here, e.g. `pointerref`
                         continue
-                    elseif ft === typeof(isa) || ft === typeof(typeof)
+                    elseif ft === typeof(isa) || ft === typeof(typeof) || ft === typeof(Core.sizeof)
                         continue
                     elseif ft === typeof(getfield) || ft === typeof(tuple)
                         info = state.ssavalues[pc]

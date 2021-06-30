@@ -178,4 +178,16 @@ end
     end
 end
 
+
+@testset "builtins" begin
+
+    let # sizeof
+        src, escapes = analyze_escapes((Vector{Int}, )) do itr
+            sizeof(itr)
+        end
+        @test escapes.arguments[2] isa ReturnEscape
+    end
+
+end
+
 end # @testset "EscapeAnalysis" begin
