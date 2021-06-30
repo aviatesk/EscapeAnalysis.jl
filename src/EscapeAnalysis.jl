@@ -201,7 +201,7 @@ function find_escapes(ir::IRCode, nargs::Int)
 
     while true
         local anyupdate = false
-        local changes = Pair{Any,EscapeInformation}[]
+        local changes = Tuple{Any,EscapeInformation}[]
 
         for pc in nstmts:-1:1
             stmt = stmts.inst[pc]
@@ -220,11 +220,11 @@ function find_escapes(ir::IRCode, nargs::Int)
                         info = state.ssavalues[pc]
                         info === NoInformation() && (info = NoEscape())
                         for arg in stmt.args[2:end]
-                            push!(changes, arg => info)
+                            push!(changes, (arg, info))
                         end
                     else
                         for arg in stmt.args[2:end]
-                            push!(changes, arg => Escape())
+                            push!(changes, (arg, Escape()))
                         end
                     end
                 elseif head === :invoke
@@ -232,42 +232,42 @@ function find_escapes(ir::IRCode, nargs::Int)
                     escapes_for_call = get(GLOBAL_ESCAPE_CACHE, linfo, nothing)
                     if isnothing(escapes_for_call)
                         for arg in stmt.args[3:end]
-                            push!(changes, arg => Escape())
+                            push!(changes, (arg, Escape()))
                         end
                     else
                         for (arg, info) in zip(stmt.args[2:end], escapes_for_call.arguments)
-                            push!(changes, arg => info)
+                            push!(changes, (arg, info))
                         end
                     end
                 elseif head === :new
                     info = state.ssavalues[pc]
                     info === NoInformation() && (info = NoEscape())
                     for arg in stmt.args[2:end]
-                        push!(changes, arg => info)
+                        push!(changes, (arg, info))
                     end
                 elseif head === :(=)
                     lhs, rhs = stmt.args
                     if isa(lhs, GlobalRef)
-                        push!(changes, rhs => Escape())
+                        push!(changes, (rhs, Escape()))
                     end
                 elseif head === :enter || head === :leave || head === :pop_exception
                     continue
                 else # TODO: this is too conservative
                     for arg in stmt.args
-                        push!(changes, arg => Escape())
+                        push!(changes, (arg, Escape()))
                     end
                 end
             elseif isa(stmt, PiNode)
                 if isdefined(stmt, :val)
                     info = state.ssavalues[pc]
-                    push!(changes, stmt.val => info)
+                    push!(changes, (stmt.val, info))
                 end
             elseif isa(stmt, PhiNode)
                 info = state.ssavalues[pc]
                 values = stmt.values
                 for i in 1:length(values)
                     if isassigned(values, i)
-                        push!(changes, values[i] => info)
+                        push!(changes, (values[i], info))
                     end
                 end
             elseif isa(stmt, PhiCNode)
@@ -275,17 +275,17 @@ function find_escapes(ir::IRCode, nargs::Int)
                 values = stmt.values
                 for i in 1:length(values)
                     if isassigned(values, i)
-                        push!(changes, values[i] => info)
+                        push!(changes, (values[i], info))
                     end
                 end
             elseif isa(stmt, UpsilonNode)
                 if isdefined(stmt, :val)
                     info = state.ssavalues[pc]
-                    push!(changes, stmt.val => info)
+                    push!(changes, (stmt.val, info))
                 end
             elseif isa(stmt, ReturnNode)
                 if isdefined(stmt, :val)
-                    push!(changes, stmt.val => ReturnEscape())
+                    push!(changes, (stmt.val, ReturnEscape()))
                 end
             else
                 @assert stmt isa GotoNode || stmt isa GotoIfNot || stmt isa GlobalRef || stmt === nothing # TODO remove me

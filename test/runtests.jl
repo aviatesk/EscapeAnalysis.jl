@@ -1,4 +1,4 @@
-using EscapeAnalysis, InteractiveUtils, Test
+using EscapeAnalysis, InteractiveUtils, Test, JETTest
 import EscapeAnalysis:
     EscapeInformation
 for t in subtypes(EscapeInformation)
@@ -185,6 +185,19 @@ end
             sizeof(itr)
         end
         @test escapes.arguments[2] isa ReturnEscape
+    end
+end
+
+@testset "code quality" begin
+    # assert we are free from (unnecessary) runtime dispatches
+    let
+        function function_filter(@nospecialize(ft))
+            ft === typeof(Core.Compiler.widenconst) && return false # `widenconst` is very untyped, ignore
+            ft === typeof(EscapeAnalysis.:(⊓)) && return false # `⊓` is very untyped, ignore
+            return true
+        end
+        r = analyze_escapes(identity, (Int,)) # just to get input types
+        @test_nodispatch function_filter=function_filter EscapeAnalysis.find_escapes(r.ir, 2)
     end
 end
 
