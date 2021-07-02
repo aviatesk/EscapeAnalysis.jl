@@ -179,6 +179,14 @@ end
 end
 
 @testset "builtins" begin
+    let # :===
+        src, escapes = analyze_escapes((Any, )) do a
+            c = a === nothing
+            return c
+        end
+        @test escapes.arguments[2] isa ReturnEscape
+    end
+
     let # sizeof
         src, escapes = analyze_escapes((Vector{Int}, )) do itr
             sizeof(itr)

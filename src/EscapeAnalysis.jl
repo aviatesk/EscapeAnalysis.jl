@@ -215,7 +215,7 @@ function find_escapes(ir::IRCode, nargs::Int)
                     # TODO implement more builtins, make them more accurate
                     if ft === Core.IntrinsicFunction # XXX we may break soundness here, e.g. `pointerref`
                         continue
-                    elseif ft === typeof(isa) || ft === typeof(typeof) || ft === typeof(Core.sizeof)
+                    elseif ft === typeof(isa) || ft === typeof(typeof) || ft === typeof(Core.sizeof) || ft === typeof(Core.:(===))
                         continue
                     elseif ft === typeof(ifelse) && length(stmt.args) === 4
                         f, cond, th, el = stmt.args
