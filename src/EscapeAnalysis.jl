@@ -215,7 +215,8 @@ function find_escapes(ir::IRCode, nargs::Int)
                     # TODO implement more builtins, make them more accurate
                     if ft === Core.IntrinsicFunction # XXX we may break soundness here, e.g. `pointerref`
                         continue
-                    elseif ft === typeof(isa) || ft === typeof(typeof) || ft === typeof(Core.sizeof) || ft === typeof(Core.:(===))
+                    # TODO: separate PR for Core.arraysize?
+                    elseif ft === typeof(isa) || ft === typeof(typeof) || ft === typeof(Core.sizeof) || ft === typeof(Core.:(===)) || ft === typeof(Core.arraysize)
                         continue
                     elseif ft === typeof(ifelse) && length(stmt.args) === 4
                         f, cond, th, el = stmt.args
@@ -231,12 +232,33 @@ function find_escapes(ir::IRCode, nargs::Int)
                             push!(changes, (th, info))
                             push!(changes, (el, info))
                         end
-                    elseif ft === typeof(getfield) || ft === typeof(tuple)
+                    elseif ft === typeof(getfield)
+                        info = state.ssavalues[pc]
+                        info === NoInformation() && (info = NoEscape())
+                        field_typ = widenconst(stmts.type[pc])
+                        # if the field we are getting is Int, we should propagate any info
+                        if !(field_typ <: Integer)
+                            for arg in stmt.args[2:end]
+                                push!(changes, (arg, info))
+                            end
+                        end
+                    elseif ft === typeof(tuple)
                         info = state.ssavalues[pc]
                         info === NoInformation() && (info = NoEscape())
                         for arg in stmt.args[2:end]
                             push!(changes, (arg, info))
                         end
+                    # TODO: this can be removed once #3 is merged
+                    elseif ft === typeof(Core.arrayset) && length(stmt.args) == 5
+                        f, boundscheck, ary, val, index = stmt.args
+                        if isa(ary, Argument)
+                            info = state.arguments[ary.n]
+                        elseif isa(ary, SSAValue)
+                            info = state.ssavalues[ary.id]
+                        else
+                            continue
+                        end
+                        push!(changes, (val, info))
                     else
                         for arg in stmt.args[2:end]
                             push!(changes, (arg, Escape()))
