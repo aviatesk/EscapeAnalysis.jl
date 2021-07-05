@@ -39,7 +39,8 @@ import .CC:
     IRCode,
     optimize,
     widenconst,
-    argextype
+    argextype,
+    IR_FLAG_EFFECT_FREE
 
 import Base.Meta:
     isexpr
@@ -207,39 +208,49 @@ function find_escapes(ir::IRCode, nargs::Int)
         for pc in nstmts:-1:1
             stmt = stmts.inst[pc]
 
+            # inlinear already computed effect-freeness of this statement (whether it may throw or not)
+            # and if it may throw, we conservatively escape all the arguments
+            is_effect_free = stmts.flag[pc] & IR_FLAG_EFFECT_FREE ≠ 0
+
             # collect escape information
             if isa(stmt, Expr)
                 head = stmt.head
-                if head === :call
-                    ft = widenconst(argextype(first(stmt.args), ir, sptypes, argtypes))
-                    # TODO implement more builtins, make them more accurate
-                    if ft === Core.IntrinsicFunction # XXX we may break soundness here, e.g. `pointerref`
-                        continue
-                    elseif ft === typeof(isa) || ft === typeof(typeof) || ft === typeof(Core.sizeof) || ft === typeof(Core.:(===))
-                        continue
-                    elseif ft === typeof(ifelse) && length(stmt.args) === 4
-                        f, cond, th, el = stmt.args
-                        info = state.ssavalues[pc]
-                        condt = argextype(cond, ir, sptypes, argtypes)
-                        if isa(condt, Const) && isa(condt.val, Bool)
-                            if condt.val
-                                push!(changes, (th, info))
-                            else
-                                push!(changes, (el, info))
-                            end
-                        else
-                            push!(changes, (th, info))
-                            push!(changes, (el, info))
-                        end
-                    elseif ft === typeof(getfield) || ft === typeof(tuple)
-                        info = state.ssavalues[pc]
-                        info === NoInformation() && (info = NoEscape())
-                        for arg in stmt.args[2:end]
-                            push!(changes, (arg, info))
-                        end
-                    else
+                if head === :call # TODO implement more builtins, make them more accurate
+                    if !is_effect_free
+                        # TODO we can have a look at builtins.c and limit the escaped arguments if any of them are not thrown
                         for arg in stmt.args[2:end]
                             push!(changes, (arg, Escape()))
+                        end
+                    else
+                        ft = widenconst(argextype(first(stmt.args), ir, sptypes, argtypes))
+                        if ft === Core.IntrinsicFunction # XXX we may break soundness here, e.g. `pointerref`
+                            continue
+                        elseif ft === typeof(isa) || ft === typeof(typeof) || ft === typeof(Core.sizeof) || ft === typeof(Core.:(===))
+                            continue
+                        elseif ft === typeof(ifelse) && length(stmt.args) === 4
+                            f, cond, th, el = stmt.args
+                            info = state.ssavalues[pc]
+                            condt = argextype(cond, ir, sptypes, argtypes)
+                            if isa(condt, Const) && isa(condt.val, Bool)
+                                if condt.val
+                                    push!(changes, (th, info))
+                                else
+                                    push!(changes, (el, info))
+                                end
+                            else
+                                push!(changes, (th, info))
+                                push!(changes, (el, info))
+                            end
+                        elseif ft === typeof(getfield) || ft === typeof(tuple)
+                            info = state.ssavalues[pc]
+                            info === NoInformation() && (info = NoEscape())
+                            for arg in stmt.args[2:end]
+                                push!(changes, (arg, info))
+                            end
+                        else
+                            for arg in stmt.args[2:end]
+                                push!(changes, (arg, Escape()))
+                            end
                         end
                     end
                 elseif head === :invoke

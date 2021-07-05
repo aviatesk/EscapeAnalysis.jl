@@ -4,7 +4,6 @@ import EscapeAnalysis:
 for t in subtypes(EscapeInformation)
     canonicalname = Symbol(parentmodule(t), '.', nameof(t))
     canonicalpath = Symbol.(split(string(canonicalname), '.'))
-
     modpath = Expr(:., canonicalpath[1:end-1]...)
     symname = Expr(:., last(canonicalpath))
     ex = Expr(:import, Expr(:(:), modpath, symname))
@@ -13,26 +12,32 @@ end
 
 @testset "EscapeAnalysis" begin
 
-let # simplest
-    src, escapes = analyze_escapes((Any,)) do a # return to caller
-        return nothing
-    end
-    @test escapes.arguments[2] isa ReturnEscape
+mutable struct MutableSome{T}
+    value::T
 end
 
-let # global assignement
-    src, escapes = analyze_escapes((Any,)) do a
-        global aa = a
-        return nothing
+@testset "basics" begin
+    let # simplest
+        src, escapes = analyze_escapes((Any,)) do a # return to caller
+            return nothing
+        end
+        @test escapes.arguments[2] isa ReturnEscape
     end
-    @test escapes.arguments[2] isa Escape
-end
 
-let # return
-    src, escapes = analyze_escapes((Any,)) do a
-        return a
+    let # global assignement
+        src, escapes = analyze_escapes((Any,)) do a
+            global aa = a
+            return nothing
+        end
+        @test escapes.arguments[2] isa Escape
     end
-    @test escapes.arguments[2] isa ReturnEscape
+
+    let # return
+        src, escapes = analyze_escapes((Any,)) do a
+            return a
+        end
+        @test escapes.arguments[2] isa ReturnEscape
+    end
 end
 
 @testset "control flows" begin
@@ -121,6 +126,10 @@ end
 @testset "inter-procedural" begin
     m = Module()
 
+    # FIXME currently we can't prove the effect-freeness of `getfield(RefValue{String}, :x)`
+    # because of this check https://github.com/JuliaLang/julia/blob/94b9d66b10e8e3ebdb268e4be5f7e1f43079ad4e/base/compiler/tfuncs.jl#L745
+    # and thus it leads to the following two broken tests
+
     @eval m @noinline f_noescape(x) = (broadcast(identity, x); nothing)
     let
         src, escapes = @eval m $analyze_escapes() do
@@ -128,7 +137,7 @@ end
         end
         i = findfirst(==(Base.RefValue{String}), src.stmts.type) # find allocation statement
         @assert !isnothing(i)
-        @test escapes.ssavalues[i] isa ReturnEscape
+        @test_broken escapes.ssavalues[i] isa ReturnEscape
     end
 
     @eval m @noinline f_returnescape(x) = broadcast(identity, x)
@@ -138,7 +147,7 @@ end
         end
         i = findfirst(==(Base.RefValue{String}), src.stmts.type) # find allocation statement
         @assert !isnothing(i)
-        @test escapes.ssavalues[i] isa ReturnEscape
+        @test_broken escapes.ssavalues[i] isa ReturnEscape
     end
 
     @eval m @noinline f_escape(x) = (global xx = x) # obvious escape
@@ -153,13 +162,13 @@ end
 
     # if we can't determine the matching method statically, we should be conservative
     let
-        src, escapes = @eval m $analyze_escapes((Some{Any},)) do a
+        src, escapes = @eval m $analyze_escapes(($MutableSome{Any},)) do a
             may_exist(a)
         end
         @test escapes.arguments[2] isa Escape
     end
     let
-        src, escapes = @eval m $analyze_escapes((Some{Any},)) do a
+        src, escapes = @eval m $analyze_escapes(($MutableSome{Any},)) do a
             Base.@invokelatest f_noescape(a)
         end
         @test escapes.arguments[2] isa Escape
@@ -179,6 +188,25 @@ end
 end
 
 @testset "builtins" begin
+    let # throw
+        r = analyze_escapes((Any,)) do a
+            throw(a)
+        end
+        @test r.state.arguments[2] === Escape()
+    end
+
+    let # implicit throws -- currently relies on inliner's effect-freeness check
+        r = analyze_escapes((Any,)) do a
+            getfield(a, :may_not_field)
+        end
+        @test r.state.arguments[2] === Escape()
+
+        r = analyze_escapes((Any,)) do a
+            sizeof(a)
+        end
+        @test r.state.arguments[2] === Escape()
+    end
+
     let # :===
         src, escapes = analyze_escapes((Any, )) do a
             c = a === nothing
