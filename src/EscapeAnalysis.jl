@@ -246,7 +246,10 @@ function find_escapes(ir::IRCode, nargs::Int)
                         info = state.ssavalues[pc]
                         info === NoInformation() && (info = NoEscape())
                         for arg in stmt.args[2:end]
-                            push!(changes, (arg, info))
+                            arg_typ = widenconst(argextype(arg, ir, sptypes, argtypes))
+                            if !(arg_typ <: Integer)
+                                push!(changes, (arg, info))
+                            end
                         end
                     # TODO: this can be removed once #3 is merged
                     elseif ft === typeof(Core.arrayset) && length(stmt.args) == 5
@@ -261,7 +264,10 @@ function find_escapes(ir::IRCode, nargs::Int)
                         push!(changes, (val, info))
                     else
                         for arg in stmt.args[2:end]
-                            push!(changes, (arg, Escape()))
+                            arg_typ = widenconst(argextype(arg, ir, sptypes, argtypes))
+                            if !(arg_typ <: Integer)
+                                push!(changes, (arg, Escape()))
+                            end
                         end
                     end
                 elseif head === :invoke
