@@ -147,9 +147,9 @@ will transition these elements from the top to the bottom.
 abstract type EscapeInformation end
 
 struct NoInformation <: EscapeInformation end
-struct Escape        <: EscapeInformation end
 struct NoEscape      <: EscapeInformation end
 struct ReturnEscape  <: EscapeInformation end
+struct Escape        <: EscapeInformation end
 
 ⊑(x::EscapeInformation, y::EscapeInformation) = x == y
 ⊑(::Escape,             ::EscapeInformation)  = true
@@ -236,6 +236,9 @@ function find_escapes(ir::IRCode, nargs::Int)
                         end
                     else
                         for (arg, info) in zip(stmt.args[2:end], escapes_for_call.arguments)
+                            if info === ReturnEscape()
+                                info = NoEscape()
+                            end
                             push!(changes, (arg, info))
                         end
                     end
