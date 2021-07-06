@@ -1,14 +1,4 @@
 using EscapeAnalysis, InteractiveUtils, Test, JETTest
-import EscapeAnalysis:
-    EscapeInformation
-for t in subtypes(EscapeInformation)
-    canonicalname = Symbol(parentmodule(t), '.', nameof(t))
-    canonicalpath = Symbol.(split(string(canonicalname), '.'))
-    modpath = Expr(:., canonicalpath[1:end-1]...)
-    symname = Expr(:., last(canonicalpath))
-    ex = Expr(:import, Expr(:(:), modpath, symname))
-    Core.eval(@__MODULE__, ex)
-end
 
 @testset "EscapeAnalysis" begin
 
@@ -21,7 +11,7 @@ end
         src, escapes = analyze_escapes((Any,)) do a # return to caller
             return nothing
         end
-        @test escapes.arguments[2] isa ReturnEscape
+        @test is_return_escape(escapes.arguments[2])
     end
 
     let # global assignement
@@ -29,14 +19,14 @@ end
             global aa = a
             return nothing
         end
-        @test escapes.arguments[2] isa Escape
+        @test is_escape(escapes.arguments[2])
     end
 
     let # return
         src, escapes = analyze_escapes((Any,)) do a
             return a
         end
-        @test escapes.arguments[2] isa ReturnEscape
+        @test is_return_escape(escapes.arguments[2])
     end
 end
 
@@ -49,7 +39,7 @@ end
                 return a # a escapes to a caller
             end
         end
-        @test escapes.arguments[2] isa ReturnEscape
+        @test is_return_escape(escapes.arguments[2])
     end
 
     let # π node
@@ -61,7 +51,7 @@ end
                 return nothing
             end
         end
-        @test escapes.arguments[2] isa ReturnEscape
+        @test is_return_escape(escapes.arguments[2])
     end
 
     let # loop
@@ -73,7 +63,7 @@ end
             end
             return rs
         end
-        @test escapes.arguments[3] isa Escape
+        @test is_escape(escapes.arguments[3])
     end
 
     let # exception
@@ -84,7 +74,7 @@ end
                 return a # return escape
             end
         end
-        @test escapes.arguments[2] isa ReturnEscape
+        @test is_return_escape(escapes.arguments[2])
     end
 end
 
@@ -106,10 +96,10 @@ let # more complex
 
     i = findfirst(==(Vector{MyMutable}), src.stmts.type)
     @assert !isnothing(i)
-    @test escapes.ssavalues[i] isa Escape
+    @test is_escape(escapes.ssavalues[i])
     i = findfirst(==(MyMutable), src.stmts.type)
     @assert !isnothing(i)
-    @test escapes.ssavalues[i] isa Escape
+    @test is_escape(escapes.ssavalues[i])
 end
 
 let # simple allocation
@@ -120,7 +110,7 @@ let # simple allocation
 
     i = findfirst(==(MyMutable), src.stmts.type) # allocation statement
     @assert !isnothing(i)
-    @test escapes.ssavalues[i] isa NoEscape
+    @test is_no_escape(escapes.ssavalues[i])
 end
 
 @testset "inter-procedural" begin
@@ -137,7 +127,7 @@ end
         end
         i = findfirst(==(Base.RefValue{String}), src.stmts.type) # find allocation statement
         @assert !isnothing(i)
-        @test_broken escapes.ssavalues[i] isa ReturnEscape
+        @test_broken is_return_escape(escapes.ssavalues[i])
     end
 
     @eval m @noinline f_returnescape(x) = broadcast(identity, x)
@@ -147,7 +137,7 @@ end
         end
         i = findfirst(==(Base.RefValue{String}), src.stmts.type) # find allocation statement
         @assert !isnothing(i)
-        @test_broken escapes.ssavalues[i] isa ReturnEscape
+        @test_broken is_return_escape(escapes.ssavalues[i])
     end
 
     @eval m @noinline f_escape(x) = (global xx = x) # obvious escape
@@ -157,7 +147,7 @@ end
         end
         i = findfirst(==(Base.RefValue{String}), src.stmts.type) # find allocation statement
         @assert !isnothing(i)
-        @test escapes.ssavalues[i] isa Escape
+        @test is_escape(escapes.ssavalues[i])
     end
 
     # if we can't determine the matching method statically, we should be conservative
@@ -165,13 +155,13 @@ end
         src, escapes = @eval m $analyze_escapes(($MutableSome{Any},)) do a
             may_exist(a)
         end
-        @test escapes.arguments[2] isa Escape
+        @test is_escape(escapes.arguments[2])
     end
     let
         src, escapes = @eval m $analyze_escapes(($MutableSome{Any},)) do a
             Base.@invokelatest f_noescape(a)
         end
-        @test escapes.arguments[2] isa Escape
+        @test is_escape(escapes.arguments[2])
     end
 
     # handling of simple union-split (just exploit the inliner's effort)
@@ -183,7 +173,7 @@ end
         src, escapes = @eval m $analyze_escapes((Union{Int,Regex},)) do a
             return unionsplit(a)
         end
-        @test escapes.arguments[2] isa ReturnEscape
+        @test is_return_escape(escapes.arguments[2])
     end
 
     # appropriate conversion of inter-procedural context
@@ -197,7 +187,7 @@ end
         end
         i = findfirst(==(Base.RefValue{String}), ret.ir.stmts.type) # find allocation statement
         @assert !isnothing(i)
-        @test ret.state.ssavalues[i] isa NoEscape
+        @test is_no_escape(ret.state.ssavalues[i])
     end
     let
         ret = @eval m $analyze_escapes() do
@@ -207,7 +197,7 @@ end
         end
         i = findfirst(==(Base.RefValue{String}), ret.ir.stmts.type) # find allocation statement
         @assert !isnothing(i)
-        @test ret.state.ssavalues[i] isa ReturnEscape
+        @test is_return_escape(ret.state.ssavalues[i])
     end
 end
 
@@ -216,19 +206,19 @@ end
         r = analyze_escapes((Any,)) do a
             throw(a)
         end
-        @test r.state.arguments[2] === Escape()
+        @test is_escape(r.state.arguments[2])
     end
 
     let # implicit throws -- currently relies on inliner's effect-freeness check
         r = analyze_escapes((Any,)) do a
             getfield(a, :may_not_field)
         end
-        @test r.state.arguments[2] === Escape()
+        @test is_escape(r.state.arguments[2])
 
         r = analyze_escapes((Any,)) do a
             sizeof(a)
         end
-        @test r.state.arguments[2] === Escape()
+        @test is_escape(r.state.arguments[2])
     end
 
     let # :===
@@ -236,14 +226,14 @@ end
             c = a === nothing
             return c
         end
-        @test escapes.arguments[2] isa ReturnEscape
+        @test is_return_escape(escapes.arguments[2])
     end
 
     let # sizeof
         src, escapes = analyze_escapes((Vector{Int}, )) do itr
             sizeof(itr)
         end
-        @test escapes.arguments[2] isa ReturnEscape
+        @test is_return_escape(escapes.arguments[2])
     end
 
     let # ifelse
@@ -254,7 +244,7 @@ end
         is = findall(==(Base.RefValue{String}), src.stmts.type) # find allocation statement
         @test !isempty(is)
         for i in is
-            @test escapes.ssavalues[i] isa ReturnEscape
+            @test is_return_escape(escapes.ssavalues[i])
         end
     end
     let # ifelse (with constant condition)
@@ -265,11 +255,11 @@ end
         is = findall(==(Base.RefValue{String}), src.stmts.type) # find allocation statement
         @test !isempty(is)
         for i in is
-            @test escapes.ssavalues[i] isa ReturnEscape
+            @test is_return_escape(escapes.ssavalues[i])
         end
         i = findfirst(==(Base.RefValue{Nothing}), src.stmts.type) # find allocation statement
         @test !isnothing(i)
-        @test escapes.ssavalues[i] isa NoEscape
+        @test is_no_escape(escapes.ssavalues[i])
     end
 end
 

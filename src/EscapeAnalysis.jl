@@ -512,6 +512,35 @@ function print_with_info(preprint, postprint, io::IO, ir::IRCode)
     return nothing
 end
 
+let
+    function mkqueryname(s)
+        names = String[]
+        buf = Char[]
+        for c in s
+            if isuppercase(c)
+                name = join(buf)
+                isempty(name) || push!(names, name)
+                empty!(buf)
+            end
+            push!(buf, lowercase(c))
+        end
+        name = join(buf)
+        isempty(name) || push!(names, name)
+
+        pushfirst!(names, "is")
+        return join(names, '_')
+    end
+
+    for t in subtypes(EscapeInformation)
+        s = nameof(t)
+        fn = Symbol(mkqueryname(string(s)))
+        @eval (@__MODULE__) begin
+            $fn(x::EscapeInformation) = isa(x, $s)
+            export $fn
+        end
+    end
+end
+
 export
     analyze_escapes,
     @analyze_escapes
