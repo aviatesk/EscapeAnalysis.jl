@@ -185,6 +185,30 @@ end
         end
         @test escapes.arguments[2] isa ReturnEscape
     end
+
+    # appropriate conversion of inter-procedural context
+    # https://github.com/aviatesk/EscapeAnalysis.jl/issues/7
+    @eval m @noinline retescape(a) = Base.inferencebarrier(nothing)
+    let
+        ret = @eval m $analyze_escapes() do
+            aaa = Ref("foo")   # not "return escape", should be "no escape"
+            a = retescape(aaa)
+            nothing
+        end
+        i = findfirst(==(Base.RefValue{String}), ret.ir.stmts.type) # find allocation statement
+        @assert !isnothing(i)
+        @test ret.state.ssavalues[i] isa NoEscape
+    end
+    let
+        ret = @eval m $analyze_escapes() do
+            aaa = Ref("foo")   # still should be "return escape"
+            a = retescape(aaa)
+            return aaa
+        end
+        i = findfirst(==(Base.RefValue{String}), ret.ir.stmts.type) # find allocation statement
+        @assert !isnothing(i)
+        @test ret.state.ssavalues[i] isa ReturnEscape
+    end
 end
 
 @testset "builtins" begin
