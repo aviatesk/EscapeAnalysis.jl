@@ -250,15 +250,22 @@ end
 end
 
 @testset "code quality" begin
-    # assert we are free from (unnecessary) runtime dispatches
+    # assert that our main routine is free from (unnecessary) runtime dispatches
     let
         function function_filter(@nospecialize(ft))
             ft === typeof(Core.Compiler.widenconst) && return false # `widenconst` is very untyped, ignore
             ft === typeof(EscapeAnalysis.:(⊓)) && return false # `⊓` is very untyped, ignore
+            ft === typeof(EscapeAnalysis.escape_builtin!) && return false # `escape_builtin!` is very untyped, ignore
             return true
         end
-        r = analyze_escapes(identity, (Int,)) # just to get input types
-        @test_nodispatch function_filter=function_filter EscapeAnalysis.find_escapes(r.ir, 2)
+        test_nodispatch(only(methods(EscapeAnalysis.find_escapes)).sig; function_filter)
+    end
+
+    let
+        for m in methods(EscapeAnalysis.escape_builtin!)
+            Base._methods_by_ftype(m.sig, 1, Base.get_world_counter()) === false && continue
+            test_nodispatch(m.sig)
+        end
     end
 end
 

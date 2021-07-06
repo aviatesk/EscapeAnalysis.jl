@@ -40,6 +40,7 @@ import .CC:
     optimize,
     widenconst,
     argextype,
+    argtype_to_function,
     IR_FLAG_EFFECT_FREE
 
 import Base.Meta:
@@ -192,6 +193,8 @@ __clear_escape_cache!() = empty!(GLOBAL_ESCAPE_CACHE)
 #        Markas Mohnen, 2002, April.
 #        https://api.semanticscholar.org/CorpusID:28519618
 
+const Changes = Vector{Tuple{Any,EscapeInformation}}
+
 # TODO
 # - implement more builtin handling
 # - (related to above) do alias analysis to some extent
@@ -203,7 +206,7 @@ function find_escapes(ir::IRCode, nargs::Int)
 
     while true
         local anyupdate = false
-        local changes = Tuple{Any,EscapeInformation}[]
+        local changes = Changes()
 
         for pc in nstmts:-1:1
             stmt = stmts.inst[pc]
@@ -222,36 +225,7 @@ function find_escapes(ir::IRCode, nargs::Int)
                             push!(changes, (arg, Escape()))
                         end
                     else
-                        ft = widenconst(argextype(first(stmt.args), ir, sptypes, argtypes))
-                        if ft === Core.IntrinsicFunction # XXX we may break soundness here, e.g. `pointerref`
-                            continue
-                        elseif ft === typeof(isa) || ft === typeof(typeof) || ft === typeof(Core.sizeof) || ft === typeof(Core.:(===))
-                            continue
-                        elseif ft === typeof(ifelse) && length(stmt.args) === 4
-                            f, cond, th, el = stmt.args
-                            info = state.ssavalues[pc]
-                            condt = argextype(cond, ir, sptypes, argtypes)
-                            if isa(condt, Const) && isa(condt.val, Bool)
-                                if condt.val
-                                    push!(changes, (th, info))
-                                else
-                                    push!(changes, (el, info))
-                                end
-                            else
-                                push!(changes, (th, info))
-                                push!(changes, (el, info))
-                            end
-                        elseif ft === typeof(getfield) || ft === typeof(tuple)
-                            info = state.ssavalues[pc]
-                            info === NoInformation() && (info = NoEscape())
-                            for arg in stmt.args[2:end]
-                                push!(changes, (arg, info))
-                            end
-                        else
-                            for arg in stmt.args[2:end]
-                                push!(changes, (arg, Escape()))
-                            end
-                        end
+                        escape_call!(stmt.args, pc, state, ir, changes) || continue
                     end
                 elseif head === :invoke
                     linfo = first(stmt.args)
@@ -344,6 +318,69 @@ function find_escapes(ir::IRCode, nargs::Int)
     end
 
     return state
+end
+
+function escape_call!(args::Vector{Any}, pc::Int, state::EscapeState, ir::IRCode, changes::Changes)
+    ft = argextype(first(args), ir, ir.sptypes, ir.argtypes)
+    f = argtype_to_function(ft)
+    if isa(f, Core.IntrinsicFunction)
+        ishandled = nothing # XXX we may break soundness here, e.g. `pointerref`
+    else
+        ishandled = escape_builtin!(f, args, pc, state, ir, changes)::Union{Nothing,Bool}
+    end
+    isnothing(ishandled) && return false # nothing to propagate
+    if !ishandled
+        # if this call hasn't been handled by any of pre-defined handlers,
+        # we escape this call conservatively
+        for arg in args[2:end]
+            push!(changes, (arg, Escape()))
+        end
+    end
+    return true
+end
+
+escape_builtin!(@nospecialize(f), _...) = return false
+
+escape_builtin!(::typeof(isa), _...) = return nothing
+escape_builtin!(::typeof(typeof), _...) = return nothing
+escape_builtin!(::typeof(Core.sizeof), _...) = return nothing
+escape_builtin!(::typeof(===), _...) = return nothing
+
+function escape_builtin!(::typeof(ifelse), args::Vector{Any}, pc::Int, state::EscapeState, ir::IRCode, changes::Changes)
+    length(args) == 4 || return false
+    f, cond, th, el = args
+    info = state.ssavalues[pc]
+    condt = argextype(cond, ir, ir.sptypes, ir.argtypes)
+    if isa(condt, Const) && isa(condt.val, Bool)
+        if condt.val
+            push!(changes, (th, info))
+        else
+            push!(changes, (el, info))
+        end
+    else
+        push!(changes, (th, info))
+        push!(changes, (el, info))
+    end
+    return true
+end
+
+function escape_builtin!(::typeof(tuple), args::Vector{Any}, pc::Int, state::EscapeState, ir::IRCode, changes::Changes)
+    info = state.ssavalues[pc]
+    info === NoInformation() && (info = NoEscape())
+    for arg in args[2:end]
+        push!(changes, (arg, info))
+    end
+    return true
+end
+
+# TODO don't propagate escape information to the 1st argument, but propagate information to aliased field
+function escape_builtin!(::typeof(getfield), args::Vector{Any}, pc::Int, state::EscapeState, ir::IRCode, changes::Changes)
+    info = state.ssavalues[pc]
+    info === NoInformation() && (info = NoEscape())
+    for arg in args[2:end]
+        push!(changes, (arg, info))
+    end
+    return true
 end
 
 # entries
