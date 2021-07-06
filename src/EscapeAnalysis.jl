@@ -39,7 +39,8 @@ import .CC:
     IRCode,
     optimize,
     widenconst,
-    argextype
+    argextype,
+    IR_FLAG_EFFECT_FREE
 
 import Base.Meta:
     isexpr
@@ -207,65 +208,47 @@ function find_escapes(ir::IRCode, nargs::Int)
         for pc in nstmts:-1:1
             stmt = stmts.inst[pc]
 
+            # inlinear already computed effect-freeness of this statement (whether it may throw or not)
+            # and if it may throw, we conservatively escape all the arguments
+            is_effect_free = stmts.flag[pc] & IR_FLAG_EFFECT_FREE ≠ 0
+
             # collect escape information
             if isa(stmt, Expr)
                 head = stmt.head
-                if head === :call
-                    ft = widenconst(argextype(first(stmt.args), ir, sptypes, argtypes))
-                    # TODO implement more builtins, make them more accurate
-                    if ft === Core.IntrinsicFunction # XXX we may break soundness here, e.g. `pointerref`
-                        continue
-                    # TODO: separate PR for Core.arraysize?
-                    elseif ft === typeof(isa) || ft === typeof(typeof) || ft === typeof(Core.sizeof) || ft === typeof(Core.:(===)) || ft === typeof(Core.arraysize)
-                        continue
-                    elseif ft === typeof(ifelse) && length(stmt.args) === 4
-                        f, cond, th, el = stmt.args
-                        info = state.ssavalues[pc]
-                        condt = argextype(cond, ir, sptypes, argtypes)
-                        if isa(condt, Const) && isa(condt.val, Bool)
-                            if condt.val
-                                push!(changes, (th, info))
+                if head === :call # TODO implement more builtins, make them more accurate
+                    if !is_effect_free
+                        # TODO we can have a look at builtins.c and limit the escaped arguments if any of them are not thrown
+                        for arg in stmt.args[2:end]
+                            push!(changes, (arg, Escape()))
+                        end
+                    else
+                        ft = widenconst(argextype(first(stmt.args), ir, sptypes, argtypes))
+                        if ft === Core.IntrinsicFunction # XXX we may break soundness here, e.g. `pointerref`
+                            continue
+                        elseif ft === typeof(isa) || ft === typeof(typeof) || ft === typeof(Core.sizeof) || ft === typeof(Core.:(===))
+                            continue
+                        elseif ft === typeof(ifelse) && length(stmt.args) === 4
+                            f, cond, th, el = stmt.args
+                            info = state.ssavalues[pc]
+                            condt = argextype(cond, ir, sptypes, argtypes)
+                            if isa(condt, Const) && isa(condt.val, Bool)
+                                if condt.val
+                                    push!(changes, (th, info))
+                                else
+                                    push!(changes, (el, info))
+                                end
                             else
+                                push!(changes, (th, info))
                                 push!(changes, (el, info))
                             end
-                        else
-                            push!(changes, (th, info))
-                            push!(changes, (el, info))
-                        end
-                    elseif ft === typeof(getfield)
-                        info = state.ssavalues[pc]
-                        info === NoInformation() && (info = NoEscape())
-                        field_typ = widenconst(stmts.type[pc])
-                        # if the field we are getting is Int, we should propagate any info
-                        if !(field_typ <: Integer)
+                        elseif ft === typeof(getfield) || ft === typeof(tuple)
+                            info = state.ssavalues[pc]
+                            info === NoInformation() && (info = NoEscape())
                             for arg in stmt.args[2:end]
                                 push!(changes, (arg, info))
                             end
-                        end
-                    elseif ft === typeof(tuple)
-                        info = state.ssavalues[pc]
-                        info === NoInformation() && (info = NoEscape())
-                        for arg in stmt.args[2:end]
-                            arg_typ = widenconst(argextype(arg, ir, sptypes, argtypes))
-                            if !(arg_typ <: Integer)
-                                push!(changes, (arg, info))
-                            end
-                        end
-                    # TODO: this can be removed once #3 is merged
-                    elseif ft === typeof(Core.arrayset) && length(stmt.args) == 5
-                        f, boundscheck, ary, val, index = stmt.args
-                        if isa(ary, Argument)
-                            info = state.arguments[ary.n]
-                        elseif isa(ary, SSAValue)
-                            info = state.ssavalues[ary.id]
                         else
-                            continue
-                        end
-                        push!(changes, (val, info))
-                    else
-                        for arg in stmt.args[2:end]
-                            arg_typ = widenconst(argextype(arg, ir, sptypes, argtypes))
-                            if !(arg_typ <: Integer)
+                            for arg in stmt.args[2:end]
                                 push!(changes, (arg, Escape()))
                             end
                         end
