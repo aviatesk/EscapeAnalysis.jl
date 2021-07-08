@@ -147,9 +147,9 @@ will transition these elements from the top to the bottom.
 abstract type EscapeInformation end
 
 struct NoInformation <: EscapeInformation end
-struct Escape        <: EscapeInformation end
 struct NoEscape      <: EscapeInformation end
 struct ReturnEscape  <: EscapeInformation end
+struct Escape        <: EscapeInformation end
 
 ⊑(x::EscapeInformation, y::EscapeInformation) = x == y
 ⊑(::Escape,             ::EscapeInformation)  = true
@@ -232,6 +232,9 @@ function find_escapes(ir::IRCode, nargs::Int)
                         update_non_bitstype_changes!(stmt.args[1:end], ir, Escape(), changes)
                     else
                         for (arg, info) in zip(stmt.args[2:end], escapes_for_call.arguments)
+                            if info === ReturnEscape()
+                                info = NoEscape()
+                            end
                             push!(changes, (arg, info))
                         end
                     end
@@ -508,6 +511,35 @@ function print_with_info(preprint, postprint, io::IO, ir::IRCode)
     line_info_preprinter(io, " "^(max_bb_idx_size + 2), 0)
     postprint(io)
     return nothing
+end
+
+let
+    function mkqueryname(s)
+        names = String[]
+        buf = Char[]
+        for c in s
+            if isuppercase(c)
+                name = join(buf)
+                isempty(name) || push!(names, name)
+                empty!(buf)
+            end
+            push!(buf, lowercase(c))
+        end
+        name = join(buf)
+        isempty(name) || push!(names, name)
+
+        pushfirst!(names, "is")
+        return join(names, '_')
+    end
+
+    for t in subtypes(EscapeInformation)
+        s = nameof(t)
+        fn = Symbol(mkqueryname(string(s)))
+        @eval (@__MODULE__) begin
+            $fn(x::EscapeInformation) = isa(x, $s)
+            export $fn
+        end
+    end
 end
 
 export
