@@ -30,6 +30,9 @@ end
     end
 end
 
+@testset "isbitstype" begin
+end
+
 @testset "control flows" begin
     let # branching
         src, escapes = analyze_escapes((Any,Bool,)) do a, c
@@ -270,6 +273,8 @@ end
             ft === typeof(Core.Compiler.widenconst) && return false # `widenconst` is very untyped, ignore
             ft === typeof(EscapeAnalysis.:(⊓)) && return false # `⊓` is very untyped, ignore
             ft === typeof(EscapeAnalysis.escape_builtin!) && return false # `escape_builtin!` is very untyped, ignore
+            ft === typeof(EscapeAnalysis.update_non_bitstype_changes!) && return false # `update_non_bitstype_changes` is very untyped, ignore
+            ft === typeof(Base.isbitstype) && return false # `isbitstype` is very untyped, ignore
             return true
         end
         test_nodispatch(only(methods(EscapeAnalysis.find_escapes)).sig; function_filter)
