@@ -31,6 +31,30 @@ end
 end
 
 @testset "isbitstype" begin
+    # This set is to test PR #16 on only propagating escape information to non-bitstype args
+    let # getfield will not escape to its first arg when the field it is getting is of bitstype
+        mutable struct A
+            a::Int
+        end
+        src, escapes = analyze_escapes((Int,)) do a
+            o = A(a) # no need to escape
+            f = getfield(o, :a)
+            return f
+        end
+        i = findfirst(==(A), src.stmts.type) # allocation statement
+        @assert !isnothing(i)
+        @test is_no_escape(escapes.ssavalues[i])
+    end
+
+    let # an escaped tuple stmt will not propagate to its Int argument (since Int is of bitstype)
+        src, escapes = analyze_escapes((Int, Any, )) do a, b
+            t = tuple(a, b)
+            global tt = t
+            return nothing
+        end
+        @test is_return_escape(escapes.arguments[2])
+        @test is_escape(escapes.arguments[3])
+    end
 end
 
 @testset "control flows" begin
