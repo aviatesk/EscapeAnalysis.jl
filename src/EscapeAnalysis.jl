@@ -317,7 +317,7 @@ function find_escapes(ir::IRCode, nargs::Int)
     return state
 end
 
-function update_non_bitstype_changes!(args::Vector{Any}, ir::IRCode, info::EscapeInformation, changes::Changes)
+function update_non_bitstype_changes!(args::Vector{Any}, ir::IRCode, @nospecialize(info::EscapeInformation), changes::Changes)
     for arg in args[2:end]
         arg_type = widenconst(argextype(arg, ir, ir.sptypes, ir.argtypes))
         if !isbitstype(arg_type)

@@ -291,23 +291,23 @@ end
 end
 
 @testset "code quality" begin
+    function function_filter(@nospecialize(ft))
+        ft === typeof(Core.Compiler.widenconst) && return false # `widenconst` is very untyped, ignore
+        ft === typeof(EscapeAnalysis.:(⊓)) && return false # `⊓` is very untyped, ignore
+        ft === typeof(EscapeAnalysis.escape_builtin!) && return false # `escape_builtin!` is very untyped, ignore
+        ft === typeof(isbitstype) && return false # `isbitstype` is very untyped, ignore
+        return true
+    end
+
     # assert that our main routine is free from (unnecessary) runtime dispatches
     let
-        function function_filter(@nospecialize(ft))
-            ft === typeof(Core.Compiler.widenconst) && return false # `widenconst` is very untyped, ignore
-            ft === typeof(EscapeAnalysis.:(⊓)) && return false # `⊓` is very untyped, ignore
-            ft === typeof(EscapeAnalysis.escape_builtin!) && return false # `escape_builtin!` is very untyped, ignore
-            ft === typeof(EscapeAnalysis.update_non_bitstype_changes!) && return false # `update_non_bitstype_changes` is very untyped, ignore
-            ft === typeof(Base.isbitstype) && return false # `isbitstype` is very untyped, ignore
-            return true
-        end
         test_nodispatch(only(methods(EscapeAnalysis.find_escapes)).sig; function_filter)
     end
 
     let
         for m in methods(EscapeAnalysis.escape_builtin!)
             Base._methods_by_ftype(m.sig, 1, Base.get_world_counter()) === false && continue
-            test_nodispatch(m.sig)
+            test_nodispatch(m.sig; function_filter)
         end
     end
 end
