@@ -48,6 +48,7 @@ import Base.Meta:
 
 import Base:
     destructure_callex
+    show
 
 using InteractiveUtils
 
@@ -386,6 +387,25 @@ function escape_builtin!(::typeof(getfield), args::Vector{Any}, pc::Int, state::
     return true
 end
 
+# optimization
+# =======
+
+# similar to IR_FLAG_EFFECT_FREE, will integrate into optimize.jl later
+const IR_FLAG_NO_ESCAPE     = 0x01 << 1
+
+function heap_to_stack_pass!(ir::IRCode, escapes::EscapeState)
+    nstmts = length(ir.stmts)
+    for pc in 1:nstmts
+        # heap-to-stack optimization are carried for heap-allocated objects that are not escaped
+        if ismutabletype(widenconst(ir.stmts.type[pc])) && is_no_escape(escapes.ssavalues[pc])
+            ir.stmts.flag[pc] |= IR_FLAG_NO_ESCAPE
+            @show ir.stmts.flag[pc]
+        end
+    end
+    return ir
+end
+
+
 # entries
 # =======
 
@@ -415,6 +435,7 @@ register_init_hook!() do
         interp.info = escapes
         #@Base.show ("before_sroa", ir)
         @timeit "SROA" ir = getfield_elim_pass!(ir)
+        @timeit "heap-to-stack optimization using escape information" ir = $heap_to_stack_pass!(ir, escapes)
         #@Base.show ir.new_nodes
         #@Base.show ("after_sroa", ir)
         ir = adce_pass!(ir)

@@ -263,6 +263,24 @@ end
     end
 end
 
+@testset "heap-to-stack optimization" begin
+    mutable struct MyMutable
+        cond::Bool
+    end
+
+    let # simple allocation
+        src, escapes = analyze_escapes((Bool,)) do c
+            mm = MyMutable(c) # just allocated, never escapes
+            return mm.cond ? nothing : 1
+        end
+
+        i = findfirst(==(MyMutable), src.stmts.type) # allocation statement
+        @assert !isnothing(i)
+        # This broken test is likely caused by later optimizaiton pass rewrite the IR?
+        @test_broken (src.stmts.flag[i] & EscapeAnalysis.IR_FLAG_NO_ESCAPE) != 0
+    end
+end
+
 @testset "code quality" begin
     # assert that our main routine is free from (unnecessary) runtime dispatches
     let
