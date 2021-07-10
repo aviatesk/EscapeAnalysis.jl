@@ -381,6 +381,7 @@ function escape_builtin!(::typeof(getfield), args::Vector{Any}, pc::Int, state::
     info === NoInformation() && (info = NoEscape())
     rt = widenconst(ir.stmts.type[pc])
     # Only propagate info when the field itself is non-bitstype
+    # TODO: we should remove this check when we implement the alias analysis
     if !isbitstype(rt)
         add_changes!(args[2:end], ir, info, changes)
     end
