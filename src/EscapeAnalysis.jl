@@ -48,7 +48,6 @@ import Base.Meta:
 
 import Base:
     destructure_callex
-    show
 
 using InteractiveUtils
 
@@ -390,7 +389,8 @@ end
 # optimization
 # =======
 
-# similar to IR_FLAG_EFFECT_FREE, will integrate into optimize.jl later
+# similar to IR_FLAG_EFFECT_FREE
+# shifting by 5 and 6 is not used by current implementation (see comment of `ssaflags` in julia.h)
 const IR_FLAG_NO_ESCAPE     = 0x01 << 5
 
 function heap_to_stack_pass!(ir::IRCode, escapes::EscapeState)
