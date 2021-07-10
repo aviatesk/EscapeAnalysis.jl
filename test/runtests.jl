@@ -28,32 +28,13 @@ end
         end
         @test is_return_escape(escapes.arguments[2])
     end
-end
 
-@testset "isbitstype" begin
-    # This set is to test PR #16 on only propagating escape information to non-bitstype args
-    let # getfield will not escape to its first arg when the field it is getting is of bitstype
-        mutable struct A
-            a::Int
-        end
-        src, escapes = analyze_escapes((Int,)) do a
-            o = A(a) # no need to escape
-            f = getfield(o, :a)
-            return f
-        end
-        i = findfirst(==(A), src.stmts.type) # allocation statement
-        @assert !isnothing(i)
-        @test is_no_escape(escapes.ssavalues[i])
-    end
-
-    let # an escaped tuple stmt will not propagate to its Int argument (since Int is of bitstype)
-        src, escapes = analyze_escapes((Int, Any, )) do a, b
-            t = tuple(a, b)
-            global tt = t
-            return nothing
+    # https://github.com/aviatesk/EscapeAnalysis.jl/pull/16
+    let # don't propagate escape information for bitypes
+        src, escapes = analyze_escapes((Nothing,)) do a
+            global bb = a
         end
         @test is_return_escape(escapes.arguments[2])
-        @test is_escape(escapes.arguments[3])
     end
 end
 
@@ -287,6 +268,33 @@ end
         i = findfirst(==(Base.RefValue{Nothing}), src.stmts.type) # find allocation statement
         @test !isnothing(i)
         @test is_no_escape(escapes.ssavalues[i])
+    end
+end
+
+# NOTE currently this testset relies on the special casing introduced in #16
+@testset "field analysis" begin
+    let
+        mutable struct A
+            a::Int
+        end
+        src, escapes = analyze_escapes((Int,)) do a
+            o = A(a) # no need to escape
+            f = getfield(o, :a)
+            return f
+        end
+        i = findfirst(==(A), src.stmts.type) # allocation statement
+        @assert !isnothing(i)
+        @test is_no_escape(escapes.ssavalues[i])
+    end
+
+    let # an escaped tuple stmt will not propagate to its Int argument (since Int is of bitstype)
+        src, escapes = analyze_escapes((Int, Any, )) do a, b
+            t = tuple(a, b)
+            global tt = t
+            return nothing
+        end
+        @test is_return_escape(escapes.arguments[2])
+        @test is_escape(escapes.arguments[3])
     end
 end
 

@@ -248,7 +248,7 @@ function find_escapes(ir::IRCode, nargs::Int)
                 elseif head === :(=)
                     lhs, rhs = stmt.args
                     if isa(lhs, GlobalRef)
-                        push!(changes, (rhs, Escape()))
+                        add_change!(rhs, ir, Escape(), changes)
                     end
                 elseif head === :enter || head === :leave || head === :pop_exception
                     continue
@@ -283,7 +283,7 @@ function find_escapes(ir::IRCode, nargs::Int)
                 end
             elseif isa(stmt, ReturnNode)
                 if isdefined(stmt, :val)
-                    push!(changes, (stmt.val, ReturnEscape()))
+                    add_change!(stmt.val, ir, ReturnEscape(), changes)
                 end
             else
                 @assert stmt isa GotoNode || stmt isa GotoIfNot || stmt isa GlobalRef || stmt === nothing # TODO remove me
@@ -318,11 +318,14 @@ function find_escapes(ir::IRCode, nargs::Int)
 end
 
 function add_changes!(args::Vector{Any}, ir::IRCode, @nospecialize(info::EscapeInformation), changes::Changes)
-    for arg in args
-        arg_type = widenconst(argextype(arg, ir, ir.sptypes, ir.argtypes))
-        if !isbitstype(arg_type)
-            push!(changes, (arg, info))
-        end
+    for x in args
+        add_change!(x, ir, info, changes)
+    end
+end
+
+function add_change!(@nospecialize(x), ir::IRCode, @nospecialize(info::EscapeInformation), changes::Changes)
+    if !isbitstype(widenconst(argextype(x, ir, ir.sptypes, ir.argtypes)))
+        push!(changes, (x, info))
     end
 end
 
@@ -371,6 +374,7 @@ end
 function escape_builtin!(::typeof(tuple), args::Vector{Any}, pc::Int, state::EscapeState, ir::IRCode, changes::Changes)
     info = state.ssavalues[pc]
     info === NoInformation() && (info = NoEscape())
+    # TODO: we may want to remove this check when we implement the alias analysis
     add_changes!(args[2:end], ir, info, changes)
     return true
 end
@@ -381,7 +385,7 @@ function escape_builtin!(::typeof(getfield), args::Vector{Any}, pc::Int, state::
     info === NoInformation() && (info = NoEscape())
     rt = widenconst(ir.stmts.type[pc])
     # Only propagate info when the field itself is non-bitstype
-    # TODO: we should remove this check when we implement the alias analysis
+    # TODO: we may want to remove this check when we implement the alias analysis
     if !isbitstype(rt)
         add_changes!(args[2:end], ir, info, changes)
     end
