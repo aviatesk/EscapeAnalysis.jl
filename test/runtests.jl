@@ -276,8 +276,7 @@ end
 
         i = findfirst(==(MyMutable), src.stmts.type) # allocation statement
         @assert !isnothing(i)
-        # This broken test is likely caused by later optimizaiton pass rewrite the IR?
-        @test_broken (src.stmts.flag[i] & EscapeAnalysis.IR_FLAG_NO_ESCAPE) != 0
+        @test (src.stmts.flag[i] & EscapeAnalysis.IR_FLAG_NO_ESCAPE) != 0
     end
 end
 

@@ -391,7 +391,7 @@ end
 # =======
 
 # similar to IR_FLAG_EFFECT_FREE, will integrate into optimize.jl later
-const IR_FLAG_NO_ESCAPE     = 0x01 << 1
+const IR_FLAG_NO_ESCAPE     = 0x01 << 5
 
 function heap_to_stack_pass!(ir::IRCode, escapes::EscapeState)
     nstmts = length(ir.stmts)
@@ -399,7 +399,6 @@ function heap_to_stack_pass!(ir::IRCode, escapes::EscapeState)
         # heap-to-stack optimization are carried for heap-allocated objects that are not escaped
         if ismutabletype(widenconst(ir.stmts.type[pc])) && is_no_escape(escapes.ssavalues[pc])
             ir.stmts.flag[pc] |= IR_FLAG_NO_ESCAPE
-            @show ir.stmts.flag[pc]
         end
     end
     return ir
@@ -431,11 +430,11 @@ register_init_hook!() do
         ir = compact!(ir)
         @timeit "collect escape information" escapes = $find_escapes(ir, nargs+1)
         $setindex!($GLOBAL_ESCAPE_CACHE, escapes, sv.linfo)
+        @timeit "heap-to-stack optimization using escape information" ir = $heap_to_stack_pass!(ir, escapes)
         interp.source = copy(ir)
         interp.info = escapes
         #@Base.show ("before_sroa", ir)
         @timeit "SROA" ir = getfield_elim_pass!(ir)
-        @timeit "heap-to-stack optimization using escape information" ir = $heap_to_stack_pass!(ir, escapes)
         #@Base.show ir.new_nodes
         #@Base.show ("after_sroa", ir)
         ir = adce_pass!(ir)
