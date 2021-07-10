@@ -379,9 +379,9 @@ end
 function escape_builtin!(::typeof(getfield), args::Vector{Any}, pc::Int, state::EscapeState, ir::IRCode, changes::Changes)
     info = state.ssavalues[pc]
     info === NoInformation() && (info = NoEscape())
-    field_type = widenconst(ir.stmts.type[pc])
+    rt = widenconst(ir.stmts.type[pc])
     # Only propagate info when the field itself is non-bitstype
-    if !isbitstype(field_type)
+    if !isbitstype(rt)
         add_changes!(args[2:end], ir, info, changes)
     end
     return true
