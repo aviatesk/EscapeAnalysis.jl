@@ -221,7 +221,7 @@ function find_escapes(ir::IRCode, nargs::Int)
                 if head === :call # TODO implement more builtins, make them more accurate
                     if !is_effect_free
                         # TODO we can have a look at builtins.c and limit the escaped arguments if any of them are not thrown
-                        update_non_bitstype_changes!(stmt.args, ir, Escape(), changes)
+                        add_changes!(stmt.args[2:end], ir, Escape(), changes)
                     else
                         escape_call!(stmt.args, pc, state, ir, changes) || continue
                     end
@@ -229,7 +229,7 @@ function find_escapes(ir::IRCode, nargs::Int)
                     linfo = first(stmt.args)
                     escapes_for_call = get(GLOBAL_ESCAPE_CACHE, linfo, nothing)
                     if isnothing(escapes_for_call)
-                        update_non_bitstype_changes!(stmt.args[1:end], ir, Escape(), changes)
+                        add_changes!(stmt.args[3:end], ir, Escape(), changes)
                     else
                         for (arg, info) in zip(stmt.args[2:end], escapes_for_call.arguments)
                             if info === ReturnEscape()
@@ -253,7 +253,7 @@ function find_escapes(ir::IRCode, nargs::Int)
                 elseif head === :enter || head === :leave || head === :pop_exception
                     continue
                 else # TODO: this is too conservative
-                    update_non_bitstype_changes!(stmt.args, ir, Escape(), changes)
+                    add_changes!(stmt.args[2:end], ir, Escape(), changes)
                 end
             elseif isa(stmt, PiNode)
                 if isdefined(stmt, :val)
@@ -317,8 +317,8 @@ function find_escapes(ir::IRCode, nargs::Int)
     return state
 end
 
-function update_non_bitstype_changes!(args::Vector{Any}, ir::IRCode, @nospecialize(info::EscapeInformation), changes::Changes)
-    for arg in args[2:end]
+function add_changes!(args::Vector{Any}, ir::IRCode, @nospecialize(info::EscapeInformation), changes::Changes)
+    for arg in args
         arg_type = widenconst(argextype(arg, ir, ir.sptypes, ir.argtypes))
         if !isbitstype(arg_type)
             push!(changes, (arg, info))
@@ -338,7 +338,7 @@ function escape_call!(args::Vector{Any}, pc::Int, state::EscapeState, ir::IRCode
     if !ishandled
         # if this call hasn't been handled by any of pre-defined handlers,
         # we escape this call conservatively
-        update_non_bitstype_changes!(args, ir, Escape(), changes)
+        add_changes!(args[2:end], ir, Escape(), changes)
     end
     return true
 end
@@ -371,7 +371,7 @@ end
 function escape_builtin!(::typeof(tuple), args::Vector{Any}, pc::Int, state::EscapeState, ir::IRCode, changes::Changes)
     info = state.ssavalues[pc]
     info === NoInformation() && (info = NoEscape())
-    update_non_bitstype_changes!(args, ir, info, changes)
+    add_changes!(args[2:end], ir, info, changes)
     return true
 end
 
@@ -382,7 +382,7 @@ function escape_builtin!(::typeof(getfield), args::Vector{Any}, pc::Int, state::
     field_type = widenconst(ir.stmts.type[pc])
     # Only propagate info when the field itself is non-bitstype
     if !isbitstype(field_type)
-        update_non_bitstype_changes!(args, ir, info, changes)
+        add_changes!(args[2:end], ir, info, changes)
     end
     return true
 end
