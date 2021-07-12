@@ -289,7 +289,7 @@ end
             ft === typeof(EscapeAnalysis.escape_builtin!) && return false # `escape_builtin!` is very untyped, ignore
             return true
         end
-        test_nodispatch(only(methods(EscapeAnalysis.find_escapes)).sig; function_filter)
+        test_nodispatch(only(methods(EscapeAnalysis.find_escapes!)).sig; function_filter)
     end
 
     let

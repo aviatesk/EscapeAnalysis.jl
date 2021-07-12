@@ -195,11 +195,15 @@ __clear_escape_cache!() = empty!(GLOBAL_ESCAPE_CACHE)
 
 const Changes = Vector{Tuple{Any,EscapeInformation}}
 
+# similar to IR_FLAG_EFFECT_FREE
+# shifting by 5 and 6 is not used by current implementation (see comment of `ssaflags` in julia.h)
+const IR_FLAG_NO_ESCAPE     = 0x01 << 5
+
 # TODO
 # - implement more builtin handling
 # - (related to above) do alias analysis to some extent
 # - maybe flow-sensitivity (with sparse analysis state)
-function find_escapes(ir::IRCode, nargs::Int)
+function find_escapes!(ir::IRCode, nargs::Int)
     (; stmts, sptypes, argtypes) = ir
     nstmts = length(stmts)
     state = EscapeState(length(ir.argtypes), nargs, nstmts) # flow-insensitive, only manage a single state
@@ -320,7 +324,16 @@ function find_escapes(ir::IRCode, nargs::Int)
         anyupdate || break
     end
 
-    return state
+# setting flags for optimization
+# =======
+    for pc in 1:nstmts
+        # heap-to-stack optimization are carried for heap-allocated objects that are not escaped
+        if ismutabletype(widenconst(ir.stmts.type[pc])) && is_no_escape(state.ssavalues[pc])
+            ir.stmts.flag[pc] |= IR_FLAG_NO_ESCAPE
+        end
+    end
+
+    return state, ir
 end
 
 function escape_call!(args::Vector{Any}, pc::Int, state::EscapeState, ir::IRCode, changes::Changes)
@@ -386,25 +399,6 @@ function escape_builtin!(::typeof(getfield), args::Vector{Any}, pc::Int, state::
     return true
 end
 
-# optimization
-# =======
-
-# similar to IR_FLAG_EFFECT_FREE
-# shifting by 5 and 6 is not used by current implementation (see comment of `ssaflags` in julia.h)
-const IR_FLAG_NO_ESCAPE     = 0x01 << 5
-
-function heap_to_stack_pass!(ir::IRCode, escapes::EscapeState)
-    nstmts = length(ir.stmts)
-    for pc in 1:nstmts
-        # heap-to-stack optimization are carried for heap-allocated objects that are not escaped
-        if ismutabletype(widenconst(ir.stmts.type[pc])) && is_no_escape(escapes.ssavalues[pc])
-            ir.stmts.flag[pc] |= IR_FLAG_NO_ESCAPE
-        end
-    end
-    return ir
-end
-
-
 # entries
 # =======
 
@@ -428,9 +422,8 @@ register_init_hook!() do
         @timeit "Inlining" ir = ssa_inlining_pass!(ir, ir.linetable, sv.inlining, ci.propagate_inbounds)
         #@timeit "verify 2" verify_ir(ir)
         ir = compact!(ir)
-        @timeit "collect escape information" escapes = $find_escapes(ir, nargs+1)
+        @timeit "collect escape information" escapes, ir = $find_escapes!(ir, nargs+1)
         $setindex!($GLOBAL_ESCAPE_CACHE, escapes, sv.linfo)
-        @timeit "heap-to-stack optimization using escape information" ir = $heap_to_stack_pass!(ir, escapes)
         interp.source = copy(ir)
         interp.info = escapes
         #@Base.show ("before_sroa", ir)
