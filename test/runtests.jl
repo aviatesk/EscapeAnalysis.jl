@@ -119,6 +119,8 @@ let # simple allocation
     i = findfirst(==(MyMutable), src.stmts.type) # allocation statement
     @assert !isnothing(i)
     @test is_no_escape(escapes.ssavalues[i])
+    # test if optimization flag is correctly set
+    @test (src.stmts.flag[i] & EscapeAnalysis.IR_FLAG_NO_ESCAPE) != 0
 end
 
 @testset "inter-procedural" begin
@@ -268,23 +270,6 @@ end
         i = findfirst(==(Base.RefValue{Nothing}), src.stmts.type) # find allocation statement
         @test !isnothing(i)
         @test is_no_escape(escapes.ssavalues[i])
-    end
-end
-
-@testset "heap-to-stack optimization" begin
-    mutable struct MyMutable
-        cond::Bool
-    end
-
-    let # simple allocation
-        src, escapes = analyze_escapes((Bool,)) do c
-            mm = MyMutable(c) # just allocated, never escapes
-            return mm.cond ? nothing : 1
-        end
-
-        i = findfirst(==(MyMutable), src.stmts.type) # allocation statement
-        @assert !isnothing(i)
-        @test (src.stmts.flag[i] & EscapeAnalysis.IR_FLAG_NO_ESCAPE) != 0
     end
 end
 
