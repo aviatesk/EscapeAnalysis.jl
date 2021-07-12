@@ -163,27 +163,27 @@ struct Escape        <: EscapeInformation end
 
 # extend lattices of escape information to lattices of mappings of arguments and SSA stmts to escape information
 # ⊓ and ⊔ operate pair-wise, and from there we can just rely on the Base implementation for dictionary equality comparison
-struct EscapeState
+struct LocalEscapeState
     arguments::Vector{EscapeInformation}
     ssavalues::Vector{EscapeInformation}
 end
-function EscapeState(nslots::Int, nargs::Int, nstmts::Int)
+function LocalEscapeState(nslots::Int, nargs::Int, nstmts::Int)
     arguments = EscapeInformation[
         i ≤ nargs ? ReturnEscape() : NoEscape() for i in 1:nslots]
     ssavalues = EscapeInformation[NoInformation() for _ in 1:nstmts]
-    return EscapeState(arguments, ssavalues)
+    return LocalEscapeState(arguments, ssavalues)
 end
-Base.copy(s::EscapeState) = EscapeState(copy(s.arguments), copy(s.ssavalues))
+Base.copy(s::LocalEscapeState) = LocalEscapeState(copy(s.arguments), copy(s.ssavalues))
 
-⊔(X::EscapeState, Y::EscapeState) = EscapeState(
+⊔(X::LocalEscapeState, Y::LocalEscapeState) = LocalEscapeState(
     EscapeInformation[x ⊔ y for (x, y) in zip(X.arguments, Y.arguments)],
     EscapeInformation[x ⊔ y for (x, y) in zip(X.ssavalues, Y.ssavalues)])
-⊓(X::EscapeState, Y::EscapeState) = EscapeState(
+⊓(X::LocalEscapeState, Y::LocalEscapeState) = LocalEscapeState(
     EscapeInformation[x ⊓ y for (x, y) in zip(X.arguments, Y.arguments)],
     EscapeInformation[x ⊓ y for (x, y) in zip(X.ssavalues, Y.ssavalues)])
-Base.:(==)(X::EscapeState, Y::EscapeState) = X.arguments == Y.arguments && X.ssavalues == Y.ssavalues
+Base.:(==)(X::LocalEscapeState, Y::LocalEscapeState) = X.arguments == Y.arguments && X.ssavalues == Y.ssavalues
 
-const GLOBAL_ESCAPE_CACHE = IdDict{MethodInstance,EscapeState}()
+const GLOBAL_ESCAPE_CACHE = IdDict{MethodInstance,LocalEscapeState}()
 __clear_escape_cache!() = empty!(GLOBAL_ESCAPE_CACHE)
 
 # An escape analysis implementation based on the algorithm described in the paper [MM02].
@@ -203,7 +203,7 @@ const Changes = Vector{Tuple{Any,EscapeInformation}}
 function find_escapes(ir::IRCode, nargs::Int)
     (; stmts, sptypes, argtypes) = ir
     nstmts = length(stmts)
-    state = EscapeState(length(ir.argtypes), nargs, nstmts) # flow-insensitive, only manage a single state
+    state = LocalEscapeState(length(ir.argtypes), nargs, nstmts) # flow-insensitive, only manage a single state
 
     while true
         local anyupdate = false
@@ -334,7 +334,7 @@ function add_change!(@nospecialize(x), ir::IRCode, @nospecialize(info::EscapeInf
     end
 end
 
-function escape_call!(args::Vector{Any}, pc::Int, state::EscapeState, ir::IRCode, changes::Changes)
+function escape_call!(args::Vector{Any}, pc::Int, state::LocalEscapeState, ir::IRCode, changes::Changes)
     ft = argextype(first(args), ir, ir.sptypes, ir.argtypes)
     f = argtype_to_function(ft)
     if isa(f, Core.IntrinsicFunction)
@@ -358,7 +358,7 @@ escape_builtin!(::typeof(typeof), _...) = return nothing
 escape_builtin!(::typeof(Core.sizeof), _...) = return nothing
 escape_builtin!(::typeof(===), _...) = return nothing
 
-function escape_builtin!(::typeof(ifelse), args::Vector{Any}, pc::Int, state::EscapeState, ir::IRCode, changes::Changes)
+function escape_builtin!(::typeof(ifelse), args::Vector{Any}, pc::Int, state::LocalEscapeState, ir::IRCode, changes::Changes)
     length(args) == 4 || return false
     f, cond, th, el = args
     info = state.ssavalues[pc]
@@ -376,7 +376,7 @@ function escape_builtin!(::typeof(ifelse), args::Vector{Any}, pc::Int, state::Es
     return true
 end
 
-function escape_builtin!(::typeof(tuple), args::Vector{Any}, pc::Int, state::EscapeState, ir::IRCode, changes::Changes)
+function escape_builtin!(::typeof(tuple), args::Vector{Any}, pc::Int, state::LocalEscapeState, ir::IRCode, changes::Changes)
     info = state.ssavalues[pc]
     info === NoInformation() && (info = NoEscape())
     # TODO: we may want to remove this check when we implement the alias analysis
@@ -385,7 +385,7 @@ function escape_builtin!(::typeof(tuple), args::Vector{Any}, pc::Int, state::Esc
 end
 
 # TODO don't propagate escape information to the 1st argument, but propagate information to aliased field
-function escape_builtin!(::typeof(getfield), args::Vector{Any}, pc::Int, state::EscapeState, ir::IRCode, changes::Changes)
+function escape_builtin!(::typeof(getfield), args::Vector{Any}, pc::Int, state::LocalEscapeState, ir::IRCode, changes::Changes)
     info = state.ssavalues[pc]
     info === NoInformation() && (info = NoEscape())
     rt = widenconst(ir.stmts.type[pc])
@@ -448,7 +448,7 @@ end
 function analyze_escapes(@nospecialize(f), @nospecialize(types=Tuple{});
                          world = get_world_counter(),
                          interp = Core.Compiler.NativeInterpreter(world))
-    interp = EscapeAnalyzer{EscapeState}(interp, nothing, nothing)
+    interp = EscapeAnalyzer{LocalEscapeState}(interp, nothing, nothing)
 
     code_typed(f, types; optimize=true, world, interp)
     return EscapeAnalysisResult(interp.source, interp.info)
@@ -462,7 +462,7 @@ __clear_caches!() = (__clear_code_cache!(); __clear_escape_cache!())
 
 struct EscapeAnalysisResult
     ir::IRCode
-    state::EscapeState
+    state::LocalEscapeState
 end
 Base.show(io::IO, result::EscapeAnalysisResult) = print_with_info(io, result.ir, result.state)
 
@@ -473,7 +473,7 @@ function Base.iterate(result::EscapeAnalysisResult, state = nothing)
 end
 
 # adapted from https://github.com/JuliaDebug/LoweredCodeUtils.jl/blob/4612349432447e868cf9285f647108f43bd0a11c/src/codeedges.jl#L881-L897
-function print_with_info(io::IO, ir::IRCode, (; arguments, ssavalues)::EscapeState)
+function print_with_info(io::IO, ir::IRCode, (; arguments, ssavalues)::LocalEscapeState)
     function char_color(info::EscapeInformation)
         return info isa NoInformation ? ('◌', :plain) :
                info isa NoEscape ? ('↓', :green) :
