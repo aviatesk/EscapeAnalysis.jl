@@ -271,6 +271,20 @@ end
     end
 end
 
+@testset "Exprs" begin
+    let
+        src, escapes = analyze_escapes((String,)) do s
+            m = MutableSome(s)
+            GC.@preserve m begin
+                return nothing
+            end
+        end
+        i = findfirst(==(MutableSome{String}), src.stmts.type) # find allocation statement
+        @test !isnothing(i)
+        @test is_no_escape(escapes.ssavalues[i])
+    end
+end
+
 # NOTE currently this testset relies on the special casing introduced in #16
 @testset "field analysis" begin
     let

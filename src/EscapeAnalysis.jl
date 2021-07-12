@@ -41,7 +41,8 @@ import .CC:
     widenconst,
     argextype,
     argtype_to_function,
-    IR_FLAG_EFFECT_FREE
+    IR_FLAG_EFFECT_FREE,
+    is_meta_expr_head
 
 import Base.Meta:
     isexpr
@@ -250,7 +251,11 @@ function find_escapes(ir::IRCode, nargs::Int)
                     if isa(lhs, GlobalRef)
                         add_change!(rhs, ir, Escape(), changes)
                     end
+                elseif is_meta_expr_head(head)
+                    continue
                 elseif head === :enter || head === :leave || head === :pop_exception
+                    continue
+                elseif head === :gc_preserve_begin || head === :gc_preserve_end
                     continue
                 else # TODO: this is too conservative
                     add_changes!(stmt.args, ir, Escape(), changes)
