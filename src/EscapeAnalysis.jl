@@ -253,7 +253,7 @@ function find_escapes(ir::IRCode, nargs::Int)
                 elseif head === :enter || head === :leave || head === :pop_exception
                     continue
                 else # TODO: this is too conservative
-                    add_changes!(stmt.args[2:end], ir, Escape(), changes)
+                    add_changes!(stmt.args, ir, Escape(), changes)
                 end
             elseif isa(stmt, PiNode)
                 if isdefined(stmt, :val)
