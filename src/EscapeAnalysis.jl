@@ -327,7 +327,7 @@ function find_escapes!(ir::IRCode, nargs::Int)
 # =======
     for pc in 1:nstmts
         # heap-to-stack optimization are carried for heap-allocated objects that are not escaped
-        if ismutabletype(widenconst(ir.stmts.type[pc])) && is_no_escape(state.ssavalues[pc])
+        if isexpr(ir.stmts.inst[pc], :new) && ismutabletype(widenconst(ir.stmts.type[pc])) && is_no_escape(state.ssavalues[pc])
             ir.stmts.flag[pc] |= IR_FLAG_NO_ESCAPE
         end
     end
