@@ -28,6 +28,14 @@ end
         end
         @test is_return_escape(escapes.arguments[2])
     end
+
+    # https://github.com/aviatesk/EscapeAnalysis.jl/pull/16
+    let # don't propagate escape information for bitypes
+        src, escapes = analyze_escapes((Nothing,)) do a
+            global bb = a
+        end
+        @test is_return_escape(escapes.arguments[2])
+    end
 end
 
 @testset "control flows" begin
@@ -280,23 +288,64 @@ end
     end
 end
 
-@testset "code quality" begin
-    # assert that our main routine is free from (unnecessary) runtime dispatches
+@testset "Exprs" begin
     let
-        function function_filter(@nospecialize(ft))
-            ft === typeof(Core.Compiler.widenconst) && return false # `widenconst` is very untyped, ignore
-            ft === typeof(EscapeAnalysis.:(⊓)) && return false # `⊓` is very untyped, ignore
-            ft === typeof(EscapeAnalysis.escape_builtin!) && return false # `escape_builtin!` is very untyped, ignore
-            return true
+        src, escapes = analyze_escapes((String,)) do s
+            m = MutableSome(s)
+            GC.@preserve m begin
+                return nothing
+            end
         end
-        test_nodispatch(only(methods(EscapeAnalysis.find_escapes!)).sig; function_filter)
+        i = findfirst(==(MutableSome{String}), src.stmts.type) # find allocation statement
+        @test !isnothing(i)
+        @test is_no_escape(escapes.ssavalues[i])
+    end
+end
+
+# NOTE currently this testset relies on the special casing introduced in #16
+@testset "field analysis" begin
+    let
+        mutable struct A
+            a::Int
+        end
+        src, escapes = analyze_escapes((Int,)) do a
+            o = A(a) # no need to escape
+            f = getfield(o, :a)
+            return f
+        end
+        i = findfirst(==(A), src.stmts.type) # allocation statement
+        @assert !isnothing(i)
+        @test is_no_escape(escapes.ssavalues[i])
     end
 
-    let
-        for m in methods(EscapeAnalysis.escape_builtin!)
-            Base._methods_by_ftype(m.sig, 1, Base.get_world_counter()) === false && continue
-            test_nodispatch(m.sig)
+    let # an escaped tuple stmt will not propagate to its Int argument (since Int is of bitstype)
+        src, escapes = analyze_escapes((Int, Any, )) do a, b
+            t = tuple(a, b)
+            global tt = t
+            return nothing
         end
+        @test is_return_escape(escapes.arguments[2])
+        @test is_escape(escapes.arguments[3])
+    end
+end
+
+@testset "code quality" begin
+    # assert that our main routine are free from (unnecessary) runtime dispatches
+
+    function function_filter(@nospecialize(ft))
+        ft === typeof(Core.Compiler.widenconst) && return false # `widenconst` is very untyped, ignore
+        ft === typeof(EscapeAnalysis.:(⊓)) && return false # `⊓` is very untyped, ignore
+        ft === typeof(EscapeAnalysis.escape_builtin!) && return false # `escape_builtin!` is very untyped, ignore
+        ft === typeof(isbitstype) && return false # `isbitstype` is very untyped, ignore
+        ft === typeof(ismutabletype) && return false # `ismutabletype` is very untyped, ignore
+        return true
+    end
+
+    test_nodispatch(only(methods(EscapeAnalysis.find_escapes!)).sig; function_filter)
+
+    for m in methods(EscapeAnalysis.escape_builtin!)
+        Base._methods_by_ftype(m.sig, 1, Base.get_world_counter()) === false && continue
+        test_nodispatch(m.sig; function_filter)
     end
 end
 

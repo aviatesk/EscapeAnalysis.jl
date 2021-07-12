@@ -41,7 +41,8 @@ import .CC:
     widenconst,
     argextype,
     argtype_to_function,
-    IR_FLAG_EFFECT_FREE
+    IR_FLAG_EFFECT_FREE,
+    is_meta_expr_head
 
 import Base.Meta:
     isexpr
@@ -225,9 +226,7 @@ function find_escapes!(ir::IRCode, nargs::Int)
                 if head === :call # TODO implement more builtins, make them more accurate
                     if !is_effect_free
                         # TODO we can have a look at builtins.c and limit the escaped arguments if any of them are not thrown
-                        for arg in stmt.args[2:end]
-                            push!(changes, (arg, Escape()))
-                        end
+                        add_changes!(stmt.args[2:end], ir, Escape(), changes)
                     else
                         escape_call!(stmt.args, pc, state, ir, changes) || continue
                     end
@@ -235,9 +234,7 @@ function find_escapes!(ir::IRCode, nargs::Int)
                     linfo = first(stmt.args)
                     escapes_for_call = get(GLOBAL_ESCAPE_CACHE, linfo, nothing)
                     if isnothing(escapes_for_call)
-                        for arg in stmt.args[3:end]
-                            push!(changes, (arg, Escape()))
-                        end
+                        add_changes!(stmt.args[3:end], ir, Escape(), changes)
                     else
                         for (arg, info) in zip(stmt.args[2:end], escapes_for_call.arguments)
                             if info === ReturnEscape()
@@ -256,14 +253,16 @@ function find_escapes!(ir::IRCode, nargs::Int)
                 elseif head === :(=)
                     lhs, rhs = stmt.args
                     if isa(lhs, GlobalRef)
-                        push!(changes, (rhs, Escape()))
+                        add_change!(rhs, ir, Escape(), changes)
                     end
+                elseif is_meta_expr_head(head)
+                    continue
                 elseif head === :enter || head === :leave || head === :pop_exception
                     continue
+                elseif head === :gc_preserve_begin || head === :gc_preserve_end
+                    continue
                 else # TODO: this is too conservative
-                    for arg in stmt.args
-                        push!(changes, (arg, Escape()))
-                    end
+                    add_changes!(stmt.args, ir, Escape(), changes)
                 end
             elseif isa(stmt, PiNode)
                 if isdefined(stmt, :val)
@@ -293,7 +292,7 @@ function find_escapes!(ir::IRCode, nargs::Int)
                 end
             elseif isa(stmt, ReturnNode)
                 if isdefined(stmt, :val)
-                    push!(changes, (stmt.val, ReturnEscape()))
+                    add_change!(stmt.val, ir, ReturnEscape(), changes)
                 end
             else
                 @assert stmt isa GotoNode || stmt isa GotoIfNot || stmt isa GlobalRef || stmt === nothing # TODO remove me
@@ -336,6 +335,18 @@ function find_escapes!(ir::IRCode, nargs::Int)
     return state, ir
 end
 
+function add_changes!(args::Vector{Any}, ir::IRCode, @nospecialize(info::EscapeInformation), changes::Changes)
+    for x in args
+        add_change!(x, ir, info, changes)
+    end
+end
+
+function add_change!(@nospecialize(x), ir::IRCode, @nospecialize(info::EscapeInformation), changes::Changes)
+    if !isbitstype(widenconst(argextype(x, ir, ir.sptypes, ir.argtypes)))
+        push!(changes, (x, info))
+    end
+end
+
 function escape_call!(args::Vector{Any}, pc::Int, state::EscapeState, ir::IRCode, changes::Changes)
     ft = argextype(first(args), ir, ir.sptypes, ir.argtypes)
     f = argtype_to_function(ft)
@@ -348,9 +359,7 @@ function escape_call!(args::Vector{Any}, pc::Int, state::EscapeState, ir::IRCode
     if !ishandled
         # if this call hasn't been handled by any of pre-defined handlers,
         # we escape this call conservatively
-        for arg in args[2:end]
-            push!(changes, (arg, Escape()))
-        end
+        add_changes!(args[2:end], ir, Escape(), changes)
     end
     return true
 end
@@ -383,9 +392,8 @@ end
 function escape_builtin!(::typeof(tuple), args::Vector{Any}, pc::Int, state::EscapeState, ir::IRCode, changes::Changes)
     info = state.ssavalues[pc]
     info === NoInformation() && (info = NoEscape())
-    for arg in args[2:end]
-        push!(changes, (arg, info))
-    end
+    # TODO: we may want to remove this check when we implement the alias analysis
+    add_changes!(args[2:end], ir, info, changes)
     return true
 end
 
@@ -393,8 +401,11 @@ end
 function escape_builtin!(::typeof(getfield), args::Vector{Any}, pc::Int, state::EscapeState, ir::IRCode, changes::Changes)
     info = state.ssavalues[pc]
     info === NoInformation() && (info = NoEscape())
-    for arg in args[2:end]
-        push!(changes, (arg, info))
+    rt = widenconst(ir.stmts.type[pc])
+    # Only propagate info when the field itself is non-bitstype
+    # TODO: we may want to remove this check when we implement the alias analysis
+    if !isbitstype(rt)
+        add_changes!(args[2:end], ir, info, changes)
     end
     return true
 end
