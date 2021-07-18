@@ -283,6 +283,14 @@ end
         @test !isnothing(i)
         @test is_no_escape(escapes.ssavalues[i])
     end
+
+    let
+        src, escapes = analyze_escapes((String,)) do s
+            b = isdefined(s, :value)
+            global bb = b
+        end
+        @test is_return_escape(escapes.arguments[2])
+    end
 end
 
 # NOTE currently this testset relies on the special casing introduced in #16
