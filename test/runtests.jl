@@ -303,6 +303,13 @@ end
         @test is_no_escape(escapes.ssavalues[i])
         @test is_return_escape(escapes.arguments[2])
     end
+
+    let # :cfunction
+        src, escapes = analyze_escapes((Function, )) do f
+            @cfunction(f, String, (String,))
+        end
+        @test is_escape(escapes.arguments[2])
+    end
 end
 
 # NOTE currently this testset relies on the special casing introduced in #16

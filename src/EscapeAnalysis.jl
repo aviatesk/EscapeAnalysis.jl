@@ -251,6 +251,9 @@ function find_escapes(ir::IRCode, nargs::Int)
                     if isa(lhs, GlobalRef)
                         add_change!(rhs, ir, Escape(), changes)
                     end
+                elseif head === :cfunction
+                    # for :cfunction we escape its fptr (args[2])
+                    add_change!(stmt.args[2], ir, Escape(), changes)
                 elseif is_meta_expr_head(head)
                     continue
                 elseif head === :isdefined
