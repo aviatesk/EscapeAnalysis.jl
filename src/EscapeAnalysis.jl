@@ -251,6 +251,12 @@ function find_escapes(ir::IRCode, nargs::Int)
                     if isa(lhs, GlobalRef)
                         add_change!(rhs, ir, Escape(), changes)
                     end
+                elseif head === :foreigncall
+                    # for foreigncall we simply escape every argument and gc-root
+                    # TODO: we can apply similar strategy like builtin calls
+                    #       to specialize some foreigncalls
+                    foreigncall_nargs = length(stmt.args[3])
+                    add_changes!(stmt.args[6:end], ir, Escape(), changes)
                 elseif is_meta_expr_head(head)
                     continue
                 elseif head === :isdefined
