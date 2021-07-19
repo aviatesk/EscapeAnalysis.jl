@@ -286,7 +286,7 @@ end
 
     let
         src, escapes = analyze_escapes((Ref{String},)) do a
-            return @isdefined(b)
+            return @isdefined(a) # XXX `:isdefined` expression should have been elided in this case
         end
         @test is_return_escape(escapes.arguments[2])
     end
