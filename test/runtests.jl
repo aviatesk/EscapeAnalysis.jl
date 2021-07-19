@@ -285,9 +285,8 @@ end
     end
 
     let
-        src, escapes = analyze_escapes((String,)) do s
-            b = isdefined(s, :value)
-            global bb = b
+        src, escapes = analyze_escapes((Ref{String},)) do a
+            return @isdefined(b)
         end
         @test is_return_escape(escapes.arguments[2])
     end
