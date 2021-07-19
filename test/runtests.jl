@@ -6,6 +6,10 @@ mutable struct MutableSome{T}
     value::T
 end
 
+function dummy_function(a)
+    return a
+end
+
 @testset "basics" begin
     let # simplest
         src, escapes = analyze_escapes((Any,)) do a # return to caller
@@ -305,8 +309,8 @@ end
     end
 
     let # :cfunction
-        src, escapes = analyze_escapes((Function, )) do f
-            @cfunction(f, String, (String,))
+        src, escapes = analyze_escapes((Type{Int}, )) do t
+            @cfunction(Base.add_int, t, (Int,))
         end
         @test is_escape(escapes.arguments[2])
     end
