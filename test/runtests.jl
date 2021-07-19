@@ -284,10 +284,23 @@ end
         @test is_no_escape(escapes.ssavalues[i])
     end
 
-    let
+    let # :isdefined
         src, escapes = analyze_escapes((Ref{String},)) do a
             return @isdefined(a) # XXX `:isdefined` expression should have been elided in this case
         end
+        @test is_return_escape(escapes.arguments[2])
+    end
+
+    let # :isdefined
+        src, escapes = analyze_escapes((String, Bool, )) do a, b
+            if b
+                s = Ref(a)
+            end
+            return @isdefined(s)
+        end
+        i = findfirst(==(Base.RefValue{String}), src.stmts.type) # find allocation statement
+        @test !isnothing(i)
+        @test is_no_escape(escapes.ssavalues[i])
         @test is_return_escape(escapes.arguments[2])
     end
 end
