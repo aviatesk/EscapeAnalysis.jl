@@ -253,6 +253,8 @@ function find_escapes(ir::IRCode, nargs::Int)
                     end
                 elseif is_meta_expr_head(head)
                     continue
+                elseif head === :isdefined
+                    continue
                 elseif head === :enter || head === :leave || head === :pop_exception
                     continue
                 elseif head === :gc_preserve_begin || head === :gc_preserve_end
