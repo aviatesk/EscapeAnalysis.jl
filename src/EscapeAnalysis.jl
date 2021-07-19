@@ -506,7 +506,7 @@ end
 function print_with_info(preprint, postprint, io::IO, ir::IRCode)
     io = IOContext(io, :displaysize=>displaysize(io))
     used = BitSet()
-    used = Base.IRShow.stmts_used(ir)
+    used = Base.IRShow.stmts_used(io, ir)
     line_info_preprinter = Base.IRShow.lineinfo_disabled
     line_info_postprinter = Base.IRShow.default_expr_type_printer
     preprint(io)
