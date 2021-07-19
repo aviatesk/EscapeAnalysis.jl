@@ -14,6 +14,7 @@ import Core:
     ReturnNode,
     GotoNode,
     GotoIfNot
+    SimpleVector
 
 const CC = Core.Compiler
 
@@ -255,7 +256,7 @@ function find_escapes(ir::IRCode, nargs::Int)
                     # for foreigncall we simply escape every argument and gc-root
                     # TODO: we can apply similar strategy like builtin calls
                     #       to specialize some foreigncalls
-                    foreigncall_nargs = length(stmt.args[3])
+                    foreigncall_nargs = length(SimpleVector{Type}(stmt.args[3]))
                     add_changes!(stmt.args[6:end], ir, Escape(), changes)
                 elseif is_meta_expr_head(head)
                     continue
