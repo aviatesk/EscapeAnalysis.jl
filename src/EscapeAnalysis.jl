@@ -13,7 +13,7 @@ import Core:
     PhiCNode,
     ReturnNode,
     GotoNode,
-    GotoIfNot
+    GotoIfNot,
     SimpleVector
 
 const CC = Core.Compiler
@@ -253,11 +253,13 @@ function find_escapes(ir::IRCode, nargs::Int)
                         add_change!(rhs, ir, Escape(), changes)
                     end
                 elseif head === :foreigncall
-                    # for foreigncall we simply escape every argument and gc-root
+                    # for foreigncall we simply escape every argument (args[6:length(args[3])])
+                    # and its name (args[1])
                     # TODO: we can apply similar strategy like builtin calls
                     #       to specialize some foreigncalls
-                    foreigncall_nargs = length(SimpleVector{Type}(stmt.args[3]))
-                    add_changes!(stmt.args[6:end], ir, Escape(), changes)
+                    foreigncall_nargs = length((stmt.args[3])::SimpleVector)
+                    add_change!(stmt.args[1], ir, Escape(), changes)
+                    add_changes!(stmt.args[6:5+foreigncall_nargs], ir, Escape(), changes)
                 elseif is_meta_expr_head(head)
                     continue
                 elseif head === :isdefined
