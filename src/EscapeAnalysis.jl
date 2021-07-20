@@ -246,6 +246,12 @@ function find_escapes(ir::IRCode, nargs::Int)
                         push!(changes, (arg, info))
                     end
                     push!(changes, (SSAValue(pc), info)) # we will be interested in if this allocation is not escape or not
+                elseif head === :splatnew
+                    info = state.ssavalues[pc]
+                    info === NoInformation() && (info = NoEscape())
+                    # splatnew passes field values using a single tuple (args[2])
+                    push!(changes, (stmt.args[2], info))
+                    push!(changes, (SSAValue(pc), info)) # we will be interested in if this allocation is not escape or not
                 elseif head === :(=)
                     lhs, rhs = stmt.args
                     if isa(lhs, GlobalRef)
