@@ -135,7 +135,7 @@ end
         end
         i = findfirst(==(Base.RefValue{String}), src.stmts.type) # find allocation statement
         @assert !isnothing(i)
-        @test_broken is_return_escape(escapes.ssavalues[i])
+        @test is_return_escape(escapes.ssavalues[i])
     end
 
     @eval m @noinline f_returnescape(x) = broadcast(identity, x)
@@ -145,7 +145,7 @@ end
         end
         i = findfirst(==(Base.RefValue{String}), src.stmts.type) # find allocation statement
         @assert !isnothing(i)
-        @test_broken is_return_escape(escapes.ssavalues[i])
+        @test is_return_escape(escapes.ssavalues[i])
     end
 
     @eval m @noinline f_escape(x) = (global xx = x) # obvious escape
@@ -337,7 +337,6 @@ end
 
     function function_filter(@nospecialize(ft))
         ft === typeof(Core.Compiler.widenconst) && return false # `widenconst` is very untyped, ignore
-        ft === typeof(EscapeAnalysis.:(⊓)) && return false # `⊓` is very untyped, ignore
         ft === typeof(EscapeAnalysis.escape_builtin!) && return false # `escape_builtin!` is very untyped, ignore
         ft === typeof(isbitstype) && return false # `isbitstype` is very untyped, ignore
         return true

@@ -1,5 +1,9 @@
 module EscapeAnalysis
 
+export
+    analyze_escapes,
+    @analyze_escapes
+
 import Core:
     CodeInfo,
     CodeInstance,
@@ -134,67 +138,103 @@ end
 # ========
 
 """
-    abstract type EscapeInformation end
+    abstract type EscapeLattice end
 
-A lattice for escape information, which has the following elements:
-- `NoInformation`: the top element of this lattice, meaning no information is derived
-- `NoEscape`: the second topmost element of this lattice, meaning it will not escape from this local frame
-- `ReturnEscape`: a lattice that is lower than `NoEscape`, meaning it will escape to the caller
-- `Escape`: the bottom element of this lattice, meaning it will escape to somewhere
+A lattice for escape information, which holds the following properties:
+- `Analyzed`: not formally part of the lattice, indicates this statement has not been analyzed at all
+- `ReturnEscape`: indicates it will escape to the caller via return (possibly as a field)
+- `ArgEscape`: indicates it will escape to the caller through setfield on argument(s)
+  -1 : no escape
+   0 : unknown or multiple
+   n : through argument N
+
+These attributes can be combined to create a partial lattice:
+(note that this is inverted from the order used for the lattice in Core.Compiler)
+- `NoEscape`: the topmost element of this lattice
+- `Escape`: the inverse of NoEscape
+- `AllEscape`: the bottom element of this lattice, meaning it will escape to everywhere
 
 An abstract state will be initialized with the top(most) elements, and an escape analysis
 will transition these elements from the top to the bottom.
 """
-abstract type EscapeInformation end
+struct EscapeLattice
+    Analyzed::Bool
+    ReturnEscape::Bool
+    OtherEscape::Bool
+    # TODO: ArgEscape::Int
+end
 
-struct NoInformation <: EscapeInformation end
-struct NoEscape      <: EscapeInformation end
-struct ReturnEscape  <: EscapeInformation end
-struct Escape        <: EscapeInformation end
+NoInformation() = EscapeLattice(false, false, false) # not formally part of the lattice
+NoEscape() = EscapeLattice(true, false, false)
+ReturnEscape() = EscapeLattice(true, true, false)
+#=Other=#Escape() = EscapeLattice(true, false, true)
+AllEscape() = EscapeLattice(true, true, true)
 
-⊑(x::EscapeInformation, y::EscapeInformation) = x == y
-⊑(::Escape,             ::EscapeInformation)  = true
-⊑(::EscapeInformation,  ::NoInformation)      = true
-⊑(::Escape,             ::NoInformation)      = true # avoid ambiguity
-⊑(::ReturnEscape,       ::NoEscape)           = true
+export is_no_escape, is_escape, is_return_escape
+# Convenience names for some ⊑ queries
+# TODO: these should be renamed to has_escape, has_return_escape, etc.
+is_no_escape(x::EscapeLattice) = x === NoEscape()
+is_escape(x::EscapeLattice) = !is_no_escape(x)
+is_all_escape(x::EscapeLattice) = x === AllEscape()
+is_return_escape(x::EscapeLattice) = x.ReturnEscape
 
-⊔(x::EscapeInformation, y::EscapeInformation) = x⊑y ? y : y⊑x ? x : NoInformation()
-⊓(x::EscapeInformation, y::EscapeInformation) = x⊑y ? x : y⊑x ? y : Escape()
+function ⊑(x::EscapeLattice, y::EscapeLattice)
+    if x.Analyzed <= y.Analyzed &&
+       x.ReturnEscape <= y.ReturnEscape &&
+       x.OtherEscape <= y.OtherEscape
+       return true
+    end
+    return false
+end
+
+function ⊔(x::EscapeLattice, y::EscapeLattice)
+    return EscapeLattice(
+        x.Analyzed & y.Analyzed,
+        x.ReturnEscape & y.ReturnEscape,
+        x.OtherEscape & y.OtherEscape)
+end
+
+function ⊓(x::EscapeLattice, y::EscapeLattice)
+    return EscapeLattice(
+        x.Analyzed | y.Analyzed,
+        x.ReturnEscape | y.ReturnEscape,
+        x.OtherEscape | y.OtherEscape)
+end
 
 # extend lattices of escape information to lattices of mappings of arguments and SSA stmts to escape information
 # ⊓ and ⊔ operate pair-wise, and from there we can just rely on the Base implementation for dictionary equality comparison
 struct EscapeState
-    arguments::Vector{EscapeInformation}
-    ssavalues::Vector{EscapeInformation}
+    arguments::Vector{EscapeLattice}
+    ssavalues::Vector{EscapeLattice}
 end
 function EscapeState(nslots::Int, nargs::Int, nstmts::Int)
-    arguments = EscapeInformation[
+    arguments = EscapeLattice[
         i ≤ nargs ? ReturnEscape() : NoEscape() for i in 1:nslots]
-    ssavalues = EscapeInformation[NoInformation() for _ in 1:nstmts]
+    ssavalues = EscapeLattice[NoInformation() for _ in 1:nstmts]
     return EscapeState(arguments, ssavalues)
 end
 Base.copy(s::EscapeState) = EscapeState(copy(s.arguments), copy(s.ssavalues))
 
 ⊔(X::EscapeState, Y::EscapeState) = EscapeState(
-    EscapeInformation[x ⊔ y for (x, y) in zip(X.arguments, Y.arguments)],
-    EscapeInformation[x ⊔ y for (x, y) in zip(X.ssavalues, Y.ssavalues)])
+    EscapeLattice[x ⊔ y for (x, y) in zip(X.arguments, Y.arguments)],
+    EscapeLattice[x ⊔ y for (x, y) in zip(X.ssavalues, Y.ssavalues)])
 ⊓(X::EscapeState, Y::EscapeState) = EscapeState(
-    EscapeInformation[x ⊓ y for (x, y) in zip(X.arguments, Y.arguments)],
-    EscapeInformation[x ⊓ y for (x, y) in zip(X.ssavalues, Y.ssavalues)])
+    EscapeLattice[x ⊓ y for (x, y) in zip(X.arguments, Y.arguments)],
+    EscapeLattice[x ⊓ y for (x, y) in zip(X.ssavalues, Y.ssavalues)])
 Base.:(==)(X::EscapeState, Y::EscapeState) = X.arguments == Y.arguments && X.ssavalues == Y.ssavalues
 
 const GLOBAL_ESCAPE_CACHE = IdDict{MethodInstance,EscapeState}()
 __clear_escape_cache!() = empty!(GLOBAL_ESCAPE_CACHE)
 
 # An escape analysis implementation based on the algorithm described in the paper [MM02].
-# The analysis works on the lattice of `EscapeInformation` and transitions lattice elements
+# The analysis works on the lattice of `EscapeLattice` and transitions lattice elements
 # from the top to the bottom in a backward way, i.e. data flows from usage cites to definitions.
 #
 # [MM02] A Graph-Free approach to Data-Flow Analysis.
 #        Markas Mohnen, 2002, April.
 #        https://api.semanticscholar.org/CorpusID:28519618
 
-const Changes = Vector{Tuple{Any,EscapeInformation}}
+const Changes = Vector{Tuple{Any,EscapeLattice}}
 
 # TODO
 # - implement more builtin handling
@@ -324,13 +364,13 @@ function find_escapes(ir::IRCode, nargs::Int)
     return state
 end
 
-function add_changes!(args::Vector{Any}, ir::IRCode, @nospecialize(info::EscapeInformation), changes::Changes)
+function add_changes!(args::Vector{Any}, ir::IRCode, info::EscapeLattice, changes::Changes)
     for x in args
         add_change!(x, ir, info, changes)
     end
 end
 
-function add_change!(@nospecialize(x), ir::IRCode, @nospecialize(info::EscapeInformation), changes::Changes)
+function add_change!(@nospecialize(x), ir::IRCode, info::EscapeLattice, changes::Changes)
     if !isbitstype(widenconst(argextype(x, ir, ir.sptypes, ir.argtypes)))
         push!(changes, (x, info))
     end
@@ -476,12 +516,12 @@ end
 
 # adapted from https://github.com/JuliaDebug/LoweredCodeUtils.jl/blob/4612349432447e868cf9285f647108f43bd0a11c/src/codeedges.jl#L881-L897
 function print_with_info(io::IO, ir::IRCode, (; arguments, ssavalues)::EscapeState)
-    function char_color(info::EscapeInformation)
-        return info isa NoInformation ? ('◌', :plain) :
-               info isa NoEscape ? ('↓', :green) :
-               info isa ReturnEscape ? ('↑', :yellow) :
-               info isa Escape ? ('→', :red) :
-               throw("unhandled escape information: $c")
+    function char_color(info::EscapeLattice)
+        return info === NoInformation() ? ('◌', :plain) :
+               info === NoEscape() ? ('↓', :green) :
+               info === ReturnEscape() ? ('↑', :yellow) :
+               info === Escape() ? ('→', :red) :
+               ('*', :red)
     end
 
     # print escape information on SSA values
@@ -524,38 +564,5 @@ function print_with_info(preprint, postprint, io::IO, ir::IRCode)
     postprint(io)
     return nothing
 end
-
-let
-    function mkqueryname(s)
-        names = String[]
-        buf = Char[]
-        for c in s
-            if isuppercase(c)
-                name = join(buf)
-                isempty(name) || push!(names, name)
-                empty!(buf)
-            end
-            push!(buf, lowercase(c))
-        end
-        name = join(buf)
-        isempty(name) || push!(names, name)
-
-        pushfirst!(names, "is")
-        return join(names, '_')
-    end
-
-    for t in subtypes(EscapeInformation)
-        s = nameof(t)
-        fn = Symbol(mkqueryname(string(s)))
-        @eval (@__MODULE__) begin
-            $fn(x::EscapeInformation) = isa(x, $s)
-            export $fn
-        end
-    end
-end
-
-export
-    analyze_escapes,
-    @analyze_escapes
 
 end # module EscapeAnalysis
