@@ -269,6 +269,11 @@ function find_escapes(ir::IRCode, nargs::Int)
                     # undefcheck is temporarily inserted by compiler
                     # it will be processd be later pass so it won't change any of escape states
                     continue
+                elseif head === :throw_undef_if_not
+                    # conservatively escapes the val argument (argument[1])
+                    add_change!(stmt.args[1], ir, Escape(), changes)
+                elseif head === :the_exception
+                    continue
                 elseif head === :isdefined
                     continue
                 elseif head === :enter || head === :leave || head === :pop_exception
