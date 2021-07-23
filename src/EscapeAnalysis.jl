@@ -259,6 +259,16 @@ function find_escapes(ir::IRCode, nargs::Int)
                     end
                 elseif is_meta_expr_head(head)
                     continue
+                elseif head === :static_parameter
+                    # static_parameter reference static parameter using index
+                    continue
+                elseif head === :copyast
+                    # copyast simply copies a surface syntax AST
+                    continue
+                elseif head === :undefcheck
+                    # undefcheck is temporarily inserted by compiler
+                    # it will be processd be later pass so it won't change any of escape states
+                    continue
                 elseif head === :isdefined
                     continue
                 elseif head === :enter || head === :leave || head === :pop_exception
