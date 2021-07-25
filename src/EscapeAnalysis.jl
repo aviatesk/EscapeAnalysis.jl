@@ -13,7 +13,8 @@ import Core:
     PhiCNode,
     ReturnNode,
     GotoNode,
-    GotoIfNot
+    GotoIfNot,
+    SimpleVector
 
 const CC = Core.Compiler
 
@@ -246,6 +247,12 @@ function find_escapes(ir::IRCode, nargs::Int)
                         push!(changes, (arg, info))
                     end
                     push!(changes, (SSAValue(pc), info)) # we will be interested in if this allocation is not escape or not
+                elseif head === :splatnew
+                    info = state.ssavalues[pc]
+                    info === NoInformation() && (info = NoEscape())
+                    # splatnew passes field values using a single tuple (args[2])
+                    push!(changes, (stmt.args[2], info))
+                    push!(changes, (SSAValue(pc), info)) # we will be interested in if this allocation is not escape or not
                 elseif head === :(=)
                     lhs, rhs = stmt.args
                     if isa(lhs, GlobalRef)
@@ -254,7 +261,30 @@ function find_escapes(ir::IRCode, nargs::Int)
                 elseif head === :cfunction
                     # for :cfunction we conservatively escapes all its arguments
                     add_changes!(stmt.args, ir, Escape(), changes)
+                elseif head === :foreigncall
+                    # for foreigncall we simply escape every argument (args[6:length(args[3])])
+                    # and its name (args[1])
+                    # TODO: we can apply similar strategy like builtin calls
+                    #       to specialize some foreigncalls
+                    foreigncall_nargs = length((stmt.args[3])::SimpleVector)
+                    add_change!(stmt.args[1], ir, Escape(), changes)
+                    add_changes!(stmt.args[6:5+foreigncall_nargs], ir, Escape(), changes)
                 elseif is_meta_expr_head(head)
+                    continue
+                elseif head === :static_parameter
+                    # static_parameter reference static parameter using index
+                    continue
+                elseif head === :copyast
+                    # copyast simply copies a surface syntax AST
+                    continue
+                elseif head === :undefcheck
+                    # undefcheck is temporarily inserted by compiler
+                    # it will be processd be later pass so it won't change any of escape states
+                    continue
+                elseif head === :throw_undef_if_not
+                    # conservatively escapes the val argument (argument[1])
+                    add_change!(stmt.args[1], ir, Escape(), changes)
+                elseif head === :the_exception
                     continue
                 elseif head === :isdefined
                     continue
