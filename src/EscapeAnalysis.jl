@@ -258,6 +258,9 @@ function find_escapes(ir::IRCode, nargs::Int)
                     if isa(lhs, GlobalRef)
                         add_change!(rhs, ir, Escape(), changes)
                     end
+                elseif head === :cfunction
+                    # for :cfunction we conservatively escapes all its arguments
+                    add_changes!(stmt.args, ir, Escape(), changes)
                 elseif head === :foreigncall
                     # for foreigncall we simply escape every argument (args[6:length(args[3])])
                     # and its name (args[1])
