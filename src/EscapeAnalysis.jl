@@ -267,7 +267,7 @@ function find_escapes(ir::IRCode, nargs::Int)
                     # TODO: we can apply similar strategy like builtin calls
                     #       to specialize some foreigncalls
                     foreigncall_nargs = length((stmt.args[3])::SimpleVector)
-                    add_change!(stmt.args[1], ir, Escape(), changes)
+                    push!(changes, (stmt.args[1], Escape()))
                     add_changes!(stmt.args[6:5+foreigncall_nargs], ir, Escape(), changes)
                 elseif is_meta_expr_head(head)
                     continue
@@ -436,8 +436,7 @@ end
 # =======
 
 function CC.optimize(interp::EscapeAnalyzer, opt::OptimizationState, params::OptimizationParams, @nospecialize(result))
-    nargs = Int(opt.nargs) - 1
-    ir = run_passes_with_escape_analysis(interp, opt.src, nargs, opt)
+    ir = run_passes_with_escape_analysis(interp, opt.src, opt)
     return CC.finish(interp, opt, params, ir, result)
 end
 
@@ -445,16 +444,18 @@ end
 function run_passes_with_escape_analysis end
 register_init_hook!() do
 @eval CC begin
-    function $EscapeAnalysis.run_passes_with_escape_analysis(interp::$EscapeAnalyzer, ci::CodeInfo, nargs::Int, sv::OptimizationState)
+    function $EscapeAnalysis.run_passes_with_escape_analysis(interp::$EscapeAnalyzer, ci::CodeInfo, sv::OptimizationState)
         preserve_coverage = coverage_enabled(sv.mod)
-        ir = convert_to_ircode(ci, copy_exprargs(ci.code), preserve_coverage, nargs, sv)
-        ir = slot2reg(ir, ci, nargs, sv)
+        ir = convert_to_ircode(ci, copy_exprargs(ci.code), preserve_coverage, sv)
+        ir = slot2reg(ir, ci, sv)
         #@Base.show ("after_construct", ir)
         # TODO: Domsorting can produce an updated domtree - no need to recompute here
         @timeit "compact 1" ir = compact!(ir)
         @timeit "Inlining" ir = ssa_inlining_pass!(ir, ir.linetable, sv.inlining, ci.propagate_inbounds)
         #@timeit "verify 2" verify_ir(ir)
         ir = compact!(ir)
+        svdef = sv.linfo.def
+        nargs = isa(svdef, Method) ? Int(svdef.nargs) : 0
         @timeit "collect escape information" escapes = $find_escapes(ir, nargs+1)
         $setindex!($GLOBAL_ESCAPE_CACHE, escapes, sv.linfo)
         interp.source = copy(ir)
