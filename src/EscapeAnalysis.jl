@@ -17,7 +17,8 @@ import Core:
     PhiCNode,
     ReturnNode,
     GotoNode,
-    GotoIfNot
+    GotoIfNot,
+    SimpleVector
 
 const CC = Core.Compiler
 
@@ -83,8 +84,6 @@ CC.may_discard_trees(interp::EscapeAnalyzer) = may_discard_trees(interp.native)
 CC.verbose_stmt_info(interp::EscapeAnalyzer) = verbose_stmt_info(interp.native)
 
 CC.get_inference_cache(interp::EscapeAnalyzer) = get_inference_cache(interp.native)
-
-# CC.code_cache(interp::EscapeAnalyzer) = code_cache(interp.native)
 
 const GLOBAL_CODE_CACHE = IdDict{MethodInstance,CodeInstance}()
 __clear_code_cache!() = empty!(GLOBAL_CODE_CACHE)
@@ -286,12 +285,44 @@ function find_escapes(ir::IRCode, nargs::Int)
                         push!(changes, (arg, info))
                     end
                     push!(changes, (SSAValue(pc), info)) # we will be interested in if this allocation is not escape or not
+                elseif head === :splatnew
+                    info = state.ssavalues[pc]
+                    info === NoInformation() && (info = NoEscape())
+                    # splatnew passes field values using a single tuple (args[2])
+                    push!(changes, (stmt.args[2], info))
+                    push!(changes, (SSAValue(pc), info)) # we will be interested in if this allocation is not escape or not
                 elseif head === :(=)
                     lhs, rhs = stmt.args
                     if isa(lhs, GlobalRef)
                         add_change!(rhs, ir, Escape(), changes)
                     end
+                elseif head === :cfunction
+                    # for :cfunction we conservatively escapes all its arguments
+                    add_changes!(stmt.args, ir, Escape(), changes)
+                elseif head === :foreigncall
+                    # for foreigncall we simply escape every argument (args[6:length(args[3])])
+                    # and its name (args[1])
+                    # TODO: we can apply similar strategy like builtin calls
+                    #       to specialize some foreigncalls
+                    foreigncall_nargs = length((stmt.args[3])::SimpleVector)
+                    push!(changes, (stmt.args[1], Escape()))
+                    add_changes!(stmt.args[6:5+foreigncall_nargs], ir, Escape(), changes)
                 elseif is_meta_expr_head(head)
+                    continue
+                elseif head === :static_parameter
+                    # static_parameter reference static parameter using index
+                    continue
+                elseif head === :copyast
+                    # copyast simply copies a surface syntax AST
+                    continue
+                elseif head === :undefcheck
+                    # undefcheck is temporarily inserted by compiler
+                    # it will be processd be later pass so it won't change any of escape states
+                    continue
+                elseif head === :throw_undef_if_not
+                    # conservatively escapes the val argument (argument[1])
+                    add_change!(stmt.args[1], ir, Escape(), changes)
+                elseif head === :the_exception
                     continue
                 elseif head === :isdefined
                     continue
@@ -333,7 +364,7 @@ function find_escapes(ir::IRCode, nargs::Int)
                     add_change!(stmt.val, ir, ReturnEscape(), changes)
                 end
             else
-                @assert stmt isa GotoNode || stmt isa GotoIfNot || stmt isa GlobalRef || stmt === nothing # TODO remove me
+                @assert stmt isa GotoNode || stmt isa GotoIfNot || stmt isa GlobalRef || isnothing(stmt) # TODO remove me
                 continue
             end
 
@@ -351,7 +382,7 @@ function find_escapes(ir::IRCode, nargs::Int)
             empty!(changes)
 
             # convergence check and worklist update
-            if new != state
+            if new ≠ state
                 state = new
 
                 anyupdate |= true
@@ -443,8 +474,7 @@ end
 # =======
 
 function CC.optimize(interp::EscapeAnalyzer, opt::OptimizationState, params::OptimizationParams, @nospecialize(result))
-    nargs = Int(opt.nargs) - 1
-    ir = run_passes_with_escape_analysis(interp, opt.src, nargs, opt)
+    ir = run_passes_with_escape_analysis(interp, opt.src, opt)
     return CC.finish(interp, opt, params, ir, result)
 end
 
@@ -452,16 +482,18 @@ end
 function run_passes_with_escape_analysis end
 register_init_hook!() do
 @eval CC begin
-    function $EscapeAnalysis.run_passes_with_escape_analysis(interp::$EscapeAnalyzer, ci::CodeInfo, nargs::Int, sv::OptimizationState)
+    function $EscapeAnalysis.run_passes_with_escape_analysis(interp::$EscapeAnalyzer, ci::CodeInfo, sv::OptimizationState)
         preserve_coverage = coverage_enabled(sv.mod)
-        ir = convert_to_ircode(ci, copy_exprargs(ci.code), preserve_coverage, nargs, sv)
-        ir = slot2reg(ir, ci, nargs, sv)
+        ir = convert_to_ircode(ci, copy_exprargs(ci.code), preserve_coverage, sv)
+        ir = slot2reg(ir, ci, sv)
         #@Base.show ("after_construct", ir)
         # TODO: Domsorting can produce an updated domtree - no need to recompute here
         @timeit "compact 1" ir = compact!(ir)
         @timeit "Inlining" ir = ssa_inlining_pass!(ir, ir.linetable, sv.inlining, ci.propagate_inbounds)
         #@timeit "verify 2" verify_ir(ir)
         ir = compact!(ir)
+        svdef = sv.linfo.def
+        nargs = isa(svdef, Method) ? Int(svdef.nargs) : 0
         @timeit "collect escape information" escapes = $find_escapes(ir, nargs+1)
         $setindex!($GLOBAL_ESCAPE_CACHE, escapes, sv.linfo)
         interp.source = copy(ir)

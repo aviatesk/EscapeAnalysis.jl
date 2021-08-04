@@ -303,6 +303,13 @@ end
         @test is_no_escape(escapes.ssavalues[i])
         @test is_return_escape(escapes.arguments[2])
     end
+
+    let # :foreigncall
+        src, escapes = analyze_escapes((Vector{String}, Int, )) do a, b
+            return isassigned(a, b) # TODO: specialize isassigned
+        end
+        @test is_escape(escapes.arguments[2])
+    end
 end
 
 # NOTE currently this testset relies on the special casing introduced in #16
