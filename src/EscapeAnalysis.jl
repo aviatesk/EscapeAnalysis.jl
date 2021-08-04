@@ -81,8 +81,6 @@ CC.verbose_stmt_info(interp::EscapeAnalyzer) = verbose_stmt_info(interp.native)
 
 CC.get_inference_cache(interp::EscapeAnalyzer) = get_inference_cache(interp.native)
 
-# CC.code_cache(interp::EscapeAnalyzer) = code_cache(interp.native)
-
 const GLOBAL_CODE_CACHE = IdDict{MethodInstance,CodeInstance}()
 __clear_code_cache!() = empty!(GLOBAL_CODE_CACHE)
 
@@ -326,7 +324,7 @@ function find_escapes(ir::IRCode, nargs::Int)
                     add_change!(stmt.val, ir, ReturnEscape(), changes)
                 end
             else
-                @assert stmt isa GotoNode || stmt isa GotoIfNot || stmt isa GlobalRef || stmt === nothing # TODO remove me
+                @assert stmt isa GotoNode || stmt isa GotoIfNot || stmt isa GlobalRef || isnothing(stmt) # TODO remove me
                 continue
             end
 
@@ -344,7 +342,7 @@ function find_escapes(ir::IRCode, nargs::Int)
             empty!(changes)
 
             # convergence check and worklist update
-            if new != state
+            if new ≠ state
                 state = new
 
                 anyupdate |= true
