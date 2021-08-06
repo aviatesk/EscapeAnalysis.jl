@@ -137,7 +137,7 @@ end
 # ========
 
 """
-    abstract type EscapeLattice end
+    struct EscapeLattice
 
 A lattice for escape information, which holds the following properties:
 - `Analyzed`: not formally part of the lattice, indicates this statement has not been analyzed at all
