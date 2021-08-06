@@ -1,10 +1,13 @@
 using EscapeAnalysis, InteractiveUtils, Test, JETTest
 
-@testset "EscapeAnalysis" begin
-
 mutable struct MutableSome{T}
     value::T
 end
+mutable struct MutableCondition
+    cond::Bool
+end
+
+@testset "EscapeAnalysis" begin
 
 @testset "basics" begin
     let # simplest
@@ -93,14 +96,10 @@ end
     end
 end
 
-mutable struct MyMutable
-    cond::Bool
-end
-
 let # more complex
     src, escapes = analyze_escapes((Bool,)) do c
-        x = Vector{MyMutable}() # escape
-        y = MyMutable(c) # escape
+        x = Vector{MutableCondition}() # escape
+        y = MutableCondition(c) # escape
         if c
             push!(x, y) # escape
             return nothing
@@ -109,21 +108,21 @@ let # more complex
         end
     end
 
-    i = findfirst(==(Vector{MyMutable}), src.stmts.type)
+    i = findfirst(==(Vector{MutableCondition}), src.stmts.type)
     @assert !isnothing(i)
     @test is_escape(escapes.ssavalues[i])
-    i = findfirst(==(MyMutable), src.stmts.type)
+    i = findfirst(==(MutableCondition), src.stmts.type)
     @assert !isnothing(i)
     @test is_escape(escapes.ssavalues[i])
 end
 
 let # simple allocation
     src, escapes = analyze_escapes((Bool,)) do c
-        mm = MyMutable(c) # just allocated, never escapes
+        mm = MutableCondition(c) # just allocated, never escapes
         return mm.cond ? nothing : 1
     end
 
-    i = findfirst(==(MyMutable), src.stmts.type) # allocation statement
+    i = findfirst(==(MutableCondition), src.stmts.type) # allocation statement
     @assert !isnothing(i)
     @test is_no_escape(escapes.ssavalues[i])
 end
@@ -167,13 +166,13 @@ end
 
     # if we can't determine the matching method statically, we should be conservative
     let
-        src, escapes = @eval m $analyze_escapes(($MutableSome{Any},)) do a
+        src, escapes = @eval m $analyze_escapes((Ref{Any},)) do a
             may_exist(a)
         end
         @test is_escape(escapes.arguments[2])
     end
     let
-        src, escapes = @eval m $analyze_escapes(($MutableSome{Any},)) do a
+        src, escapes = @eval m $analyze_escapes((Ref{Any},)) do a
             Base.@invokelatest f_noescape(a)
         end
         @test is_escape(escapes.arguments[2])
