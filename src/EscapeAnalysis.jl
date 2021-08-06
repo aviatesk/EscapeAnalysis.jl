@@ -150,7 +150,7 @@ A lattice for escape information, which holds the following properties:
 These attributes can be combined to create a partial lattice:
 (note that this is inverted from the order used for the lattice in Core.Compiler)
 - `NoEscape`: the topmost element of this lattice
-- `Escape`: the inverse of NoEscape
+- `Escape`: the inverse of `NoEscape`
 - `AllEscape`: the bottom element of this lattice, meaning it will escape to everywhere
 
 An abstract state will be initialized with the top(most) elements, and an escape analysis
