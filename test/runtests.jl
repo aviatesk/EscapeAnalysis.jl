@@ -36,6 +36,13 @@ end
         end
         @test is_return_escape(escapes.arguments[2])
     end
+
+    let # self
+        r = analyze_escapes((Any,)) do x
+            return x
+        end
+        @test not_analyzed(r.state.arguments[1])
+    end
 end
 
 @testset "control flows" begin

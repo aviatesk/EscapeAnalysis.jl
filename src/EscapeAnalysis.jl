@@ -169,13 +169,14 @@ ReturnEscape() = EscapeLattice(true, true, false)
 #=Other=#Escape() = EscapeLattice(true, false, true)
 AllEscape() = EscapeLattice(true, true, true)
 
-export is_no_escape, is_escape, is_return_escape
+export is_no_escape, is_escape, is_return_escape, not_analyzed
 # Convenience names for some ⊑ queries
 # TODO: these should be renamed to has_escape, has_return_escape, etc.
 is_no_escape(x::EscapeLattice) = x === NoEscape()
 is_escape(x::EscapeLattice) = !is_no_escape(x)
 is_all_escape(x::EscapeLattice) = x === AllEscape()
 is_return_escape(x::EscapeLattice) = x.ReturnEscape
+not_analyzed(x::EscapeLattice) = x === NoInformation()
 
 function ⊑(x::EscapeLattice, y::EscapeLattice)
     if x.Analyzed <= y.Analyzed &&
@@ -208,7 +209,7 @@ struct EscapeState
 end
 function EscapeState(nslots::Int, nargs::Int, nstmts::Int)
     arguments = EscapeLattice[
-        i ≤ nargs ? ReturnEscape() : NoInformation() for i in 1:nslots]
+        1 < i ≤ nargs ? ReturnEscape() : NoInformation() for i in 1:nslots]
     ssavalues = EscapeLattice[NoInformation() for _ in 1:nstmts]
     return EscapeState(arguments, ssavalues)
 end
@@ -494,7 +495,7 @@ register_init_hook!() do
         ir = compact!(ir)
         svdef = sv.linfo.def
         nargs = isa(svdef, Method) ? Int(svdef.nargs) : 0
-        @timeit "collect escape information" escapes = $find_escapes(ir, nargs+1)
+        @timeit "collect escape information" escapes = $find_escapes(ir, nargs)
         $setindex!($GLOBAL_ESCAPE_CACHE, escapes, sv.linfo)
         interp.source = copy(ir)
         interp.info = escapes
