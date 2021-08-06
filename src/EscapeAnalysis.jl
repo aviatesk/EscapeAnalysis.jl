@@ -142,7 +142,7 @@ end
 A lattice for escape information, which holds the following properties:
 - `Analyzed`: not formally part of the lattice, indicates this statement has not been analyzed at all
 - `ReturnEscape`: indicates it will escape to the caller via return (possibly as a field)
-- `ArgEscape`: indicates it will escape to the caller through setfield on argument(s)
+- `ArgEscape`: indicates it will escape to the caller through `setfield!` on argument(s)
   -1 : no escape
    0 : unknown or multiple
    n : through argument N
