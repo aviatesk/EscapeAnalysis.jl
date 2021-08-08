@@ -6,14 +6,30 @@ Couple of notes about this escape analysis:
 - the algorithm works by updating the working set that contains program counters corresponding to SSA statements until every statement gets converged to a fixed point
 - it is flow-insenstive, i.e. doesn't distinguish escape information on the same "object" but at different locations
 
-The analysis will work on a lattice that has a finite height, and can express the following "escape properties":
-- `NoInformation`: the top element of this lattice, meaning no information is derived
-- `NoEscape`: the second topmost element of this lattice, meaning it will not escape from this local frame
-- `ReturnEscape`: a lattice that is lower than `NoEscape`, meaning it will escape to the caller
-- `Escape`: the bottom element of this lattice, meaning it will escape to somewhere
+This escape analysis works on a lattice called `EscapeLattice,`, which holds the following properties:
+- `x.Analyzed`: not formally part of the lattice, indicates this statement has not been analyzed at all
+- `x.ReturnEscape`: indicates it will escape to the caller via return (possibly as a field)
+- `x.ArgEscape`  (not implemented yet): indicates it will escape to the caller through `setfield!` on argument(s)
+  * `-1` : no escape
+  * `0` : unknown or multiple
+  * `n` : through argument N
+
+These attributes can be combined to create a partial lattice that has a finite height:
+- `AllEscape`: the topmost element of this lattice, meaning it will escape to everywhere
+- `ReturnEscape`, `Escape`: intermediate lattice elements
+- `NoEscape`: the bottom element of this lattice
+
+The escape analysis will transition these elements from the bottom to the top,
+in the same way as Julia's native type inference routine.
+An abstract state will be initialized with the bottom(-like) elements:
+- the call arguments are initialized as `ReturnEscape`, because they're visible from a caller immediately
+- the other states are initialized as `NotAnalyzed`, which is a special lattice element that
+  is slightly lower than `NoEscape`, but at the same time doesn't represent any meaning
+  other than it's not analyzed yet (thus it's not formally part of the lattice).
 
 TODO:
-- [ ] implement more builtin function handlings, and make escape information more accurate (it's sound, but too conservative currently)
-  * [ ] (related to above) do more smart analysis on aliased pointers to some extent
-- [ ] maybe make it flow-sensitive (with sparse analysis state)
-- [ ] port to the Julia base, and implement optimization passes that use this information
+- [ ] implement more builtin function handlings, and make escape information more accurate
+- [ ] make analysis take into account alias information
+- [ ] make it flow-sensitive and implement a `finalizer` elision optimization (#17)
+- [ ] port to the Julia base, and implement heap-to-stack optimization pass
+- [ ] circumvent too conservative escape through potential `throw` calls by copying stack-to-heap on exception (#15)

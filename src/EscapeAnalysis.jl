@@ -137,24 +137,28 @@ end
 # ========
 
 """
-    struct EscapeLattice
+    x::EscapeLattice
 
 A lattice for escape information, which holds the following properties:
-- `Analyzed`: not formally part of the lattice, indicates this statement has not been analyzed at all
-- `ReturnEscape`: indicates it will escape to the caller via return (possibly as a field)
-- `ArgEscape`: indicates it will escape to the caller through `setfield!` on argument(s)
-  -1 : no escape
-   0 : unknown or multiple
-   n : through argument N
+- `x.Analyzed`: not formally part of the lattice, indicates this statement has not been analyzed at all
+- `x.ReturnEscape`: indicates it will escape to the caller via return (possibly as a field)
+- `x.ArgEscape` (not implemented yet): indicates it will escape to the caller through `setfield!` on argument(s)
+  * `-1` : no escape
+  * `0` : unknown or multiple
+  * `n` : through argument N
 
-These attributes can be combined to create a partial lattice:
-(note that this is inverted from the order used for the lattice in Core.Compiler)
-- `NoEscape`: the topmost element of this lattice
-- `Escape`: the inverse of `NoEscape`
-- `AllEscape`: the bottom element of this lattice, meaning it will escape to everywhere
+These attributes can be combined to create a partial lattice that has a finite height:
+- `AllEscape`: the topmost element of this lattice, meaning it will escape to everywhere
+- `ReturnEscape`, `Escape`: intermediate lattice elements
+- `NoEscape`: the bottom element of this lattice
 
-An abstract state will be initialized with the top(most) elements, and an escape analysis
-will transition these elements from the top to the bottom.
+The escape analysis will transition these elements from the bottom to the top,
+in the same way as Julia's native type inference routine.
+An abstract state will be initialized with the bottom(-like) elements:
+- the call arguments are initialized as `ReturnEscape`, because they're visible from a caller immediately
+- the other states are initialized as `NotAnalyzed`, which is a special lattice element that
+  is slightly lower than `NoEscape`, but at the same time doesn't represent any meaning
+  other than it's not analyzed yet (thus it's not formally part of the lattice).
 """
 struct EscapeLattice
     Analyzed::Bool
@@ -163,7 +167,7 @@ struct EscapeLattice
     # TODO: ArgEscape::Int
 end
 
-NoInformation() = EscapeLattice(false, false, false) # not formally part of the lattice
+NotAnalyzed() = EscapeLattice(false, false, false) # not formally part of the lattice
 NoEscape() = EscapeLattice(true, false, false)
 ReturnEscape() = EscapeLattice(true, true, false)
 #=Other=#Escape() = EscapeLattice(true, false, true)
@@ -176,12 +180,12 @@ is_no_escape(x::EscapeLattice) = x === NoEscape()
 is_escape(x::EscapeLattice) = !is_no_escape(x)
 is_all_escape(x::EscapeLattice) = x === AllEscape()
 is_return_escape(x::EscapeLattice) = x.ReturnEscape
-not_analyzed(x::EscapeLattice) = x === NoInformation()
+not_analyzed(x::EscapeLattice) = x === NotAnalyzed()
 
 function ⊑(x::EscapeLattice, y::EscapeLattice)
-    if x.Analyzed <= y.Analyzed &&
-       x.ReturnEscape <= y.ReturnEscape &&
-       x.OtherEscape <= y.OtherEscape
+    if x.Analyzed ≤ y.Analyzed &&
+       x.ReturnEscape ≤ y.ReturnEscape &&
+       x.OtherEscape ≤ y.OtherEscape
        return true
     end
     return false
@@ -189,16 +193,16 @@ end
 
 function ⊔(x::EscapeLattice, y::EscapeLattice)
     return EscapeLattice(
-        x.Analyzed & y.Analyzed,
-        x.ReturnEscape & y.ReturnEscape,
-        x.OtherEscape & y.OtherEscape)
+        x.Analyzed | y.Analyzed,
+        x.ReturnEscape | y.ReturnEscape,
+        x.OtherEscape | y.OtherEscape)
 end
 
 function ⊓(x::EscapeLattice, y::EscapeLattice)
     return EscapeLattice(
-        x.Analyzed | y.Analyzed,
-        x.ReturnEscape | y.ReturnEscape,
-        x.OtherEscape | y.OtherEscape)
+        x.Analyzed & y.Analyzed,
+        x.ReturnEscape & y.ReturnEscape,
+        x.OtherEscape & y.OtherEscape)
 end
 
 # extend lattices of escape information to lattices of mappings of arguments and SSA stmts to escape information
@@ -209,8 +213,8 @@ struct EscapeState
 end
 function EscapeState(nslots::Int, nargs::Int, nstmts::Int)
     arguments = EscapeLattice[
-        1 < i ≤ nargs ? ReturnEscape() : NoInformation() for i in 1:nslots]
-    ssavalues = EscapeLattice[NoInformation() for _ in 1:nstmts]
+        1 < i ≤ nargs ? ReturnEscape() : NotAnalyzed() for i in 1:nslots]
+    ssavalues = EscapeLattice[NotAnalyzed() for _ in 1:nstmts]
     return EscapeState(arguments, ssavalues)
 end
 Base.copy(s::EscapeState) = EscapeState(copy(s.arguments), copy(s.ssavalues))
@@ -281,14 +285,14 @@ function find_escapes(ir::IRCode, nargs::Int)
                     end
                 elseif head === :new
                     info = state.ssavalues[pc]
-                    info === NoInformation() && (info = NoEscape())
+                    info === NotAnalyzed() && (info = NoEscape())
                     for arg in stmt.args[2:end]
                         push!(changes, (arg, info))
                     end
                     push!(changes, (SSAValue(pc), info)) # we will be interested in if this allocation is not escape or not
                 elseif head === :splatnew
                     info = state.ssavalues[pc]
-                    info === NoInformation() && (info = NoEscape())
+                    info === NotAnalyzed() && (info = NoEscape())
                     # splatnew passes field values using a single tuple (args[2])
                     push!(changes, (stmt.args[2], info))
                     push!(changes, (SSAValue(pc), info)) # we will be interested in if this allocation is not escape or not
@@ -375,9 +379,9 @@ function find_escapes(ir::IRCode, nargs::Int)
             new = copy(state)
             for (x, info) in changes
                 if isa(x, Argument)
-                    new.arguments[x.n] = new.arguments[x.n] ⊓ info
+                    new.arguments[x.n] = new.arguments[x.n] ⊔ info
                 elseif isa(x, SSAValue)
-                    new.ssavalues[x.id] = new.ssavalues[x.id] ⊓ info
+                    new.ssavalues[x.id] = new.ssavalues[x.id] ⊔ info
                 end
             end
             empty!(changes)
@@ -452,7 +456,7 @@ end
 
 function escape_builtin!(::typeof(tuple), args::Vector{Any}, pc::Int, state::EscapeState, ir::IRCode, changes::Changes)
     info = state.ssavalues[pc]
-    info === NoInformation() && (info = NoEscape())
+    info === NotAnalyzed() && (info = NoEscape())
     # TODO: we may want to remove this check when we implement the alias analysis
     add_changes!(args[2:end], ir, info, changes)
     return true
@@ -461,7 +465,7 @@ end
 # TODO don't propagate escape information to the 1st argument, but propagate information to aliased field
 function escape_builtin!(::typeof(getfield), args::Vector{Any}, pc::Int, state::EscapeState, ir::IRCode, changes::Changes)
     info = state.ssavalues[pc]
-    info === NoInformation() && (info = NoEscape())
+    info === NotAnalyzed() && (info = NoEscape())
     rt = widenconst(ir.stmts.type[pc])
     # Only propagate info when the field itself is non-bitstype
     # TODO: we may want to remove this check when we implement the alias analysis
@@ -550,7 +554,7 @@ end
 # adapted from https://github.com/JuliaDebug/LoweredCodeUtils.jl/blob/4612349432447e868cf9285f647108f43bd0a11c/src/codeedges.jl#L881-L897
 function print_with_info(io::IO, ir::IRCode, (; arguments, ssavalues)::EscapeState)
     function char_color(info::EscapeLattice)
-        return info === NoInformation() ? ('◌', :plain) :
+        return info === NotAnalyzed() ? ('◌', :plain) :
                info === NoEscape() ? ('↓', :green) :
                info === ReturnEscape() ? ('↑', :yellow) :
                info === Escape() ? ('→', :red) :
