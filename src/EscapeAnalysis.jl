@@ -136,21 +136,37 @@ end
 # analysis
 # ========
 
+# TODO flow-sensitivity
+#    Main motivation here is finalizer elision, e.g.:
+#    ```julia
+#    let
+#        m = make_m()
+#        if cond
+#            return nothing # <= insert a finalizer call here
+#        end
+#        return m
+#    end
+#    ```
+#    We can do setup separate states for each statement (probably better with sparse states
+#    since there can be many statements), or encoding the quivalent information into the lattice
+
 """
     x::EscapeLattice
 
 A lattice for escape information, which holds the following properties:
-- `x.Analyzed`: not formally part of the lattice, indicates this statement has not been analyzed at all
-- `x.ReturnEscape`: indicates it will escape to the caller via return (possibly as a field)
-- `x.ArgEscape` (not implemented yet): indicates it will escape to the caller through `setfield!` on argument(s)
+- `x.Analyzed::Bool`: not formally part of the lattice, indicates this statement has not been analyzed at all
+- `x.ReturnEscape::Bool`: indicates it will escape to the caller via return (possibly as a field)
+- `x.ThrownEscape::Bool`: indicates it may escape to somewhere through an exception (possibly as a field)
+- `x.GlobalEscape::Bool`: indicates it may escape to a global space an exception (possibly as a field)
+- `x.ArgEscape::Int` (not implemented yet): indicates it will escape to the caller through `setfield!` on argument(s)
   * `-1` : no escape
   * `0` : unknown or multiple
   * `n` : through argument N
 
 These attributes can be combined to create a partial lattice that has a finite height:
-- `AllEscape`: the topmost element of this lattice, meaning it will escape to everywhere
-- `ReturnEscape`, `Escape`: intermediate lattice elements
-- `NoEscape`: the bottom element of this lattice
+- `AllEscape()`: the topmost element of this lattice, meaning it will escape to everywhere
+- `ReturnEscape()`, `ThrownEscape()`, `GlobalEscape()`: intermediate lattice elements
+- `NoEscape()`: the bottom element of this lattice
 
 The escape analysis will transition these elements from the bottom to the top,
 in the same way as Julia's native type inference routine.
@@ -163,29 +179,38 @@ An abstract state will be initialized with the bottom(-like) elements:
 struct EscapeLattice
     Analyzed::Bool
     ReturnEscape::Bool
-    OtherEscape::Bool
+    ThrownEscape::Bool
+    GlobalEscape::Bool
     # TODO: ArgEscape::Int
 end
 
-NotAnalyzed() = EscapeLattice(false, false, false) # not formally part of the lattice
-NoEscape() = EscapeLattice(true, false, false)
-ReturnEscape() = EscapeLattice(true, true, false)
-#=Other=#Escape() = EscapeLattice(true, false, true)
-AllEscape() = EscapeLattice(true, true, true)
+NotAnalyzed()  = EscapeLattice(false, false, false, false) # not formally part of the lattice
+NoEscape()     = EscapeLattice(true,  false, false, false)
+ReturnEscape() = EscapeLattice(true,  true,  false, false)
+ThrownEscape() = EscapeLattice(true,  false, true,  false)
+GlobalEscape() = EscapeLattice(true,  false, false, true)
+AllEscape()    = EscapeLattice(true,  true,  true,  true)
 
-export is_no_escape, is_escape, is_return_escape, not_analyzed
 # Convenience names for some ⊑ queries
-# TODO: these should be renamed to has_escape, has_return_escape, etc.
-is_no_escape(x::EscapeLattice) = x === NoEscape()
-is_escape(x::EscapeLattice) = !is_no_escape(x)
-is_all_escape(x::EscapeLattice) = x === AllEscape()
-is_return_escape(x::EscapeLattice) = x.ReturnEscape
-not_analyzed(x::EscapeLattice) = x === NotAnalyzed()
+export
+    has_not_analyzed,
+    has_no_escape,
+    has_return_escape,
+    has_thrown_escape,
+    has_global_escape,
+    has_all_escape
+has_not_analyzed(x::EscapeLattice)  = x === NotAnalyzed()
+has_no_escape(x::EscapeLattice)     = x ⊑ NoEscape()
+has_return_escape(x::EscapeLattice) = x.ReturnEscape
+has_thrown_escape(x::EscapeLattice) = x.ThrownEscape
+has_global_escape(x::EscapeLattice) = x.GlobalEscape
+has_all_escape(x::EscapeLattice)    = x === AllEscape()
 
 function ⊑(x::EscapeLattice, y::EscapeLattice)
     if x.Analyzed ≤ y.Analyzed &&
        x.ReturnEscape ≤ y.ReturnEscape &&
-       x.OtherEscape ≤ y.OtherEscape
+       x.ThrownEscape ≤ y.ThrownEscape &&
+       x.GlobalEscape ≤ y.GlobalEscape
        return true
     end
     return false
@@ -195,14 +220,18 @@ function ⊔(x::EscapeLattice, y::EscapeLattice)
     return EscapeLattice(
         x.Analyzed | y.Analyzed,
         x.ReturnEscape | y.ReturnEscape,
-        x.OtherEscape | y.OtherEscape)
+        x.ThrownEscape | y.ThrownEscape,
+        x.GlobalEscape | y.GlobalEscape,
+        )
 end
 
 function ⊓(x::EscapeLattice, y::EscapeLattice)
     return EscapeLattice(
         x.Analyzed & y.Analyzed,
         x.ReturnEscape & y.ReturnEscape,
-        x.OtherEscape & y.OtherEscape)
+        x.ThrownEscape & y.ThrownEscape,
+        x.GlobalEscape & y.GlobalEscape,
+        )
 end
 
 # extend lattices of escape information to lattices of mappings of arguments and SSA stmts to escape information
@@ -240,10 +269,6 @@ __clear_escape_cache!() = empty!(GLOBAL_ESCAPE_CACHE)
 
 const Changes = Vector{Tuple{Any,EscapeLattice}}
 
-# TODO
-# - implement more builtin handling
-# - (related to above) do alias analysis to some extent
-# - maybe flow-sensitivity (with sparse analysis state)
 function find_escapes(ir::IRCode, nargs::Int)
     (; stmts, sptypes, argtypes) = ir
     nstmts = length(stmts)
@@ -256,33 +281,22 @@ function find_escapes(ir::IRCode, nargs::Int)
         for pc in nstmts:-1:1
             stmt = stmts.inst[pc]
 
-            # inliner already computed effect-freeness of this statement (whether it may throw or not)
-            # and if it may throw, we conservatively escape all the arguments
+            # we escape statements with the `ThrownEscape` property using the effect-freeness
+            # information computed by the inliner
             is_effect_free = stmts.flag[pc] & IR_FLAG_EFFECT_FREE ≠ 0
 
             # collect escape information
             if isa(stmt, Expr)
                 head = stmt.head
-                if head === :call # TODO implement more builtins, make them more accurate
+                if head === :call
+                    has_changes = escape_call!(stmt.args, pc, state, ir, changes)
                     if !is_effect_free
-                        # TODO we can have a look at builtins.c and limit the escaped arguments if any of them are not captured in the thrown exception
-                        add_changes!(stmt.args[2:end], ir, Escape(), changes)
+                        add_changes!(stmt.args, ir, ThrownEscape(), changes)
                     else
-                        escape_call!(stmt.args, pc, state, ir, changes) || continue
+                        has_changes || continue
                     end
                 elseif head === :invoke
-                    linfo = first(stmt.args)
-                    escapes_for_call = get(GLOBAL_ESCAPE_CACHE, linfo, nothing)
-                    if isnothing(escapes_for_call)
-                        add_changes!(stmt.args[3:end], ir, Escape(), changes)
-                    else
-                        for (arg, info) in zip(stmt.args[2:end], escapes_for_call.arguments)
-                            if info === ReturnEscape()
-                                info = NoEscape()
-                            end
-                            push!(changes, (arg, info))
-                        end
-                    end
+                    escape_invoke!(stmt.args, pc, state, ir, changes)
                 elseif head === :new
                     info = state.ssavalues[pc]
                     info === NotAnalyzed() && (info = NoEscape())
@@ -299,44 +313,49 @@ function find_escapes(ir::IRCode, nargs::Int)
                 elseif head === :(=)
                     lhs, rhs = stmt.args
                     if isa(lhs, GlobalRef)
-                        add_change!(rhs, ir, Escape(), changes)
+                        add_change!(rhs, ir, GlobalEscape(), changes)
                     end
-                elseif head === :cfunction
-                    # for :cfunction we conservatively escapes all its arguments
-                    add_changes!(stmt.args, ir, Escape(), changes)
                 elseif head === :foreigncall
                     # for foreigncall we simply escape every argument (args[6:length(args[3])])
                     # and its name (args[1])
                     # TODO: we can apply similar strategy like builtin calls
                     #       to specialize some foreigncalls
                     foreigncall_nargs = length((stmt.args[3])::SimpleVector)
-                    push!(changes, (stmt.args[1], Escape()))
-                    add_changes!(stmt.args[6:5+foreigncall_nargs], ir, Escape(), changes)
+                    push!(changes, (stmt.args[1], ThrownEscape()))
+                    add_changes!(stmt.args[6:5+foreigncall_nargs], ir, ThrownEscape(), changes)
+                elseif head === :throw_undef_if_not # XXX when is this expression inserted ?
+                    add_change!(stmt.args[1], ir, ThrownEscape(), changes)
                 elseif is_meta_expr_head(head)
+                    # meta expressions doesn't account for any usages
                     continue
                 elseif head === :static_parameter
-                    # static_parameter reference static parameter using index
+                    # :static_parameter refers any of static parameters, but since they exist
+                    # statically, we're really not interested in their escapes
                     continue
                 elseif head === :copyast
-                    # copyast simply copies a surface syntax AST
+                    # copyast simply copies a surface syntax AST, and should never use any of arguments or SSA values
                     continue
                 elseif head === :undefcheck
                     # undefcheck is temporarily inserted by compiler
                     # it will be processd be later pass so it won't change any of escape states
                     continue
-                elseif head === :throw_undef_if_not
-                    # conservatively escapes the val argument (argument[1])
-                    add_change!(stmt.args[1], ir, Escape(), changes)
                 elseif head === :the_exception
+                    # we don't propagate escape information on exceptions via this expression, but rather
+                    # use a dedicated lattice property `ThrownEscape`
                     continue
                 elseif head === :isdefined
+                    # just returns `Bool`, nothing accounts for any usages
                     continue
                 elseif head === :enter || head === :leave || head === :pop_exception
+                    # these exception frame managements doesn't account for any usages
+                    # we can just ignore escape information from
                     continue
                 elseif head === :gc_preserve_begin || head === :gc_preserve_end
+                    # `GC.@preserve` may "use" arbitrary values, but we can just ignore the escape information
+                    # imposed on `GC.@preserve` expressions since they're supposed to never be used elsewhere
                     continue
-                else # TODO: this is too conservative
-                    add_changes!(stmt.args, ir, Escape(), changes)
+                else
+                    add_changes!(stmt.args, ir, AllEscape(), changes)
                 end
             elseif isa(stmt, PiNode)
                 if isdefined(stmt, :val)
@@ -412,11 +431,36 @@ function add_change!(@nospecialize(x), ir::IRCode, info::EscapeLattice, changes:
     end
 end
 
-function escape_call!(args::Vector{Any}, pc::Int, state::EscapeState, ir::IRCode, changes::Changes)
+function escape_invoke!(args::Vector{Any}, pc::Int,
+                        state::EscapeState, ir::IRCode, changes::Changes)
+    linfo = first(args)::MethodInstance
+    linfostate = get(GLOBAL_ESCAPE_CACHE, linfo, nothing)
+    if isnothing(linfostate)
+        add_changes!(args[2:end], ir, AllEscape(), changes)
+    else
+        retinfo = state.ssavalues[pc] # escape information imposed on the return
+        for (arg, arginfo) in zip(args[2:end], linfostate.arguments)
+            info = from_interprocedural(arginfo, retinfo)
+            push!(changes, (arg, info))
+        end
+    end
+end
+
+# reinterpret the escape information imposed on the callee argument (`arginfo`) in the context of the caller frame
+# we also merge it with the escape information imposed on the return value (`retinfo`), because
+# the caller argument can be an alias of the return value
+# TODO implement alias analysis and don't propagate `retinfo` to `info` when the return value must not alias to the call argument
+function from_interprocedural(arginfo::EscapeLattice, retinfo::EscapeLattice)
+    info = EscapeLattice(true, false, arginfo.ThrownEscape, arginfo.GlobalEscape)
+    return info ⊔ retinfo
+end
+
+function escape_call!(args::Vector{Any}, pc::Int,
+                      state::EscapeState, ir::IRCode, changes::Changes)
     ft = argextype(first(args), ir, ir.sptypes, ir.argtypes)
     f = argtype_to_function(ft)
     if isa(f, Core.IntrinsicFunction)
-        ishandled = nothing # XXX we may break soundness here, e.g. `pointerref`
+        return false # COMBAK we may break soundness here, e.g. `pointerref`
     else
         ishandled = escape_builtin!(f, args, pc, state, ir, changes)::Union{Nothing,Bool}
     end
@@ -424,10 +468,13 @@ function escape_call!(args::Vector{Any}, pc::Int, state::EscapeState, ir::IRCode
     if !ishandled
         # if this call hasn't been handled by any of pre-defined handlers,
         # we escape this call conservatively
-        add_changes!(args[2:end], ir, Escape(), changes)
+        add_changes!(args[2:end], ir, AllEscape(), changes)
     end
     return true
 end
+
+# TODO implement more builtins, make them more accurate
+# TODO use `T_IFUNC`-like logic and don't not abuse the dispatch
 
 escape_builtin!(@nospecialize(f), _...) = return false
 
@@ -441,8 +488,8 @@ function escape_builtin!(::typeof(ifelse), args::Vector{Any}, pc::Int, state::Es
     f, cond, th, el = args
     info = state.ssavalues[pc]
     condt = argextype(cond, ir, ir.sptypes, ir.argtypes)
-    if isa(condt, Const) && isa(condt.val, Bool)
-        if condt.val
+    if isa(condt, Const) && (cond = condt.val; isa(cond, Bool))
+        if cond
             push!(changes, (th, info))
         else
             push!(changes, (el, info))
@@ -457,7 +504,6 @@ end
 function escape_builtin!(::typeof(tuple), args::Vector{Any}, pc::Int, state::EscapeState, ir::IRCode, changes::Changes)
     info = state.ssavalues[pc]
     info === NotAnalyzed() && (info = NoEscape())
-    # TODO: we may want to remove this check when we implement the alias analysis
     add_changes!(args[2:end], ir, info, changes)
     return true
 end
@@ -466,10 +512,8 @@ end
 function escape_builtin!(::typeof(getfield), args::Vector{Any}, pc::Int, state::EscapeState, ir::IRCode, changes::Changes)
     info = state.ssavalues[pc]
     info === NotAnalyzed() && (info = NoEscape())
-    rt = widenconst(ir.stmts.type[pc])
-    # Only propagate info when the field itself is non-bitstype
-    # TODO: we may want to remove this check when we implement the alias analysis
-    if !isbitstype(rt)
+    # only propagate info when the field itself is non-bitstype
+    if !isbitstype(widenconst(ir.stmts.type[pc]))
         add_changes!(args[2:end], ir, info, changes)
     end
     return true
@@ -539,6 +583,33 @@ end
 # in order to run a whole analysis from ground zero (e.g. for benchmarking, etc.)
 __clear_caches!() = (__clear_code_cache!(); __clear_escape_cache!())
 
+function get_name_color(x::EscapeLattice, symbol::Bool = false)
+    name, color = x === NotAnalyzed()  ? ((nameof(NotAnalyzed),  '◌'), :plain) :
+                  x === NoEscape()     ? ((nameof(NoEscape),     '✓'), :green) :
+                  x === ReturnEscape() ? ((nameof(ReturnEscape), '↑'), :cyan) :
+                  x === ThrownEscape() ? ((nameof(ThrownEscape), '↓'), :yellow) :
+                  x === GlobalEscape() ? ((nameof(GlobalEscape), 'G'), :red) :
+                                         ((nothing,              '*'), :red)
+    return (symbol ? last(name) : first(name), color)
+end
+
+function Base.show(io::IO, x::EscapeLattice)
+    name, color = get_name_color(x)
+    if isnothing(name)
+        Base.@invoke show(io::IO, x::Any)
+    else
+        printstyled(io, name; color)
+    end
+end
+function Base.show(io::IO, ::MIME"application/prs.juno.inline", x::EscapeLattice)
+    name, color = get_name_color(x)
+    if isnothing(name)
+        return x # use fancy tree-view
+    else
+        printstyled(io, name; color)
+    end
+end
+
 struct EscapeAnalysisResult
     ir::IRCode
     state::EscapeState
@@ -553,20 +624,12 @@ end
 
 # adapted from https://github.com/JuliaDebug/LoweredCodeUtils.jl/blob/4612349432447e868cf9285f647108f43bd0a11c/src/codeedges.jl#L881-L897
 function print_with_info(io::IO, ir::IRCode, (; arguments, ssavalues)::EscapeState)
-    function char_color(info::EscapeLattice)
-        return info === NotAnalyzed() ? ('◌', :plain) :
-               info === NoEscape() ? ('↓', :green) :
-               info === ReturnEscape() ? ('↑', :yellow) :
-               info === Escape() ? ('→', :red) :
-               ('*', :red)
-    end
-
     # print escape information on SSA values
     function preprint(io::IO)
         print(io, widenconst(ir.argtypes[1]), '(')
         for (i, arg) in enumerate(arguments)
             i == 1 && continue
-            c, color = char_color(arg)
+            c, color = get_name_color(arg, true)
             printstyled(io, '_', i, "::", ir.argtypes[i], ' ', c; color)
             i ≠ length(arguments) && print(io, ", ")
         end
@@ -576,7 +639,7 @@ function print_with_info(io::IO, ir::IRCode, (; arguments, ssavalues)::EscapeSta
     # print escape information on SSA values
     nd = ndigits(length(ssavalues))
     function preprint(io::IO, idx::Int)
-        c, color = char_color(ssavalues[idx])
+        c, color = get_name_color(ssavalues[idx], true)
         printstyled(io, lpad(idx, nd), ' ', c, ' '; color)
     end
     print_with_info(preprint, (args...)->nothing, io, ir)

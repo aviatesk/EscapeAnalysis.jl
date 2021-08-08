@@ -7,9 +7,11 @@ Couple of notes about this escape analysis:
 - it is flow-insenstive, i.e. doesn't distinguish escape information on the same "object" but at different locations
 
 This escape analysis works on a lattice called `EscapeLattice,`, which holds the following properties:
-- `x.Analyzed`: not formally part of the lattice, indicates this statement has not been analyzed at all
-- `x.ReturnEscape`: indicates it will escape to the caller via return (possibly as a field)
-- `x.ArgEscape`  (not implemented yet): indicates it will escape to the caller through `setfield!` on argument(s)
+- `x.Analyzed::Bool`: not formally part of the lattice, indicates this statement has not been analyzed at all
+- `x.ReturnEscape::Bool`: indicates it will escape to the caller via return (possibly as a field)
+- `x.ThrownEscape::Bool`: indicates it may escape to somewhere through an exception (possibly as a field)
+- `x.GlobalEscape::Bool`: indicates it may escape to a global space an exception (possibly as a field)
+- `x.ArgEscape::Int` (not implemented yet): indicates it will escape to the caller through `setfield!` on argument(s)
   * `-1` : no escape
   * `0` : unknown or multiple
   * `n` : through argument N
