@@ -29,7 +29,8 @@ end
         result = analyze_escapes((Any,)) do a
             return a
         end
-        @test is_return_escape(result.state.arguments[2])
+        @test is_return_escape(result.state.arguments[1]) # self
+        @test is_return_escape(result.state.arguments[2]) # argument
     end
 
     # https://github.com/aviatesk/EscapeAnalysis.jl/pull/16
@@ -38,13 +39,6 @@ end
             global bb = a
         end
         @test is_return_escape(result.state.arguments[2])
-    end
-
-    let # self
-        result = analyze_escapes((Any,)) do x
-            return x
-        end
-        @test not_analyzed(result.state.arguments[1])
     end
 end
 
