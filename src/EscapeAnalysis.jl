@@ -213,7 +213,7 @@ struct EscapeState
 end
 function EscapeState(nslots::Int, nargs::Int, nstmts::Int)
     arguments = EscapeLattice[
-        1 < i ≤ nargs ? ReturnEscape() : NotAnalyzed() for i in 1:nslots]
+        1 ≤ i ≤ nargs ? ReturnEscape() : NotAnalyzed() for i in 1:nslots]
     ssavalues = EscapeLattice[NotAnalyzed() for _ in 1:nstmts]
     return EscapeState(arguments, ssavalues)
 end
