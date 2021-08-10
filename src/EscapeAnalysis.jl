@@ -234,8 +234,17 @@ function ⊓(x::EscapeLattice, y::EscapeLattice)
         )
 end
 
-# extend lattices of escape information to lattices of mappings of arguments and SSA stmts to escape information
-# ⊓ and ⊔ operate pair-wise, and from there we can just rely on the Base implementation for dictionary equality comparison
+"""
+    state::EscapeState
+
+Extended lattice that maps arguments and SSA values to escape information represented as `EscapeLattice`:
+- `state.arguments::Vector{EscapeLattice}`: escape information about "arguments" – note that
+  "argument" can include both call arguments and slots appearing in analysis frame
+- `ssavalues::Vector{EscapeLattice}`: escape information about each SSA value
+
+`X::EscapeState ⊓ Y::EscapeState` and `X::EscapeState ⊔ Y::EscapeState` are implemented as
+the pair-wise operations of the corresponding operations on `EscapeLattice`.
+"""
 struct EscapeState
     arguments::Vector{EscapeLattice}
     ssavalues::Vector{EscapeLattice}
@@ -259,16 +268,19 @@ Base.:(==)(X::EscapeState, Y::EscapeState) = X.arguments == Y.arguments && X.ssa
 const GLOBAL_ESCAPE_CACHE = IdDict{MethodInstance,EscapeState}()
 __clear_escape_cache!() = empty!(GLOBAL_ESCAPE_CACHE)
 
-# An escape analysis implementation based on the algorithm described in the paper [MM02].
-# The analysis works on the lattice of `EscapeLattice` and transitions lattice elements
-# from the top to the bottom in a backward way, i.e. data flows from usage cites to definitions.
-#
-# [MM02] A Graph-Free approach to Data-Flow Analysis.
-#        Markas Mohnen, 2002, April.
-#        https://api.semanticscholar.org/CorpusID:28519618
-
 const Changes = Vector{Tuple{Any,EscapeLattice}}
 
+"""
+    find_escapes(ir::IRCode, nargs::Int) -> EscapeState
+
+Escape analysis implementation based on the algorithm described in the paper [^MM02].
+The analysis works on the lattice of [`EscapeLattice`](@ref) and transitions lattice elements
+from the bottom to the top in a _backward_ way, i.e. data flows from usage cites to definitions.
+
+[^MM02]: A Graph-Free approach to Data-Flow Analysis.
+         Markas Mohnen, 2002, April.
+         <https://api.semanticscholar.org/CorpusID:28519618>
+"""
 function find_escapes(ir::IRCode, nargs::Int)
     (; stmts, sptypes, argtypes) = ir
     nstmts = length(stmts)

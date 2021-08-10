@@ -4,7 +4,7 @@ Couple of notes about this escape analysis:
 - the analysis is based on the [data-flow analysis](https://aviatesk.github.io/posts/data-flow-problem/) approach
 - it is a backward-analysis, i.e. escape information will flow from usage site to definition site
 - the algorithm works by updating the working set that contains program counters corresponding to SSA statements until every statement gets converged to a fixed point
-- it is flow-insenstive, i.e. doesn't distinguish escape information on the same "object" but at different locations
+- it is flow-insensitive, i.e. doesn't distinguish escape information on the same "object" but at different locations
 
 This escape analysis works on a lattice called `EscapeLattice,`, which holds the following properties:
 - `x.Analyzed::Bool`: not formally part of the lattice, indicates this statement has not been analyzed at all
