@@ -10,7 +10,12 @@ This analysis works on a lattice called `EscapeLattice`, which holds the followi
   * otherwise it indicates it will escape to the caller via return (possibly as a field),
     where `0 ∈ x.ReturnEscape` has the special meaning that it's visible to the caller
     simply because it's passed as call argument
-- `x.ThrownEscape::Bool`: indicates it may escape to somewhere through an exception (possibly as a field)
+- `x.ThrownEscape::$CatchRegions`: keeps regions where this object can be caught as an exception
+  * `isempty(x.ThrownEscape)` means it never escapes as an exception
+  * otherwise it indicates it may escape to somewhere through an exception (possibly as a field),
+    where `$UNHANDLED_REGION` has the following special meanings:
+    + `$UNHANDLED_REGION ∉ x.ThrownEscape`: means it can be handled within this frame, and thus won't escape to somewhere
+    + `$UNHANDLED_REGION ∈ x.ThrownEscape`: means it won't be handled within this frame, and thus may escape to somewhere through an exception (possibly as a field)
 - `x.GlobalEscape::Bool`: indicates it may escape to a global space an exception (possibly as a field)
 - `x.ArgEscape::Int` (not implemented yet): indicates it will escape to the caller through `setfield!` on argument(s)
   * `-1` : no escape

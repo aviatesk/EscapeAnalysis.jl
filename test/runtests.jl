@@ -347,6 +347,187 @@ end
     end
 end
 
+
+@testset "escape through exceptions" begin
+    let # simple: return escape
+        result = analyze_escapes() do
+            r = Ref("foo")           # ReturnEscape(`err`) => `r`
+            local ret # prevent DCE
+            try
+                s = getfield(r, :x)  # ThrownEscape => `r`
+                ret = sizeof(s)
+            catch err
+                ret = err            # ReturnEscape(`ret`) => `err`
+            end
+            return ret               # ReturnEscape => `ret`
+        end
+        i = findfirst(==(Base.RefValue{String}), result.ir.stmts.type)
+        @assert !isnothing(i)
+        @test has_thrown_escape(result.state.ssavalues[i])
+        @test has_return_escape(result.state.ssavalues[i])
+    end
+
+    let # simple: global escape
+        result = analyze_escapes() do
+            r = Ref("foo")           # GlobalEscape(`err`) => `r`
+            local ret # prevent DCE
+            try
+                s = getfield(r, :x)  # ThrownEscape => `r`
+                ret = sizeof(s)
+            catch err
+                global g = err       # GlobalEscape => `err`
+            end
+            nothing
+        end
+        i = findfirst(==(Base.RefValue{String}), result.ir.stmts.type)
+        @assert !isnothing(i)
+        @test has_thrown_escape(result.state.ssavalues[i])
+        @test has_global_escape(result.state.ssavalues[i])
+    end
+
+    let # simple: exception is caught within a frame => doesn't escape to a caller
+        result = analyze_escapes() do
+            r = Ref("foo")           # ReturnEscape(`err`) ≠> `r`
+            local ret # prevent DCE
+            try
+                s = getfield(r, :x)  # ThrownEscape => `r`
+                ret = sizeof(s)
+            catch
+                ret = nothing
+            end
+            return ret               # ReturnEscape => `ret`
+        end
+        i = findfirst(==(Base.RefValue{String}), result.ir.stmts.type)
+        @assert !isnothing(i)
+        @test !has_unhandled_thrown_escape(result.state.ssavalues[i])
+    end
+
+    let # limit: escape information imposed on `err` shouldn't propagate to `r2`, but only to `r1`
+        result = analyze_escapes() do
+            r1 = Ref("foo")            # GlobalEscape(`err`) => `r1`
+            r2 = Ref(:foo)             # GlobalEscape(`err`) ≠> `r1`
+            local ret # prevent DCE
+            try
+                s1 = getfield(r1, :x)  # ThrownEscape => `r1`
+                ret = sizeof(s1)
+            catch err
+                global g = err         # GlobalEscape => `err`
+            end
+            s2 = getfield(r2, :x)      # ThrownEscape => `r2`
+            return r2                  # ReturnEscape => `r2`
+        end
+        i1 = findfirst(==(Base.RefValue{String}), result.ir.stmts.type)
+        @assert !isnothing(i1)
+        @test has_thrown_escape(result.state.ssavalues[i1])
+        @test !has_return_escape(result.state.ssavalues[i1])
+        @test has_global_escape(result.state.ssavalues[i1])
+        i2 = findfirst(==(Base.RefValue{Symbol}), result.ir.stmts.type)
+        @assert !isnothing(i2)
+        @test has_thrown_escape(result.state.ssavalues[i2])
+        @test has_return_escape(result.state.ssavalues[i2])
+        @test !has_global_escape(result.state.ssavalues[i2])
+    end
+
+    let # sequence: escape information imposed on `err1` and `err2 should propagate separately
+        result = analyze_escapes() do
+            r1 = Ref("foo")            # GlobalEscape(`err1`) => `r1`, ReturnEscape(`err2`) ≠> `r2`
+            r2 = Ref(:foo)             # ReturnEscape(`err2`) => `r2`, GlobalEscape(`err1`) ≠> `r2`
+            local ret # prevent DCE
+            try
+                s1 = getfield(r1, :x)  # ThrownEscape => `r1`
+                ret = sizeof(s1)
+            catch err1
+                global g = err1        # GlobalEscape => `err1`
+            end
+            try
+                s2 = getfield(r2, :x)  # ThrownEscape => `r2`
+                ret = sizeof(s2)
+            catch err2
+                ret = err2             # ReturnEscape(`ret`) => `err2`
+            end
+            return ret                 # ReturnEscape => `ret`
+        end
+        i1 = findfirst(==(Base.RefValue{String}), result.ir.stmts.type)
+        @assert !isnothing(i1)
+        @test has_thrown_escape(result.state.ssavalues[i1])
+        @test !has_return_escape(result.state.ssavalues[i1])
+        @test has_global_escape(result.state.ssavalues[i1])
+        i2 = findfirst(==(Base.RefValue{Symbol}), result.ir.stmts.type)
+        @assert !isnothing(i2)
+        @test has_thrown_escape(result.state.ssavalues[i2])
+        @test has_return_escape(result.state.ssavalues[i2])
+        @test !has_global_escape(result.state.ssavalues[i2])
+    end
+
+    let # merge: escape information imposed on `err1` and `err2 should be merged
+        result = analyze_escapes() do
+            r = Ref("foo")           # GlobalEscape(`err1`) => `r`, ReturnEscape(`err2`) => `r`
+            local ret # prevent DCE
+            try
+                s = getfield(r, :x)  # ThrownEscape => `r`
+                ret = sizeof(s)
+            catch err1
+                global g = err1      # GlobalEscape => `err1`
+            end
+            try
+                s = getfield(r, :x)  # ThrownEscape => `r`
+                ret = sizeof(s)
+            catch err2
+                ret = err2           # ReturnEscape(`ret`) => `err2`
+            end
+            return ret               # ReturnEscape => `ret`
+        end
+        i = findfirst(==(Base.RefValue{String}), result.ir.stmts.type)
+        @assert !isnothing(i)
+        @test has_thrown_escape(result.state.ssavalues[i])
+        @test has_return_escape(result.state.ssavalues[i])
+        @test has_global_escape(result.state.ssavalues[i])
+    end
+
+    let # no exception handling: continue exception propagation
+        result = analyze_escapes() do
+            r = Ref("foo")           # ThrownEscape(`r1`) => `r`
+            local ret # prevent DCE
+            try
+                s = getfield(r, :x)  # ThrownEscape(0:0) => `r1`
+                ret = sizeof(s)
+            finally
+                if !@isdefined(ret)
+                    ret = nothing
+                end
+            end
+            return ret
+        end
+        i = findfirst(==(Base.RefValue{String}), result.ir.stmts.type)
+        @assert !isnothing(i)
+        @test has_unhandled_thrown_escape(result.state.ssavalues[i])
+    end
+
+    let # nested: escape information imposed on `inner` shouldn't propagate to `s`
+        result = analyze_escapes() do
+            r = Ref("foo")           # ReturnEscape(`inner`) ≠> `r`, GlobalEscape(`outer`) => `r`
+            local ret # prevent DCE
+            try
+                s = getfield(r, :x)  # ThrownEscape => `r`
+                try
+                    ret = sizeof(s)
+                catch inner
+                    return inner     # ReturnEscape => `inner`
+                end
+            catch outer
+                global g = outer     # GlobalEscape => `outer`
+                ret = nothing
+            end
+            return ret
+        end
+        i = findfirst(==(Base.RefValue{String}), result.ir.stmts.type)
+        @assert !isnothing(i)
+        @test has_thrown_escape(result.state.ssavalues[i])
+        @test !has_return_escape(result.state.ssavalues[i])
+        @test has_global_escape(result.state.ssavalues[i])
+    end
+end
+
 @testset "field analysis" begin
     let
         result = analyze_escapes((String,)) do a # => ReturnEscape
@@ -490,7 +671,7 @@ end
     @test can_elide_finalizer(EscapeAnalysis.ReturnEscape(1), 2)
     @test !can_elide_finalizer(EscapeAnalysis.ArgumentReturnEscape(), 1)
     @test !can_elide_finalizer(EscapeAnalysis.GlobalEscape(), 1)
-    @test can_elide_finalizer(EscapeAnalysis.ThrownEscape(), 1)
+    @test can_elide_finalizer(EscapeAnalysis.ThrownEscape(EscapeAnalysis.UNHANDLED_REGIONS), 1)
 end
 
 @testset "code quality" begin

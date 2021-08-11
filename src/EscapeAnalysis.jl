@@ -143,6 +143,11 @@ end
 # analysis
 # ========
 
+const CatchRegion  = UnitRange{Int}
+const CatchRegions = Vector{UnitRange{Int}}
+const UNHANDLED_REGION  = 0:0
+const UNHANDLED_REGIONS = CatchRegion[UNHANDLED_REGION]
+
 """
     x::EscapeLattice
 
@@ -153,7 +158,12 @@ A lattice for escape information, which holds the following properties:
   * otherwise it indicates it will escape to the caller via return (possibly as a field),
     where `0 ∈ x.ReturnEscape` has the special meaning that it's visible to the caller
     simply because it's passed as call argument
-- `x.ThrownEscape::Bool`: indicates it may escape to somewhere through an exception (possibly as a field)
+- `x.ThrownEscape::$CatchRegions`: keeps regions where this object can be caught as an exception
+  * `isempty(x.ThrownEscape)` means it never escapes as an exception
+  * otherwise it indicates it may escape to somewhere through an exception (possibly as a field),
+    where `$UNHANDLED_REGION` has the following special meanings:
+    + `$UNHANDLED_REGION ∉ x.ThrownEscape`: means it can be handled within this frame, and thus won't escape to somewhere
+    + `$UNHANDLED_REGION ∈ x.ThrownEscape`: means it won't be handled within this frame, and thus may escape to somewhere through an exception (possibly as a field)
 - `x.GlobalEscape::Bool`: indicates it may escape to a global space an exception (possibly as a field)
 - `x.ArgEscape::Int` (not implemented yet): indicates it will escape to the caller through `setfield!` on argument(s)
   * `-1` : no escape
@@ -178,15 +188,20 @@ An abstract state will be initialized with the bottom(-like) elements:
 struct EscapeLattice
     Analyzed::Bool
     ReturnEscape::BitSet
-    ThrownEscape::Bool
+    ThrownEscape::CatchRegions
     GlobalEscape::Bool
     # TODO: ArgEscape::Int
 end
 
 function Base.:(==)(x::EscapeLattice, y::EscapeLattice)
+    xt, yt = x.ThrownEscape, y.ThrownEscape
+    # don't consider the order equality for `CatchRegions`s comparison
+    length(xt) == length(yt) || return false
+    for catch_region in xt
+        catch_region in yt || return false
+    end
     return x.Analyzed === y.Analyzed &&
            x.ReturnEscape == y.ReturnEscape &&
-           x.ThrownEscape === y.ThrownEscape &&
            x.GlobalEscape === y.GlobalEscape
 end
 
@@ -194,17 +209,18 @@ end
 # precompute default values in order to eliminate computations at callsites
 const NO_RETURN = BitSet()
 const ARGUMENT_RETURN = BitSet(0)
-NotAnalyzed() = EscapeLattice(false, NO_RETURN, false, false) # not formally part of the lattice
-NoEscape() = EscapeLattice(true, NO_RETURN, false, false)
-ReturnEscape(returns::BitSet) = EscapeLattice(true, returns, false, false)
+const NO_CATCH = CatchRegions()
+NotAnalyzed() = EscapeLattice(false, NO_RETURN, NO_CATCH, false) # not formally part of the lattice
+NoEscape() = EscapeLattice(true, NO_RETURN, NO_CATCH, false)
+ReturnEscape(returns::BitSet) = EscapeLattice(true, returns, NO_CATCH, false)
 ReturnEscape(pc::Int) = ReturnEscape(BitSet(pc))
 ArgumentReturnEscape() = ReturnEscape(ARGUMENT_RETURN)
-ThrownEscape() = EscapeLattice(true, NO_RETURN, true, false)
-GlobalEscape() = EscapeLattice(true, NO_RETURN, false, true)
+ThrownEscape(catch_region::CatchRegions) = EscapeLattice(true, NO_RETURN, catch_region, false)
+GlobalEscape() = EscapeLattice(true, NO_RETURN, NO_CATCH, true)
 let
     all_return = BitSet(0:1000000)
     global AllReturnEscape() = ReturnEscape(all_return) # used for `show`
-    global AllEscape() = EscapeLattice(true, all_return, true, true)
+    global AllEscape(catch_region::CatchRegions) = EscapeLattice(true, all_return, catch_region, true)
 end
 
 # Convenience names for some ⊑ queries
@@ -213,16 +229,38 @@ export
     has_no_escape,
     has_return_escape,
     has_thrown_escape,
+    has_unhandled_thrown_escape,
     has_global_escape,
     has_all_escape,
+    can_allocate_on_stack,
     can_elide_finalizer
+
 has_not_analyzed(x::EscapeLattice) = x == NotAnalyzed()
 has_no_escape(x::EscapeLattice) = x ⊑ NoEscape()
 has_return_escape(x::EscapeLattice) = !isempty(x.ReturnEscape)
 has_return_escape(x::EscapeLattice, pc::Int) = pc in x.ReturnEscape
-has_thrown_escape(x::EscapeLattice) = x.ThrownEscape
+has_thrown_escape(x::EscapeLattice) = !isempty(x.ThrownEscape)
+has_unhandled_thrown_escape(x::EscapeLattice) = UNHANDLED_REGION in x.ThrownEscape
 has_global_escape(x::EscapeLattice) = x.GlobalEscape
-has_all_escape(x::EscapeLattice) = AllEscape() == x
+function has_all_escape(x::EscapeLattice)
+    has_thrown_escape(x) || return false
+    return AllEscape(x.ThrownEscape) ⊑ x
+end
+
+"""
+    can_allocate_on_stack(x::EscapeLattice) -> Bool
+
+Queries the validity of heap-to-stack optimization, which allocates `mutable` object that
+`x` represents on stack rather than heap.
+The condition is almost same as `has_no_escape(x)`, but additionally we can ignore
+`ThrownEscape` if it's handled within analysis frame.
+"""
+function can_allocate_on_stack(x::EscapeLattice)
+    return x.Analyzed &&
+           !has_return_escape(x) &&
+           !has_unhandled_thrown_escape(x) &&
+           !x.GlobalEscape
+end
 
 """
     can_elide_finalizer(x::EscapeLattice, pc::Int) -> Bool
@@ -241,7 +279,7 @@ end
 function ⊑(x::EscapeLattice, y::EscapeLattice)
     if x.Analyzed ≤ y.Analyzed &&
        x.ReturnEscape ⊆ y.ReturnEscape &&
-       x.ThrownEscape ≤ y.ThrownEscape &&
+       x.ThrownEscape ⊆ y.ThrownEscape &&
        x.GlobalEscape ≤ y.GlobalEscape
        return true
     end
@@ -253,16 +291,17 @@ function ⊔(x::EscapeLattice, y::EscapeLattice)
     return EscapeLattice(
         x.Analyzed | y.Analyzed,
         x.ReturnEscape ∪ y.ReturnEscape,
-        x.ThrownEscape | y.ThrownEscape,
+        x.ThrownEscape ∪ y.ThrownEscape,
         x.GlobalEscape | y.GlobalEscape,
         )
 end
 
+# not used in the analysis
 function ⊓(x::EscapeLattice, y::EscapeLattice)
     return EscapeLattice(
         x.Analyzed & y.Analyzed,
         x.ReturnEscape ∩ y.ReturnEscape,
-        x.ThrownEscape & y.ThrownEscape,
+        x.ThrownEscape ∩ y.ThrownEscape,
         x.GlobalEscape & y.GlobalEscape,
         )
 end
@@ -314,6 +353,15 @@ function find_escapes(ir::IRCode, nargs::Int)
     state = EscapeState(length(ir.argtypes), nargs, nstmts)
     changes = Changes() # stashes changes that happen at current statement
 
+    # observe regions where exceptions are handled, and try to propagate escape information
+    # imposed on exception to only those used in the active exception handling region
+    # NOTE manage `CatchRegions`s here so that we don't allocate arrays on each lattice creation
+    # COMBAK this approach assumes the execution linearity invariant that exception is
+    # always handled between `Expr(:enter)` and `Expr(:pop_exception, %n)`
+    catch_region_stack = CatchRegions[UNHANDLED_REGIONS]
+    active_catch_regions() = @inbounds catch_region_stack[end]  # used for lattice construction
+    active_catch_region() = @inbounds active_catch_regions()[1] # returns active region
+
     while true
         local anyupdate = false
 
@@ -324,18 +372,24 @@ function find_escapes(ir::IRCode, nargs::Int)
             # information computed by the inliner
             is_effect_free = stmts.flag[pc] & IR_FLAG_EFFECT_FREE ≠ 0
 
+            # if we're at the entry of the current catch region, we pop it out
+            # and set the active region to the outer one
+            if first(active_catch_region()) == pc
+                pop!(catch_region_stack)
+            end
+
             # collect escape information
             if isa(stmt, Expr)
                 head = stmt.head
                 if head === :call
-                    has_changes = escape_call!(stmt.args, pc, state, ir, changes)
+                    has_changes = escape_call!(stmt.args, pc, active_catch_regions(), state, ir, changes)
                     if !is_effect_free
-                        add_changes!(stmt.args, ir, ThrownEscape(), changes)
+                        add_changes!(stmt.args, ir, ThrownEscape(active_catch_regions()), changes)
                     else
                         has_changes || continue
                     end
                 elseif head === :invoke
-                    escape_invoke!(stmt.args, pc, state, ir, changes)
+                    escape_invoke!(stmt.args, pc, active_catch_regions(), state, ir, changes)
                 elseif head === :new
                     info = state.ssavalues[pc]
                     info == NotAnalyzed() && (info = NoEscape())
@@ -363,10 +417,10 @@ function find_escapes(ir::IRCode, nargs::Int)
                     # if normalize(name) === :jl_gc_add_finalizer_th
                     #     continue # XXX assume this finalizer call is valid for finalizer elision
                     # end
-                    push!(changes, (name, ThrownEscape()))
-                    add_changes!(stmt.args[6:5+foreigncall_nargs], ir, ThrownEscape(), changes)
+                    push!(changes, (name, ThrownEscape(active_catch_regions())))
+                    add_changes!(stmt.args[6:5+foreigncall_nargs], ir, ThrownEscape(active_catch_regions()), changes)
                 elseif head === :throw_undef_if_not # XXX when is this expression inserted ?
-                    add_change!(stmt.args[1], ir, ThrownEscape(), changes)
+                    add_change!(stmt.args[1], ir, ThrownEscape(active_catch_regions()), changes)
                 elseif is_meta_expr_head(head)
                     # meta expressions doesn't account for any usages
                     continue
@@ -381,23 +435,23 @@ function find_escapes(ir::IRCode, nargs::Int)
                     # undefcheck is temporarily inserted by compiler
                     # it will be processd be later pass so it won't change any of escape states
                     continue
-                elseif head === :the_exception
-                    # we don't propagate escape information on exceptions via this expression, but rather
-                    # use a dedicated lattice property `ThrownEscape`
-                    continue
                 elseif head === :isdefined
                     # just returns `Bool`, nothing accounts for any usages
                     continue
-                elseif head === :enter || head === :leave || head === :pop_exception
-                    # these exception frame managements doesn't account for any usages
-                    # we can just ignore escape information from
+                elseif head === :the_exception
+                    escape_exception!(pc, active_catch_region(), state, ir, changes)
+                elseif head === :pop_exception
+                    # enter new catch region
+                    push!(catch_region_stack, CatchRegion[(stmt.args[1]::SSAValue).id : pc])
+                elseif head === :enter || head === :leave
+                    # exception information is managed by observing `:pop_exception`
                     continue
                 elseif head === :gc_preserve_begin || head === :gc_preserve_end
                     # `GC.@preserve` may "use" arbitrary values, but we can just ignore the escape information
                     # imposed on `GC.@preserve` expressions since they're supposed to never be used elsewhere
                     continue
                 else
-                    add_changes!(stmt.args, ir, AllEscape(), changes)
+                    add_changes!(stmt.args, ir, AllEscape(active_catch_regions()), changes)
                 end
             elseif isa(stmt, PiNode)
                 if isdefined(stmt, :val)
@@ -441,6 +495,7 @@ function find_escapes(ir::IRCode, nargs::Int)
             empty!(changes)
         end
 
+        @assert length(catch_region_stack) == 1 "invalid catch region management"
         anyupdate || break
     end
 
@@ -492,16 +547,33 @@ function add_change!(@nospecialize(x), ir::IRCode, info::EscapeLattice, changes:
     end
 end
 
-function escape_invoke!(args::Vector{Any}, pc::Int,
+# propagate escape information imposed on exception (`info`) to those may `throw` in `active_catch_region`
+function escape_exception!(pc::Int, active_catch_region::CatchRegion,
+                           state::EscapeState, ir::IRCode, changes::Changes)
+    info = state.ssavalues[pc]
+    info === NotAnalyzed() && (info = NoEscape())
+    for (i, x) in enumerate(state.arguments)
+        if has_thrown_escape(x) && active_catch_region in x.ThrownEscape
+            add_change!(Argument(i), ir, info, changes)
+        end
+    end
+    for (i, x) in enumerate(state.ssavalues)
+        if has_thrown_escape(x) && active_catch_region in x.ThrownEscape
+            add_change!(SSAValue(i), ir, info, changes)
+        end
+    end
+end
+
+function escape_invoke!(args::Vector{Any}, pc::Int, active_catch_regions::CatchRegions,
                         state::EscapeState, ir::IRCode, changes::Changes)
     linfo = first(args)::MethodInstance
     linfostate = get(GLOBAL_ESCAPE_CACHE, linfo, nothing)
     if isnothing(linfostate)
-        add_changes!(args[2:end], ir, AllEscape(), changes)
+        add_changes!(args[2:end], ir, AllEscape(active_catch_regions), changes)
     else
         retinfo = state.ssavalues[pc] # escape information imposed on the call statement
         for (arg, arginfo) in zip(args[2:end], linfostate.arguments)
-            info = from_interprocedural(arginfo, retinfo)
+            info = from_interprocedural(arginfo, retinfo, active_catch_regions)
             push!(changes, (arg, info))
         end
     end
@@ -509,10 +581,15 @@ end
 
 # reinterpret the escape information imposed on the callee argument (`arginfo`) in the
 # context of the caller frame using the escape information imposed on the return value (`retinfo`)
-function from_interprocedural(arginfo::EscapeLattice, retinfo::EscapeLattice)
+function from_interprocedural(arginfo::EscapeLattice, retinfo::EscapeLattice,
+                              active_catch_regions::CatchRegions)
+    if has_thrown_escape(arginfo)
+        newarginfo = EscapeLattice(true, NO_RETURN, active_catch_regions, arginfo.GlobalEscape)
+    else
+        newarginfo = EscapeLattice(true, NO_RETURN, NO_CATCH, arginfo.GlobalEscape)
+    end
     ar = arginfo.ReturnEscape
     @assert !isempty(ar) "invalid escape lattice element returned from inter-procedural context"
-    newarginfo = EscapeLattice(true, NO_RETURN, arginfo.ThrownEscape, arginfo.GlobalEscape)
     if ar == ARGUMENT_RETURN
         # if this is simply passed as the call argument, we can discard the `ReturnEscape`
         # information and just propagate the other escape information
@@ -523,7 +600,7 @@ function from_interprocedural(arginfo::EscapeLattice, retinfo::EscapeLattice)
     end
 end
 
-function escape_call!(args::Vector{Any}, pc::Int,
+function escape_call!(args::Vector{Any}, pc::Int, active_catch_regions::CatchRegions,
                       state::EscapeState, ir::IRCode, changes::Changes)
     ft = argextype(first(args), ir, ir.sptypes, ir.argtypes)
     f = argtype_to_function(ft)
@@ -536,7 +613,7 @@ function escape_call!(args::Vector{Any}, pc::Int,
     if !ishandled
         # if this call hasn't been handled by any of pre-defined handlers,
         # we escape this call conservatively
-        add_changes!(args[2:end], ir, AllEscape(), changes)
+        add_changes!(args[2:end], ir, AllEscape(active_catch_regions), changes)
     end
     return true
 end
@@ -667,8 +744,10 @@ function get_name_color(x::EscapeLattice, symbol::Bool = false)
         name1 = string(getname(ReturnEscape), '(', pcs, ')')
         name = name1, '↑'
         color = :cyan
-    elseif NoEscape() ⋤ x ⊑ ThrownEscape()
-        name, color = (getname(ThrownEscape), '↓'), :yellow
+    elseif NoEscape() ⋤ x ⊑ ThrownEscape(x.ThrownEscape)
+        xts = join(x.ThrownEscape, ", ")
+        name = string(getname(ThrownEscape), '(', xts, ')'), '↓'
+        color = :yellow
     elseif NoEscape() ⋤ x ⊑ GlobalEscape()
         name, color = (getname(GlobalEscape), 'G'), :red
     else
