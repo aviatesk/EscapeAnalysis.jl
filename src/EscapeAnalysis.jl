@@ -646,7 +646,8 @@ function analyze_escapes(@nospecialize(f), @nospecialize(types=Tuple{});
                          world = get_world_counter(),
                          interp = Core.Compiler.NativeInterpreter(world))
     interp = EscapeAnalyzer(interp)
-    code_typed(f, types; optimize=true, world, interp)
+    results = code_typed(f, types; optimize=true, world, interp)
+    isone(length(results)) || throw(ArgumentError("`analyze_escapes` only supports single analysis result"))
     return EscapeAnalysisResult(interp.ir, interp.state)
 end
 
