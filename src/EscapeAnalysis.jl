@@ -65,8 +65,8 @@ end
 
 mutable struct EscapeAnalyzer{Info} <: AbstractInterpreter
     native::NativeInterpreter
-    source::Union{Nothing,IRCode}
-    info::Union{Nothing,Info}
+    ir::Union{Nothing,IRCode}
+    state::Union{Nothing,Info}
 end
 
 CC.InferenceParams(interp::EscapeAnalyzer)    = InferenceParams(interp.native)
@@ -184,12 +184,19 @@ struct EscapeLattice
     # TODO: ArgEscape::Int
 end
 
-NotAnalyzed()  = EscapeLattice(false, false, false, false) # not formally part of the lattice
-NoEscape()     = EscapeLattice(true,  false, false, false)
-ReturnEscape() = EscapeLattice(true,  true,  false, false)
-ThrownEscape() = EscapeLattice(true,  false, true,  false)
-GlobalEscape() = EscapeLattice(true,  false, false, true)
-AllEscape()    = EscapeLattice(true,  true,  true,  true)
+function Base.:(==)(x::EscapeLattice, y::EscapeLattice)
+    return x.Analyzed === y.Analyzed &&
+           x.ReturnEscape === y.ReturnEscape &&
+           x.ThrownEscape === y.ThrownEscape &&
+           x.GlobalEscape === y.GlobalEscape
+end
+
+NotAnalyzed() = EscapeLattice(false, false, false, false) # not formally part of the lattice
+NoEscape() = EscapeLattice(true, false, false, false)
+ReturnEscape() = EscapeLattice(true, true, false, false)
+ThrownEscape() = EscapeLattice(true, false, true, false)
+GlobalEscape() = EscapeLattice(true, false, false, true)
+AllEscape() = EscapeLattice(true, true, true, true)
 
 # Convenience names for some ⊑ queries
 export
@@ -199,12 +206,12 @@ export
     has_thrown_escape,
     has_global_escape,
     has_all_escape
-has_not_analyzed(x::EscapeLattice)  = x === NotAnalyzed()
-has_no_escape(x::EscapeLattice)     = x ⊑ NoEscape()
+has_not_analyzed(x::EscapeLattice) = x === NotAnalyzed()
+has_no_escape(x::EscapeLattice) = x ⊑ NoEscape()
 has_return_escape(x::EscapeLattice) = x.ReturnEscape
 has_thrown_escape(x::EscapeLattice) = x.ThrownEscape
 has_global_escape(x::EscapeLattice) = x.GlobalEscape
-has_all_escape(x::EscapeLattice)    = x === AllEscape()
+has_all_escape(x::EscapeLattice) = AllEscape() ⊑ x
 
 function ⊑(x::EscapeLattice, y::EscapeLattice)
     if x.Analyzed ≤ y.Analyzed &&
@@ -215,6 +222,7 @@ function ⊑(x::EscapeLattice, y::EscapeLattice)
     end
     return false
 end
+⋤(x::EscapeLattice, y::EscapeLattice) = !⊑(y, x)
 
 function ⊔(x::EscapeLattice, y::EscapeLattice)
     return EscapeLattice(
@@ -450,7 +458,7 @@ function escape_invoke!(args::Vector{Any}, pc::Int,
     if isnothing(linfostate)
         add_changes!(args[2:end], ir, AllEscape(), changes)
     else
-        retinfo = state.ssavalues[pc] # escape information imposed on the return
+        retinfo = state.ssavalues[pc] # escape information imposed on the call statement
         for (arg, arginfo) in zip(args[2:end], linfostate.arguments)
             info = from_interprocedural(arginfo, retinfo)
             push!(changes, (arg, info))
@@ -555,10 +563,10 @@ register_init_hook!() do
         ir = compact!(ir)
         svdef = sv.linfo.def
         nargs = isa(svdef, Method) ? Int(svdef.nargs) : 0
-        @timeit "collect escape information" escapes = $find_escapes(ir, nargs)
-        $setindex!($GLOBAL_ESCAPE_CACHE, escapes, sv.linfo)
-        interp.source = copy(ir)
-        interp.info = escapes
+        @timeit "collect escape information" state = $find_escapes(ir, nargs)
+        $setindex!($GLOBAL_ESCAPE_CACHE, state, sv.linfo)
+        interp.ir = copy(ir)
+        interp.state = state
         #@Base.show ("before_sroa", ir)
         @timeit "SROA" ir = getfield_elim_pass!(ir)
         #@Base.show ir.new_nodes
@@ -584,9 +592,8 @@ function analyze_escapes(@nospecialize(f), @nospecialize(types=Tuple{});
                          world = get_world_counter(),
                          interp = Core.Compiler.NativeInterpreter(world))
     interp = EscapeAnalyzer{EscapeState}(interp, nothing, nothing)
-
     code_typed(f, types; optimize=true, world, interp)
-    return EscapeAnalysisResult(interp.source, interp.info)
+    return EscapeAnalysisResult(interp.ir::IRCode, interp.state::EscapeState)
 end
 
 # utilities
@@ -596,12 +603,20 @@ end
 __clear_caches!() = (__clear_code_cache!(); __clear_escape_cache!())
 
 function get_name_color(x::EscapeLattice, symbol::Bool = false)
-    name, color = x === NotAnalyzed()  ? ((nameof(NotAnalyzed),  '◌'), :plain) :
-                  x === NoEscape()     ? ((nameof(NoEscape),     '✓'), :green) :
-                  x === ReturnEscape() ? ((nameof(ReturnEscape), '↑'), :cyan) :
-                  x === ThrownEscape() ? ((nameof(ThrownEscape), '↓'), :yellow) :
-                  x === GlobalEscape() ? ((nameof(GlobalEscape), 'G'), :red) :
-                                         ((nothing,              '*'), :red)
+    getname(x) = string(nameof(x))
+    if x === NotAnalyzed()
+        name, color = (getname(NotAnalyzed), '◌'), :plain
+    elseif x === NoEscape()
+        name, color = (getname(NoEscape), '✓'), :green
+    elseif x === ReturnEscape()
+        name, color = (getname(ReturnEscape), '↑'), :cyan
+    elseif x === ThrownEscape()
+        name, color = (getname(ThrownEscape), '↓'), :yellow
+    elseif x === GlobalEscape()
+        name, color = (getname(GlobalEscape), 'G'), :red
+    else
+        name, color = (nothing, '*'), :red
+    end
     return (symbol ? last(name) : first(name), color)
 end
 
