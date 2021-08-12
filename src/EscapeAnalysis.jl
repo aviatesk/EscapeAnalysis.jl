@@ -241,9 +241,6 @@ Extended lattice that maps arguments and SSA values to escape information repres
 - `state.arguments::Vector{EscapeLattice}`: escape information about "arguments" – note that
   "argument" can include both call arguments and slots appearing in analysis frame
 - `ssavalues::Vector{EscapeLattice}`: escape information about each SSA value
-
-`X::EscapeState ⊓ Y::EscapeState` and `X::EscapeState ⊔ Y::EscapeState` are implemented as
-the pair-wise operations of the corresponding operations on `EscapeLattice`.
 """
 struct EscapeState
     arguments::Vector{EscapeLattice}
@@ -255,15 +252,6 @@ function EscapeState(nslots::Int, nargs::Int, nstmts::Int)
     ssavalues = EscapeLattice[NotAnalyzed() for _ in 1:nstmts]
     return EscapeState(arguments, ssavalues)
 end
-Base.copy(s::EscapeState) = EscapeState(copy(s.arguments), copy(s.ssavalues))
-
-⊔(X::EscapeState, Y::EscapeState) = EscapeState(
-    EscapeLattice[x ⊔ y for (x, y) in zip(X.arguments, Y.arguments)],
-    EscapeLattice[x ⊔ y for (x, y) in zip(X.ssavalues, Y.ssavalues)])
-⊓(X::EscapeState, Y::EscapeState) = EscapeState(
-    EscapeLattice[x ⊓ y for (x, y) in zip(X.arguments, Y.arguments)],
-    EscapeLattice[x ⊓ y for (x, y) in zip(X.ssavalues, Y.ssavalues)])
-Base.:(==)(X::EscapeState, Y::EscapeState) = X.arguments == Y.arguments && X.ssavalues == Y.ssavalues
 
 const GLOBAL_ESCAPE_CACHE = IdDict{MethodInstance,EscapeState}()
 __clear_escape_cache!() = empty!(GLOBAL_ESCAPE_CACHE)
@@ -273,7 +261,7 @@ const Changes = Vector{Tuple{Any,EscapeLattice}}
 """
     find_escapes(ir::IRCode, nargs::Int) -> EscapeState
 
-Escape analysis implementation based on the algorithm described in the paper [^MM02].
+Escape analysis implementation based on the data-flow algorithm described in the paper [^MM02].
 The analysis works on the lattice of [`EscapeLattice`](@ref) and transitions lattice elements
 from the bottom to the top in a _backward_ way, i.e. data flows from usage cites to definitions.
 
@@ -284,11 +272,12 @@ from the bottom to the top in a _backward_ way, i.e. data flows from usage cites
 function find_escapes(ir::IRCode, nargs::Int)
     (; stmts, sptypes, argtypes) = ir
     nstmts = length(stmts)
+
     state = EscapeState(length(ir.argtypes), nargs, nstmts) # flow-insensitive, only manage a single state
+    changes = Changes() # stashes changes that happen at current statement
 
     while true
         local anyupdate = false
-        local changes = Changes()
 
         for pc in nstmts:-1:1
             stmt = stmts.inst[pc]
@@ -406,29 +395,40 @@ function find_escapes(ir::IRCode, nargs::Int)
 
             isempty(changes) && continue
 
-            # propagate changes
-            new = copy(state)
-            for (x, info) in changes
-                if isa(x, Argument)
-                    new.arguments[x.n] = new.arguments[x.n] ⊔ info
-                elseif isa(x, SSAValue)
-                    new.ssavalues[x.id] = new.ssavalues[x.id] ⊔ info
-                end
-            end
+            anyupdate |= propagate_changes!(state, changes)
+
             empty!(changes)
-
-            # convergence check and worklist update
-            if new ≠ state
-                state = new
-
-                anyupdate |= true
-            end
         end
 
         anyupdate || break
     end
 
     return state
+end
+
+# propagate changes, and check convergence
+function propagate_changes!(state::EscapeState, changes::Changes)
+    local anychanged = false
+
+    for (x, info) in changes
+        if isa(x, Argument)
+            old = state.arguments[x.n]
+            new = old ⊔ info
+            if old ≠ new
+                state.arguments[x.n] = new
+                anychanged |= true
+            end
+        elseif isa(x, SSAValue)
+            old = state.ssavalues[x.id]
+            new = old ⊔ info
+            if old ≠ new
+                state.ssavalues[x.id] = new
+                anychanged |= true
+            end
+        end
+    end
+
+    return anychanged
 end
 
 function add_changes!(args::Vector{Any}, ir::IRCode, info::EscapeLattice, changes::Changes)
