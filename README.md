@@ -7,7 +7,7 @@ Couple of notes about this escape analysis:
 - the analysis is based on the [data-flow analysis](https://aviatesk.github.io/posts/data-flow-problem/) approach
 - it is a backward-analysis, i.e. escape information will flow from usage site to definition site
 - the algorithm works by updating the working set that contains program counters corresponding to SSA statements until every statement gets converged to a fixed point
-- it is flow-insensitive, i.e. doesn't distinguish escape information on the same "object" but at different locations
+- it only manages a single global state, some flow-sensitivity is encoded as `EscapeLattice` properties
 
 This escape analysis works on a lattice called `EscapeLattice`, which holds the following properties:
 - `x.Analyzed::Bool`: not formally part of the lattice, indicates this statement has not been analyzed at all
@@ -39,5 +39,5 @@ An abstract state will be initialized with the bottom(-like) elements:
 TODO:
 - [ ] implement more builtin function handlings, and make escape information more accurate
 - [ ] make analysis take into account alias information
-- [ ] make it flow-sensitive and implement `finalizer` elision optimization ([#17](https://github.com/aviatesk/EscapeAnalysis.jl/issues/17))
+- [ ] implement `finalizer` elision optimization ([#17](https://github.com/aviatesk/EscapeAnalysis.jl/issues/17))
 - [ ] circumvent too conservative escapes through potential `throw` calls by copying stack-to-heap on exception ([#15](https://github.com/aviatesk/EscapeAnalysis.jl/issues/15))

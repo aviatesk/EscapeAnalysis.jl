@@ -297,7 +297,8 @@ function find_escapes(ir::IRCode, nargs::Int)
     (; stmts, sptypes, argtypes) = ir
     nstmts = length(stmts)
 
-    state = EscapeState(length(ir.argtypes), nargs, nstmts) # flow-insensitive, only manage a single state
+    # only manage a single state, some flow-sensitivity is encoded as `EscapeLattice` properties
+    state = EscapeState(length(ir.argtypes), nargs, nstmts)
     changes = Changes() # stashes changes that happen at current statement
 
     while true
