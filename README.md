@@ -7,11 +7,15 @@ Couple of notes about this escape analysis:
 - the analysis is based on the [data-flow analysis](https://aviatesk.github.io/posts/data-flow-problem/) approach
 - it is a backward-analysis, i.e. escape information will flow from usage site to definition site
 - the algorithm works by updating the working set that contains program counters corresponding to SSA statements until every statement gets converged to a fixed point
-- it is flow-insensitive, i.e. doesn't distinguish escape information on the same "object" but at different locations
+- it only manages a single global state, some flow-sensitivity is encoded as `EscapeLattice` properties
 
 This escape analysis works on a lattice called `EscapeLattice`, which holds the following properties:
 - `x.Analyzed::Bool`: not formally part of the lattice, indicates this statement has not been analyzed at all
-- `x.ReturnEscape::Bool`: indicates it will escape to the caller via return (possibly as a field)
+- `x.ReturnEscape::BitSet`: keeps SSA numbers of return statements where it can be returned to the caller
+  * `isempty(x.ReturnEscape)` means it never escapes to the caller
+  * otherwise it indicates it will escape to the caller via return (possibly as a field),
+    where `0 ∈ x.ReturnEscape` has the special meaning that it's visible to the caller
+    simply because it's passed as call argument
 - `x.ThrownEscape::Bool`: indicates it may escape to somewhere through an exception (possibly as a field)
 - `x.GlobalEscape::Bool`: indicates it may escape to a global space an exception (possibly as a field)
 - `x.ArgEscape::Int` (not implemented yet): indicates it will escape to the caller through `setfield!` on argument(s)
@@ -35,5 +39,5 @@ An abstract state will be initialized with the bottom(-like) elements:
 TODO:
 - [ ] implement more builtin function handlings, and make escape information more accurate
 - [ ] make analysis take into account alias information
-- [ ] make it flow-sensitive and implement `finalizer` elision optimization ([#17](https://github.com/aviatesk/EscapeAnalysis.jl/issues/17))
+- [ ] implement `finalizer` elision optimization ([#17](https://github.com/aviatesk/EscapeAnalysis.jl/issues/17))
 - [ ] circumvent too conservative escapes through potential `throw` calls by copying stack-to-heap on exception ([#15](https://github.com/aviatesk/EscapeAnalysis.jl/issues/15))
