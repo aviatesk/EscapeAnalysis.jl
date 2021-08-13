@@ -346,9 +346,9 @@ function find_escapes(ir::IRCode, nargs::Int)
                     # TODO: we can apply a similar strategy like builtin calls to specialize some foreigncalls
                     foreigncall_nargs = length((stmt.args[3])::SimpleVector)
                     name = stmt.args[1]
-                    if normalize(name) === :jl_gc_add_finalizer_th
-                        continue # XXX assume this finalizer call is valid for finalizer elision
-                    end
+                    # if normalize(name) === :jl_gc_add_finalizer_th
+                    #     continue # XXX assume this finalizer call is valid for finalizer elision
+                    # end
                     push!(changes, (name, ThrownEscape()))
                     add_changes!(stmt.args[6:5+foreigncall_nargs], ir, ThrownEscape(), changes)
                 elseif head === :throw_undef_if_not # XXX when is this expression inserted ?
@@ -458,13 +458,13 @@ function propagate_changes!(state::EscapeState, changes::Changes)
     return anychanged
 end
 
-function normalize(@nospecialize(x))
-    if isa(x, QuoteNode)
-        return x.value
-    else
-        return x
-    end
-end
+# function normalize(@nospecialize(x))
+#     if isa(x, QuoteNode)
+#         return x.value
+#     else
+#         return x
+#     end
+# end
 
 function add_changes!(args::Vector{Any}, ir::IRCode, info::EscapeLattice, changes::Changes)
     for x in args
