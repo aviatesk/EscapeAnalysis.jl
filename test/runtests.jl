@@ -231,8 +231,6 @@ end
         @test has_return_escape(result.state.ssavalues[i])
     end
 
-    # we've not implemented a proper alias analysis,
-    # TODO alias analysis should help us avoid propagatig the constraint imposed on `ret` to `obj`
     @eval m @noinline function f_no_return_escape(a)
         println("hi") # prevent inlining
         return "hi"
@@ -245,7 +243,7 @@ end
         end
         i = findfirst(==(Base.RefValue{String}), result.ir.stmts.type) # find allocation statement
         @assert !isnothing(i)
-        @test_broken !has_return_escape(result.state.ssavalues[i])
+        @test !has_return_escape(result.state.ssavalues[i])
     end
 end
 
@@ -370,6 +368,71 @@ end
         @test has_return_escape(result.state.arguments[2])
         @test has_global_escape(result.state.arguments[3])
     end
+end
+
+@testset "return flow-sensitivity" begin
+    isa2(T) = x->isa(x,T)
+
+    let
+        result = analyze_escapes((Bool,)) do cond
+            r = Ref("foo")
+            if cond
+                return cond
+            end
+            return r
+        end
+        i = findfirst(==(Base.RefValue{String}), result.ir.stmts.type) # allocation statement
+        @assert !isnothing(i)
+        rts = findall(isa2(Core.ReturnNode), result.ir.stmts.inst) # return statement
+        @assert length(rts) == 2
+        @test count(rt->has_return_escape(result.state.ssavalues[i], rt), rts) == 1
+    end
+
+    let
+        result = analyze_escapes((Bool,)) do cond
+            r = Ref("foo")
+            cnt = 0
+            while rand(Bool)
+                cnt += 1
+                rand(Bool) && return r
+            end
+            rand(Bool) && return r
+            return cnt
+        end
+        i = findfirst(==(Base.RefValue{String}), result.ir.stmts.type) # allocation statement
+        @assert !isnothing(i)
+        rts = findall(isa2(Core.ReturnNode), result.ir.stmts.inst) # return statement
+        @assert length(rts) == 3
+        @test count(rt->has_return_escape(result.state.ssavalues[i], rt), rts) == 2
+    end
+end
+
+# TODO
+mutable struct WithFinalizer
+    v
+    function WithFinalizer(v)
+        x = new(v)
+        f(t) = @async println("Finalizing $t.")
+        return finalizer(x, x)
+    end
+end
+make_m(v = 10) = MyMutable(v)
+function simple(cond)
+    m = make_m()
+    if cond
+        # println(m.v)
+        return nothing # <= insert `finalize` call here
+    end
+    return m
+end
+
+@testset "finalizer elision" begin
+    @test can_elide_finalizer(EscapeAnalysis.NoEscape(), 1)
+    @test !can_elide_finalizer(EscapeAnalysis.ReturnEscape(1), 1)
+    @test can_elide_finalizer(EscapeAnalysis.ReturnEscape(1), 2)
+    @test !can_elide_finalizer(EscapeAnalysis.ArgumentReturnEscape(), 1)
+    @test !can_elide_finalizer(EscapeAnalysis.GlobalEscape(), 1)
+    @test can_elide_finalizer(EscapeAnalysis.ThrownEscape(), 1)
 end
 
 @testset "code quality" begin

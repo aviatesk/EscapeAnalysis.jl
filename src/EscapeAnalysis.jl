@@ -136,26 +136,16 @@ end
 # analysis
 # ========
 
-# TODO flow-sensitivity
-#    Main motivation here is finalizer elision, e.g.:
-#    ```julia
-#    let
-#        m = make_m()
-#        if cond
-#            return nothing # <= insert a finalizer call here
-#        end
-#        return m
-#    end
-#    ```
-#    We can do setup separate states for each statement (probably better with sparse states
-#    since there can be many statements), or encoding the quivalent information into the lattice
-
 """
     x::EscapeLattice
 
 A lattice for escape information, which holds the following properties:
 - `x.Analyzed::Bool`: not formally part of the lattice, indicates this statement has not been analyzed at all
-- `x.ReturnEscape::Bool`: indicates it will escape to the caller via return (possibly as a field)
+- `x.ReturnEscape::BitSet`: keeps SSA numbers of return statements where it can be returned to the caller
+  * `isempty(x.ReturnEscape)` means it never escapes to the caller
+  * otherwise it indicates it will escape to the caller via return (possibly as a field),
+    where `0 ∈ x.ReturnEscape` has the special meaning that it's visible to the caller
+    simply because it's passed as call argument
 - `x.ThrownEscape::Bool`: indicates it may escape to somewhere through an exception (possibly as a field)
 - `x.GlobalEscape::Bool`: indicates it may escape to a global space an exception (possibly as a field)
 - `x.ArgEscape::Int` (not implemented yet): indicates it will escape to the caller through `setfield!` on argument(s)
@@ -178,7 +168,7 @@ An abstract state will be initialized with the bottom(-like) elements:
 """
 struct EscapeLattice
     Analyzed::Bool
-    ReturnEscape::Bool
+    ReturnEscape::BitSet
     ThrownEscape::Bool
     GlobalEscape::Bool
     # TODO: ArgEscape::Int
@@ -186,17 +176,27 @@ end
 
 function Base.:(==)(x::EscapeLattice, y::EscapeLattice)
     return x.Analyzed === y.Analyzed &&
-           x.ReturnEscape === y.ReturnEscape &&
+           x.ReturnEscape == y.ReturnEscape &&
            x.ThrownEscape === y.ThrownEscape &&
            x.GlobalEscape === y.GlobalEscape
 end
 
-NotAnalyzed() = EscapeLattice(false, false, false, false) # not formally part of the lattice
-NoEscape() = EscapeLattice(true, false, false, false)
-ReturnEscape() = EscapeLattice(true, true, false, false)
-ThrownEscape() = EscapeLattice(true, false, true, false)
-GlobalEscape() = EscapeLattice(true, false, false, true)
-AllEscape() = EscapeLattice(true, true, true, true)
+# lattice constructors
+# precompute default values in order to eliminate computations at callsites
+const NO_RETURN = BitSet()
+const ARGUMENT_RETURN = BitSet(0)
+NotAnalyzed() = EscapeLattice(false, NO_RETURN, false, false) # not formally part of the lattice
+NoEscape() = EscapeLattice(true, NO_RETURN, false, false)
+ReturnEscape(returns::BitSet) = EscapeLattice(true, returns, false, false)
+ReturnEscape(pc::Int) = ReturnEscape(BitSet(pc))
+ArgumentReturnEscape() = ReturnEscape(ARGUMENT_RETURN)
+ThrownEscape() = EscapeLattice(true, NO_RETURN, true, false)
+GlobalEscape() = EscapeLattice(true, NO_RETURN, false, true)
+let
+    all_return = BitSet(0:1000000)
+    global AllReturnEscape() = ReturnEscape(all_return) # used for `show`
+    global AllEscape() = EscapeLattice(true, all_return, true, true)
+end
 
 # Convenience names for some ⊑ queries
 export
@@ -205,17 +205,33 @@ export
     has_return_escape,
     has_thrown_escape,
     has_global_escape,
-    has_all_escape
-has_not_analyzed(x::EscapeLattice) = x === NotAnalyzed()
+    has_all_escape,
+    can_elide_finalizer
+has_not_analyzed(x::EscapeLattice) = x == NotAnalyzed()
 has_no_escape(x::EscapeLattice) = x ⊑ NoEscape()
-has_return_escape(x::EscapeLattice) = x.ReturnEscape
+has_return_escape(x::EscapeLattice) = !isempty(x.ReturnEscape)
+has_return_escape(x::EscapeLattice, pc::Int) = pc in x.ReturnEscape
 has_thrown_escape(x::EscapeLattice) = x.ThrownEscape
 has_global_escape(x::EscapeLattice) = x.GlobalEscape
-has_all_escape(x::EscapeLattice) = AllEscape() ⊑ x
+has_all_escape(x::EscapeLattice) = AllEscape() == x
+
+"""
+    can_elide_finalizer(x::EscapeLattice, pc::Int) -> Bool
+
+Queries the validity of the finalizer elision optimization at the `return` site of statement `pc`,
+which inserts `finalize` call when the lifetime of interested object ends.
+Note that we don't need to take `x.ThrownEscape` into account because it would have never
+been thrown when the program execution reaches the `return` site.
+"""
+function can_elide_finalizer(x::EscapeLattice, pc::Int)
+    x.GlobalEscape && return false
+    0 in x.ReturnEscape && return false
+    return pc ∉ x.ReturnEscape
+end
 
 function ⊑(x::EscapeLattice, y::EscapeLattice)
     if x.Analyzed ≤ y.Analyzed &&
-       x.ReturnEscape ≤ y.ReturnEscape &&
+       x.ReturnEscape ⊆ y.ReturnEscape &&
        x.ThrownEscape ≤ y.ThrownEscape &&
        x.GlobalEscape ≤ y.GlobalEscape
        return true
@@ -227,7 +243,7 @@ end
 function ⊔(x::EscapeLattice, y::EscapeLattice)
     return EscapeLattice(
         x.Analyzed | y.Analyzed,
-        x.ReturnEscape | y.ReturnEscape,
+        x.ReturnEscape ∪ y.ReturnEscape,
         x.ThrownEscape | y.ThrownEscape,
         x.GlobalEscape | y.GlobalEscape,
         )
@@ -236,7 +252,7 @@ end
 function ⊓(x::EscapeLattice, y::EscapeLattice)
     return EscapeLattice(
         x.Analyzed & y.Analyzed,
-        x.ReturnEscape & y.ReturnEscape,
+        x.ReturnEscape ∩ y.ReturnEscape,
         x.ThrownEscape & y.ThrownEscape,
         x.GlobalEscape & y.GlobalEscape,
         )
@@ -256,7 +272,7 @@ struct EscapeState
 end
 function EscapeState(nslots::Int, nargs::Int, nstmts::Int)
     arguments = EscapeLattice[
-        1 ≤ i ≤ nargs ? ReturnEscape() : NotAnalyzed() for i in 1:nslots]
+        1 ≤ i ≤ nargs ? ArgumentReturnEscape() : NotAnalyzed() for i in 1:nslots]
     ssavalues = EscapeLattice[NotAnalyzed() for _ in 1:nstmts]
     return EscapeState(arguments, ssavalues)
 end
@@ -327,10 +343,13 @@ function find_escapes(ir::IRCode, nargs::Int)
                 elseif head === :foreigncall
                     # for foreigncall we simply escape every argument (args[6:length(args[3])])
                     # and its name (args[1])
-                    # TODO: we can apply similar strategy like builtin calls
-                    #       to specialize some foreigncalls
+                    # TODO: we can apply a similar strategy like builtin calls to specialize some foreigncalls
                     foreigncall_nargs = length((stmt.args[3])::SimpleVector)
-                    push!(changes, (stmt.args[1], ThrownEscape()))
+                    name = stmt.args[1]
+                    if normalize(name) === :jl_gc_add_finalizer_th
+                        continue # XXX assume this finalizer call is valid for finalizer elision
+                    end
+                    push!(changes, (name, ThrownEscape()))
                     add_changes!(stmt.args[6:5+foreigncall_nargs], ir, ThrownEscape(), changes)
                 elseif head === :throw_undef_if_not # XXX when is this expression inserted ?
                     add_change!(stmt.args[1], ir, ThrownEscape(), changes)
@@ -394,7 +413,7 @@ function find_escapes(ir::IRCode, nargs::Int)
                 end
             elseif isa(stmt, ReturnNode)
                 if isdefined(stmt, :val)
-                    add_change!(stmt.val, ir, ReturnEscape(), changes)
+                    add_change!(stmt.val, ir, ReturnEscape(pc), changes)
                 end
             else
                 @assert stmt isa GotoNode || stmt isa GotoIfNot || stmt isa GlobalRef || isnothing(stmt) # TODO remove me
@@ -439,6 +458,14 @@ function propagate_changes!(state::EscapeState, changes::Changes)
     return anychanged
 end
 
+function normalize(@nospecialize(x))
+    if isa(x, QuoteNode)
+        return x.value
+    else
+        return x
+    end
+end
+
 function add_changes!(args::Vector{Any}, ir::IRCode, info::EscapeLattice, changes::Changes)
     for x in args
         add_change!(x, ir, info, changes)
@@ -466,13 +493,20 @@ function escape_invoke!(args::Vector{Any}, pc::Int,
     end
 end
 
-# reinterpret the escape information imposed on the callee argument (`arginfo`) in the context of the caller frame
-# we also merge it with the escape information imposed on the return value (`retinfo`), because
-# the caller argument can be an alias of the return value
-# TODO implement alias analysis and don't propagate `retinfo` to `info` when the return value must not alias to the call argument
+# reinterpret the escape information imposed on the callee argument (`arginfo`) in the
+# context of the caller frame using the escape information imposed on the return value (`retinfo`)
 function from_interprocedural(arginfo::EscapeLattice, retinfo::EscapeLattice)
-    info = EscapeLattice(true, false, arginfo.ThrownEscape, arginfo.GlobalEscape)
-    return info ⊔ retinfo
+    ar = arginfo.ReturnEscape
+    @assert !isempty(ar) "invalid escape lattice element returned from inter-procedural context"
+    newarginfo = EscapeLattice(true, NO_RETURN, arginfo.ThrownEscape, arginfo.GlobalEscape)
+    if ar == ARGUMENT_RETURN
+        # if this is simply passed as the call argument, we can discard the `ReturnEscape`
+        # information and just propagate the other escape information
+        return newarginfo
+    else
+        # if this can be a return value, we have to merge it with the escape information
+        return newarginfo ⊔ retinfo
+    end
 end
 
 function escape_call!(args::Vector{Any}, pc::Int,
@@ -547,6 +581,11 @@ function CC.optimize(interp::EscapeAnalyzer, opt::OptimizationState, params::Opt
     return CC.finish(interp, opt, params, ir, result)
 end
 
+# TODO implement finalizer elision optimization
+function elide_finalizers(ir::IRCode, state::EscapeState)
+    return ir
+end
+
 # HACK enable copy and paste from Core.Compiler
 function run_passes_with_escape_analysis end
 register_init_hook!() do
@@ -567,6 +606,7 @@ register_init_hook!() do
         $setindex!($GLOBAL_ESCAPE_CACHE, state, sv.linfo)
         interp.ir = copy(ir)
         interp.state = state
+        @timeit "finalizer elision" ir = $elide_finalizers(ir, state)
         #@Base.show ("before_sroa", ir)
         @timeit "SROA" ir = getfield_elim_pass!(ir)
         #@Base.show ir.new_nodes
@@ -608,8 +648,11 @@ function get_name_color(x::EscapeLattice, symbol::Bool = false)
         name, color = (getname(NotAnalyzed), '◌'), :plain
     elseif x === NoEscape()
         name, color = (getname(NoEscape), '✓'), :green
-    elseif x === ReturnEscape()
-        name, color = (getname(ReturnEscape), '↑'), :cyan
+    elseif NoEscape() ⋤ x ⊑ AllReturnEscape()
+        pcs = sprint(show, collect(x.ReturnEscape); context=:limit=>true)
+        name1 = string(getname(ReturnEscape), '(', pcs, ')')
+        name = name1, '↑'
+        color = :cyan
     elseif x === ThrownEscape()
         name, color = (getname(ThrownEscape), '↓'), :yellow
     elseif x === GlobalEscape()

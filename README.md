@@ -11,7 +11,11 @@ Couple of notes about this escape analysis:
 
 This escape analysis works on a lattice called `EscapeLattice`, which holds the following properties:
 - `x.Analyzed::Bool`: not formally part of the lattice, indicates this statement has not been analyzed at all
-- `x.ReturnEscape::Bool`: indicates it will escape to the caller via return (possibly as a field)
+- `x.ReturnEscape::BitSet`: keeps SSA numbers of return statements where it can be returned to the caller
+  * `isempty(x.ReturnEscape)` means it never escapes to the caller
+  * otherwise it indicates it will escape to the caller via return (possibly as a field),
+    where `0 ∈ x.ReturnEscape` has the special meaning that it's visible to the caller
+    simply because it's passed as call argument
 - `x.ThrownEscape::Bool`: indicates it may escape to somewhere through an exception (possibly as a field)
 - `x.GlobalEscape::Bool`: indicates it may escape to a global space an exception (possibly as a field)
 - `x.ArgEscape::Int` (not implemented yet): indicates it will escape to the caller through `setfield!` on argument(s)
