@@ -63,10 +63,11 @@ let __init_hooks__ = []
     register_init_hook!(@nospecialize(f)) = push!(__init_hooks__, f)
 end
 
-mutable struct EscapeAnalyzer{Info} <: AbstractInterpreter
+mutable struct EscapeAnalyzer{State} <: AbstractInterpreter
     native::NativeInterpreter
-    ir::Union{Nothing,IRCode}
-    state::Union{Nothing,Info}
+    ir::IRCode
+    state::State
+    EscapeAnalyzer(native::NativeInterpreter) = new{EscapeState}(native)
 end
 
 CC.InferenceParams(interp::EscapeAnalyzer)    = InferenceParams(interp.native)
@@ -325,14 +326,14 @@ function find_escapes(ir::IRCode, nargs::Int)
                     escape_invoke!(stmt.args, pc, state, ir, changes)
                 elseif head === :new
                     info = state.ssavalues[pc]
-                    info === NotAnalyzed() && (info = NoEscape())
+                    info == NotAnalyzed() && (info = NoEscape())
                     for arg in stmt.args[2:end]
                         push!(changes, (arg, info))
                     end
                     push!(changes, (SSAValue(pc), info)) # we will be interested in if this allocation is not escape or not
                 elseif head === :splatnew
                     info = state.ssavalues[pc]
-                    info === NotAnalyzed() && (info = NoEscape())
+                    info == NotAnalyzed() && (info = NoEscape())
                     # splatnew passes field values using a single tuple (args[2])
                     push!(changes, (stmt.args[2], info))
                     push!(changes, (SSAValue(pc), info)) # we will be interested in if this allocation is not escape or not
@@ -558,7 +559,7 @@ end
 
 function escape_builtin!(::typeof(tuple), args::Vector{Any}, pc::Int, state::EscapeState, ir::IRCode, changes::Changes)
     info = state.ssavalues[pc]
-    info === NotAnalyzed() && (info = NoEscape())
+    info == NotAnalyzed() && (info = NoEscape())
     add_changes!(args[2:end], ir, info, changes)
     return true
 end
@@ -566,7 +567,7 @@ end
 # TODO don't propagate escape information to the 1st argument, but propagate information to aliased field
 function escape_builtin!(::typeof(getfield), args::Vector{Any}, pc::Int, state::EscapeState, ir::IRCode, changes::Changes)
     info = state.ssavalues[pc]
-    info === NotAnalyzed() && (info = NoEscape())
+    info == NotAnalyzed() && (info = NoEscape())
     # only propagate info when the field itself is non-bitstype
     if !isbitstype(widenconst(ir.stmts.type[pc]))
         add_changes!(args[2:end], ir, info, changes)
@@ -632,9 +633,9 @@ end
 function analyze_escapes(@nospecialize(f), @nospecialize(types=Tuple{});
                          world = get_world_counter(),
                          interp = Core.Compiler.NativeInterpreter(world))
-    interp = EscapeAnalyzer{EscapeState}(interp, nothing, nothing)
+    interp = EscapeAnalyzer(interp)
     code_typed(f, types; optimize=true, world, interp)
-    return EscapeAnalysisResult(interp.ir::IRCode, interp.state::EscapeState)
+    return EscapeAnalysisResult(interp.ir, interp.state)
 end
 
 # utilities
@@ -645,18 +646,18 @@ __clear_caches!() = (__clear_code_cache!(); __clear_escape_cache!())
 
 function get_name_color(x::EscapeLattice, symbol::Bool = false)
     getname(x) = string(nameof(x))
-    if x === NotAnalyzed()
+    if x == NotAnalyzed()
         name, color = (getname(NotAnalyzed), '◌'), :plain
-    elseif x === NoEscape()
+    elseif x == NoEscape()
         name, color = (getname(NoEscape), '✓'), :green
     elseif NoEscape() ⋤ x ⊑ AllReturnEscape()
         pcs = sprint(show, collect(x.ReturnEscape); context=:limit=>true)
         name1 = string(getname(ReturnEscape), '(', pcs, ')')
         name = name1, '↑'
         color = :cyan
-    elseif x === ThrownEscape()
+    elseif NoEscape() ⋤ x ⊑ ThrownEscape()
         name, color = (getname(ThrownEscape), '↓'), :yellow
-    elseif x === GlobalEscape()
+    elseif NoEscape() ⋤ x ⊑ GlobalEscape()
         name, color = (getname(GlobalEscape), 'G'), :red
     else
         name, color = (nothing, '*'), :red
@@ -718,7 +719,6 @@ end
 
 function print_with_info(preprint, postprint, io::IO, ir::IRCode)
     io = IOContext(io, :displaysize=>displaysize(io))
-    used = BitSet()
     used = Base.IRShow.stmts_used(io, ir)
     line_info_preprinter = Base.IRShow.lineinfo_disabled
     line_info_postprinter = Base.IRShow.default_expr_type_printer
