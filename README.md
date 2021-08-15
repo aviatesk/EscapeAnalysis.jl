@@ -1,15 +1,9 @@
 [![CI](https://github.com/aviatesk/EscapeAnalysis.jl/actions/workflows/ci.yml/badge.svg)](https://github.com/aviatesk/EscapeAnalysis.jl/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/aviatesk/EscapeAnalysis.jl/branch/master/graph/badge.svg?token=ADEKPZRUJH)](https://codecov.io/gh/aviatesk/EscapeAnalysis.jl)
 
-A simple module that collects escape information from Julia optimization IR (i.e. `IRCode`).
+`EscapeAnalysis` is a simple module that collects escape information from Julia's optimization IR (i.e. `IRCode`).
 
-Couple of notes about this escape analysis:
-- the analysis is based on the [data-flow analysis](https://aviatesk.github.io/posts/data-flow-problem/) approach
-- it is a backward-analysis, i.e. escape information will flow from usage site to definition site
-- the algorithm works by updating the working set that contains program counters corresponding to SSA statements until every statement gets converged to a fixed point
-- it only manages a single global state, some flow-sensitivity is encoded as `EscapeLattice` properties
-
-This escape analysis works on a lattice called `EscapeLattice`, which holds the following properties:
+This analysis works on a lattice called `EscapeLattice`, which holds the following properties:
 - `x.Analyzed::Bool`: not formally part of the lattice, indicates this statement has not been analyzed at all
 - `x.ReturnEscape::BitSet`: keeps SSA numbers of return statements where it can be returned to the caller
   * `isempty(x.ReturnEscape)` means it never escapes to the caller
@@ -23,18 +17,32 @@ This escape analysis works on a lattice called `EscapeLattice`, which holds the 
   * `0` : unknown or multiple
   * `n` : through argument N
 
-These attributes can be combined to create a partial lattice that has a finite height:
-- `AllEscape`: the topmost element of this lattice, meaning it will escape to everywhere
-- `ReturnEscape`, `Escape`: intermediate lattice elements
-- `NoEscape`: the bottom element of this lattice
+These attributes can be combined to create a partial lattice that has a finite height, given
+that input program has a finite number of statements, which is assured by Julia's semantics.
+
+There are utility constructors to create common `EscapeLattice`s, e.g.,
+- `NoEscape()`: the bottom element of this lattice, meaning it won't escape to anywhere
+- `AllEscape()`: the topmost element of this lattice, meaning it will escape to everywhere
 
 The escape analysis will transition these elements from the bottom to the top,
-in the same way as Julia's native type inference routine.
+in the same direction as Julia's native type inference routine.
 An abstract state will be initialized with the bottom(-like) elements:
-- the call arguments are initialized as `ReturnEscape`, because they're visible from a caller immediately
-- the other states are initialized as `NotAnalyzed`, which is a special lattice element that
+- the call arguments are initialized as `ArgumentReturnEscape()`, because they're visible from a caller immediately
+- the other states are initialized as `NotAnalyzed()`, which is a special lattice element that
   is slightly lower than `NoEscape`, but at the same time doesn't represent any meaning
   other than it's not analyzed yet (thus it's not formally part of the lattice).
+
+Escape analysis implementation is based on the data-flow algorithm described in the paper [^MM02].
+The analysis works on the lattice of [`EscapeLattice`](@ref) and transitions lattice elements
+from the bottom to the top in a _backward_ way, i.e. data flows from usage cites to definitions,
+until every lattice gets converged to a fixed point by maintaining a (conceptual) working set
+that contains program counters corresponding to remaining SSA statements to be analyzed.
+Note that the analysis only manages a single global state, with some flow-sensitivity
+encoded as property of `EscapeLattice`.
+
+[^MM02]: A Graph-Free approach to Data-Flow Analysis.
+         Markas Mohnen, 2002, April.
+         <https://api.semanticscholar.org/CorpusID:28519618>
 
 TODO:
 - [ ] implement more builtin function handlings, and make escape information more accurate

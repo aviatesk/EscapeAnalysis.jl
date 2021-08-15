@@ -1,5 +1,11 @@
 module EscapeAnalysis
 
+let
+    README = normpath(dirname(@__DIR__), "README.md")
+    include_dependency(README)
+    @doc read(README, String) EscapeAnalysis
+end
+
 export
     analyze_escapes,
     @analyze_escapes
@@ -154,16 +160,18 @@ A lattice for escape information, which holds the following properties:
   * `0` : unknown or multiple
   * `n` : through argument N
 
-These attributes can be combined to create a partial lattice that has a finite height:
+These attributes can be combined to create a partial lattice that has a finite height, given
+that input program has a finite number of statements, which is assured by Julia's semantics.
+
+There are utility constructors to create common `EscapeLattice`s, e.g.,
+- `NoEscape()`: the bottom element of this lattice, meaning it won't escape to anywhere
 - `AllEscape()`: the topmost element of this lattice, meaning it will escape to everywhere
-- `ReturnEscape()`, `ThrownEscape()`, `GlobalEscape()`: intermediate lattice elements
-- `NoEscape()`: the bottom element of this lattice
 
 The escape analysis will transition these elements from the bottom to the top,
-in the same way as Julia's native type inference routine.
+in the same direction as Julia's native type inference routine.
 An abstract state will be initialized with the bottom(-like) elements:
-- the call arguments are initialized as `ReturnEscape`, because they're visible from a caller immediately
-- the other states are initialized as `NotAnalyzed`, which is a special lattice element that
+- the call arguments are initialized as `ArgumentReturnEscape()`, because they're visible from a caller immediately
+- the other states are initialized as `NotAnalyzed()`, which is a special lattice element that
   is slightly lower than `NoEscape`, but at the same time doesn't represent any meaning
   other than it's not analyzed yet (thus it's not formally part of the lattice).
 """
@@ -286,9 +294,13 @@ const Changes = Vector{Tuple{Any,EscapeLattice}}
 """
     find_escapes(ir::IRCode, nargs::Int) -> EscapeState
 
-Escape analysis implementation based on the data-flow algorithm described in the paper [^MM02].
+Escape analysis implementation is based on the data-flow algorithm described in the paper [^MM02].
 The analysis works on the lattice of [`EscapeLattice`](@ref) and transitions lattice elements
-from the bottom to the top in a _backward_ way, i.e. data flows from usage cites to definitions.
+from the bottom to the top in a _backward_ way, i.e. data flows from usage cites to definitions,
+until every lattice gets converged to a fixed point by maintaining a (conceptual) working set
+that contains program counters corresponding to remaining SSA statements to be analyzed.
+Note that the analysis only manages a single global state, with some flow-sensitivity
+encoded as property of `EscapeLattice`.
 
 [^MM02]: A Graph-Free approach to Data-Flow Analysis.
          Markas Mohnen, 2002, April.
