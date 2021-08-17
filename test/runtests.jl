@@ -347,8 +347,66 @@ end
     end
 end
 
-@testset "special-casing bitstype" begin
+@testset "field analysis" begin
     let
+        result = analyze_escapes((String,)) do a # => ReturnEscape
+            o = MutableSome(a) # no need to escape
+            f = getfield(o, :value)
+            return f
+        end
+        i = findfirst(==(MutableSome{String}), result.ir.stmts.type)
+        r = findfirst(x->isa(x, Core.ReturnNode), result.ir.stmts.inst)
+        @assert !isnothing(i) && !isnothing(r)
+        @test has_return_escape(result.state.arguments[2], r)
+        @test_broken !has_return_escape(result.state.ssavalues[i], r)
+    end
+
+    let
+        result = analyze_escapes((String,)) do a # => ReturnEscape && GlobalEscape
+            o = MutableSome(a) # no need to escape
+            global oo = o
+            f = getfield(o, :value)
+            return f
+        end
+        i = findfirst(==(MutableSome{String}), result.ir.stmts.type)
+        r = findfirst(x->isa(x, Core.ReturnNode), result.ir.stmts.inst)
+        @assert !isnothing(i) && !isnothing(r)
+        @test has_return_escape(result.state.arguments[2], r)
+        @test has_global_escape(result.state.ssavalues[i])
+        @test_broken !has_return_escape(result.state.ssavalues[i], r)
+    end
+
+    let
+        result = analyze_escapes((String,)) do a # => ReturnEscape
+            o1 = MutableSome(a) # => ReturnEscape
+            o2 = MutableSome(o1) # no need to escape
+            return getfield(o2, :value)
+        end
+        i1 = findfirst(==(MutableSome{String}), result.ir.stmts.type)
+        i2 = findfirst(==(MutableSome{MutableSome{String}}), result.ir.stmts.type)
+        r = findfirst(x->isa(x, Core.ReturnNode), result.ir.stmts.inst)
+        @assert !isnothing(i1) && !isnothing(i2) && !isnothing(4)
+        @test has_return_escape(result.state.arguments[2], r)
+        @test has_return_escape(result.state.ssavalues[i1])
+        @test_broken !has_return_escape(result.state.ssavalues[i2])
+    end
+
+    let
+        result = analyze_escapes((Any,)) do a # => GlobalEscape
+            t = tuple(a) # no need to escape
+            global tt = t[1]
+            return nothing
+        end
+        i = findfirst(t->t<:Tuple, result.ir.stmts.type) # allocation statement
+        @assert !isnothing(i)
+        @test has_global_escape(result.state.arguments[2])
+        @test_broken !has_global_escape(result.state.ssavalues[i])
+    end
+end
+
+# demonstrate a simple type level analysis can sometimes compensate the lack of yet unimplemented analysis
+@testset "special-casing bitstype" begin
+    let # lack of field analysis
         result = analyze_escapes((Int,)) do a
             o = MutableSome(a) # no need to escape
             f = getfield(o, :value)
