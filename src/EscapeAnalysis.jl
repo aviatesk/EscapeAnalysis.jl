@@ -247,7 +247,7 @@ function ⊑(x::EscapeLattice, y::EscapeLattice)
     end
     return false
 end
-⋤(x::EscapeLattice, y::EscapeLattice) = !⊑(y, x)
+⋤(x::EscapeLattice, y::EscapeLattice) = ⊑(x, y) && !⊑(y, x)
 
 function ⊔(x::EscapeLattice, y::EscapeLattice)
     return EscapeLattice(
