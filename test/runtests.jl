@@ -25,10 +25,26 @@ end
         @test has_return_escape(result.state.arguments[2]) # argument
     end
 
-    let # global assignement
+    let # global store
         result = analyze_escapes((Any,)) do a
             global aa = a
             return nothing
+        end
+        @test has_global_escape(result.state.arguments[2])
+    end
+
+    let # global load
+        result = analyze_escapes() do
+            global gr
+            return gr
+        end
+        i = findfirst(has_return_escape, result.state.ssavalues)
+        @assert !isnothing(i)
+        has_global_escape(result.state.ssavalues[i])
+
+        result = analyze_escapes((Any,)) do a
+            global gr
+            (gr::MutableSome{Any}).x = a
         end
         @test has_global_escape(result.state.arguments[2])
     end
