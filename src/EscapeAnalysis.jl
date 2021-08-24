@@ -496,11 +496,14 @@ function escape_invoke!(args::Vector{Any}, pc::Int,
                         state::EscapeState, ir::IRCode, changes::Changes)
     linfo = first(args)::MethodInstance
     linfostate = get(GLOBAL_ESCAPE_CACHE, linfo, nothing)
+    args = args[2:end]
     if isnothing(linfostate)
-        add_changes!(args[2:end], ir, AllEscape(), changes)
+        add_changes!(args, ir, AllEscape(), changes)
     else
         retinfo = state.ssavalues[pc] # escape information imposed on the call statement
-        for (arg, arginfo) in zip(args[2:end], linfostate.arguments)
+        for i in 1:length(args)
+            arg = args[i]
+            arginfo = linfostate.arguments[i]
             info = from_interprocedural(arginfo, retinfo)
             push!(changes, (arg, info))
         end
