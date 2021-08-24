@@ -341,15 +341,19 @@ function find_escapes(ir::IRCode, nargs::Int)
                     escape_invoke!(stmt.args, pc, state, ir, changes)
                 elseif head === :new
                     info = state.ssavalues[pc]
-                    info == NotAnalyzed() && (info = NoEscape())
-                    add_changes!(stmt.args[2:end], ir, info, changes) # we will be interested in if this allocation is not escape or not
-                    add_change!(SSAValue(pc), ir, info, changes) # we will be interested in if this allocation is not escape or not
+                    if info == NotAnalyzed()
+                        info = NoEscape()
+                        add_change!(SSAValue(pc), ir, info, changes) # we will be interested in if this allocation escapes or not
+                    end
+                    add_changes!(stmt.args[2:end], ir, info, changes)
                 elseif head === :splatnew
                     info = state.ssavalues[pc]
-                    info == NotAnalyzed() && (info = NoEscape())
+                    if info == NotAnalyzed()
+                        info = NoEscape()
+                        add_change!(SSAValue(pc), ir, info, changes) # we will be interested in if this allocation escapes or not
+                    end
                     # splatnew passes field values using a single tuple (args[2])
                     add_change!(stmt.args[2], ir, info, changes)
-                    add_change!(SSAValue(pc), ir, info, changes) # we will be interested in if this allocation is not escape or not
                 elseif head === :(=)
                     lhs, rhs = stmt.args
                     if isa(lhs, GlobalRef) # global store
