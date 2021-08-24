@@ -351,7 +351,7 @@ function find_escapes(ir::IRCode, nargs::Int)
                     push!(changes, (SSAValue(pc), info)) # we will be interested in if this allocation is not escape or not
                 elseif head === :(=)
                     lhs, rhs = stmt.args
-                    if isa(lhs, GlobalRef)
+                    if isa(lhs, GlobalRef) # global store
                         add_change!(rhs, ir, GlobalEscape(), changes)
                     end
                 elseif head === :foreigncall
@@ -399,6 +399,8 @@ function find_escapes(ir::IRCode, nargs::Int)
                 else
                     add_changes!(stmt.args, ir, AllEscape(), changes)
                 end
+            elseif isa(stmt, GlobalRef) # global load
+                add_change!(SSAValue(pc), ir, GlobalEscape(), changes)
             elseif isa(stmt, PiNode)
                 if isdefined(stmt, :val)
                     info = state.ssavalues[pc]
