@@ -290,6 +290,7 @@ const GLOBAL_ESCAPE_CACHE = IdDict{MethodInstance,EscapeState}()
 __clear_escape_cache!() = empty!(GLOBAL_ESCAPE_CACHE)
 
 const Changes = Vector{Tuple{Any,EscapeLattice}}
+const IR_FLAG_NO_ESCAPE = 0x01 << 5
 
 """
     find_escapes(ir::IRCode, nargs::Int) -> EscapeState
@@ -444,6 +445,13 @@ function find_escapes(ir::IRCode, nargs::Int)
         end
 
         anyupdate || break
+    end
+
+    for pc in 1:nstmts
+        # marking heap-allocated no escape stmts for llvm-alloc-opt pass
+        if isexpr(stmts.inst[pc], :new) && ismutabletype(widenconst(stmts.type[pc])) && has_no_escape(state.ssavalues[pc])
+            stmts.flag[pc] |= IR_FLAG_NO_ESCAPE
+        end
     end
 
     return state
