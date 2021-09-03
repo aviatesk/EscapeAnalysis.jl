@@ -267,6 +267,9 @@ function ⊓(x::EscapeLattice, y::EscapeLattice)
         )
 end
 
+# TODO setup a more effient struct for cache
+# which can discard escape information on SSS values and arguments that don't join dispatch signature
+
 """
     state::EscapeState
 
@@ -503,9 +506,18 @@ function escape_invoke!(args::Vector{Any}, pc::Int,
         add_changes!(args, ir, AllEscape(), changes)
     else
         retinfo = state.ssavalues[pc] # escape information imposed on the call statement
+        nargs = Int((linfo.def::Method).nargs)
         for i in 1:length(args)
             arg = args[i]
-            arginfo = linfostate.arguments[i]
+            if i ≤ nargs
+                arginfo = linfostate.arguments[i]
+            else # handle isva signature: COMBAK will this invalid once we encode alias information ?
+                arginfo = linfostate.arguments[nargs]
+            end
+            if isempty(arginfo.ReturnEscape)
+                @eval Main (ir = $ir; linfo = $linfo)
+                error("invalid escape lattice element returned from inter-procedural context: inspect `Main.ir` and `Main.linfo`")
+            end
             info = from_interprocedural(arginfo, retinfo)
             push!(changes, (arg, info))
         end
@@ -516,7 +528,6 @@ end
 # context of the caller frame using the escape information imposed on the return value (`retinfo`)
 function from_interprocedural(arginfo::EscapeLattice, retinfo::EscapeLattice)
     ar = arginfo.ReturnEscape
-    @assert !isempty(ar) "invalid escape lattice element returned from inter-procedural context"
     newarginfo = EscapeLattice(true, NO_RETURN, arginfo.ThrownEscape, arginfo.GlobalEscape)
     if ar == ARGUMENT_RETURN
         # if this is simply passed as the call argument, we can discard the `ReturnEscape`
