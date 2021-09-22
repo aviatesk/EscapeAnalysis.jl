@@ -1,4 +1,4 @@
-using EscapeAnalysis, InteractiveUtils, Test, JETTest
+using EscapeAnalysis, InteractiveUtils, Test, JET
 
 mutable struct MutableSome{T}
     value::T
@@ -519,11 +519,10 @@ end
         return true
     end
 
-    test_nodispatch(only(methods(EscapeAnalysis.find_escapes)).sig; function_filter)
-
+    test_opt(only(methods(EscapeAnalysis.find_escapes)).sig; function_filter)
     for m in methods(EscapeAnalysis.escape_builtin!)
         Base._methods_by_ftype(m.sig, 1, Base.get_world_counter()) === false && continue
-        test_nodispatch(m.sig; function_filter)
+        test_opt(m.sig; function_filter)
     end
 end
 
