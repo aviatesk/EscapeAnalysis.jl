@@ -1,6 +1,6 @@
 # This file is machine-generated - editing it directly is not advised
 
-julia_version = "1.8.0-DEV.563"
+julia_version = "1.8.0-DEV.574"
 manifest_format = "2.0"
 
 [[deps.ArgTools]]
@@ -41,7 +41,7 @@ uuid = "b77e0a4c-d291-57a0-90e8-8db25a27a240"
 
 [[deps.JET]]
 deps = ["InteractiveUtils", "JuliaInterpreter", "LoweredCodeUtils", "MacroTools", "Pkg", "Revise", "Test"]
-git-tree-sha1 = "b9ca969ef22dba457da208f122ac8582909fb936"
+git-tree-sha1 = "06bc39eb82cc397bc11ee3a8327f88ed54fec478"
 repo-rev = "master"
 repo-url = "https://github.com/aviatesk/JET.jl"
 uuid = "c3a54625-cd67-489e-a8e7-0a5a0ff4e31b"
@@ -126,7 +126,7 @@ deps = ["InteractiveUtils", "Markdown", "Sockets", "Unicode"]
 uuid = "3fa0cd96-eef1-5676-8a61-b3b8758bbffb"
 
 [[deps.Random]]
-deps = ["Serialization"]
+deps = ["SHA", "Serialization"]
 uuid = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 
 [[deps.Requires]]

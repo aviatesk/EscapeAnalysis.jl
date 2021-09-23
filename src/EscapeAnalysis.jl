@@ -51,7 +51,7 @@ import .CC:
     optimize,
     widenconst,
     argextype,
-    argtype_to_function,
+    singleton_type,
     IR_FLAG_EFFECT_FREE,
     is_meta_expr_head
 
@@ -542,7 +542,7 @@ end
 function escape_call!(args::Vector{Any}, pc::Int,
                       state::EscapeState, ir::IRCode, changes::Changes)
     ft = argextype(first(args), ir, ir.sptypes, ir.argtypes)
-    f = argtype_to_function(ft)
+    f = singleton_type(ft)
     if isa(f, Core.IntrinsicFunction)
         return false # COMBAK we may break soundness here, e.g. `pointerref`
     else
