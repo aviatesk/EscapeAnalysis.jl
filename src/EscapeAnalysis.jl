@@ -64,9 +64,8 @@ import Base:
 using InteractiveUtils
 
 let __init_hooks__ = []
-    global __init__, register_init_hook!
-    __init__() = foreach(f->f(), __init_hooks__)
-    register_init_hook!(@nospecialize(f)) = push!(__init_hooks__, f)
+    global __init__() = foreach(f->f(), __init_hooks__)
+    global register_init_hook!(@nospecialize(f)) = push!(__init_hooks__, f)
 end
 
 mutable struct EscapeAnalyzer{State} <: AbstractInterpreter
@@ -292,7 +291,8 @@ end
 const GLOBAL_ESCAPE_CACHE = IdDict{MethodInstance,EscapeState}()
 __clear_escape_cache!() = empty!(GLOBAL_ESCAPE_CACHE)
 
-const Changes = Vector{Tuple{Any,EscapeLattice}}
+const Change  = Pair{Union{Argument,SSAValue},EscapeLattice}
+const Changes = Vector{Change}
 
 """
     find_escapes(ir::IRCode, nargs::Int) -> EscapeState
@@ -342,16 +342,14 @@ function find_escapes(ir::IRCode, nargs::Int)
                 elseif head === :new
                     info = state.ssavalues[pc]
                     info == NotAnalyzed() && (info = NoEscape())
-                    for arg in stmt.args[2:end]
-                        push!(changes, (arg, info))
-                    end
-                    push!(changes, (SSAValue(pc), info)) # we will be interested in if this allocation is not escape or not
+                    add_changes!(stmt.args[2:end], ir, info, changes) # we will be interested in if this allocation is not escape or not
+                    add_change!(SSAValue(pc), ir, info, changes) # we will be interested in if this allocation is not escape or not
                 elseif head === :splatnew
                     info = state.ssavalues[pc]
                     info == NotAnalyzed() && (info = NoEscape())
                     # splatnew passes field values using a single tuple (args[2])
-                    push!(changes, (stmt.args[2], info))
-                    push!(changes, (SSAValue(pc), info)) # we will be interested in if this allocation is not escape or not
+                    add_change!(stmt.args[2], ir, info, changes)
+                    add_change!(SSAValue(pc), ir, info, changes) # we will be interested in if this allocation is not escape or not
                 elseif head === :(=)
                     lhs, rhs = stmt.args
                     if isa(lhs, GlobalRef) # global store
@@ -366,7 +364,7 @@ function find_escapes(ir::IRCode, nargs::Int)
                     # if normalize(name) === :jl_gc_add_finalizer_th
                     #     continue # XXX assume this finalizer call is valid for finalizer elision
                     # end
-                    push!(changes, (name, ThrownEscape()))
+                    add_change!(name, ir, ThrownEscape(), changes)
                     add_changes!(stmt.args[6:5+foreigncall_nargs], ir, ThrownEscape(), changes)
                 elseif head === :throw_undef_if_not # XXX when is this expression inserted ?
                     add_change!(stmt.args[1], ir, ThrownEscape(), changes)
@@ -407,14 +405,14 @@ function find_escapes(ir::IRCode, nargs::Int)
             elseif isa(stmt, PiNode)
                 if isdefined(stmt, :val)
                     info = state.ssavalues[pc]
-                    push!(changes, (stmt.val, info))
+                    add_change!(stmt.val, ir, info, changes)
                 end
             elseif isa(stmt, PhiNode)
                 info = state.ssavalues[pc]
                 values = stmt.values
                 for i in 1:length(values)
                     if isassigned(values, i)
-                        push!(changes, (values[i], info))
+                        add_change!(values[i], ir, info, changes)
                     end
                 end
             elseif isa(stmt, PhiCNode)
@@ -422,13 +420,13 @@ function find_escapes(ir::IRCode, nargs::Int)
                 values = stmt.values
                 for i in 1:length(values)
                     if isassigned(values, i)
-                        push!(changes, (values[i], info))
+                        add_change!(values[i], ir, info, changes)
                     end
                 end
             elseif isa(stmt, UpsilonNode)
                 if isdefined(stmt, :val)
                     info = state.ssavalues[pc]
-                    push!(changes, (stmt.val, info))
+                    add_change!(stmt.val, ir, info, changes)
                 end
             elseif isa(stmt, ReturnNode)
                 if isdefined(stmt, :val)
@@ -492,8 +490,10 @@ function add_changes!(args::Vector{Any}, ir::IRCode, info::EscapeLattice, change
 end
 
 function add_change!(@nospecialize(x), ir::IRCode, info::EscapeLattice, changes::Changes)
-    if !isbitstype(widenconst(argextype(x, ir, ir.sptypes, ir.argtypes)))
-        push!(changes, (x, info))
+    if isa(x, Argument) || isa(x, SSAValue)
+        if !isbitstype(widenconst(argextype(x, ir, ir.sptypes, ir.argtypes)))
+            push!(changes, Change(x, info))
+        end
     end
 end
 
@@ -519,7 +519,7 @@ function escape_invoke!(args::Vector{Any}, pc::Int,
                 error("invalid escape lattice element returned from inter-procedural context: inspect `Main.ir` and `Main.linfo`")
             end
             info = from_interprocedural(arginfo, retinfo)
-            push!(changes, (arg, info))
+            add_change!(arg, ir, info, changes)
         end
     end
 end
@@ -545,9 +545,8 @@ function escape_call!(args::Vector{Any}, pc::Int,
     f = singleton_type(ft)
     if isa(f, Core.IntrinsicFunction)
         return false # COMBAK we may break soundness here, e.g. `pointerref`
-    else
-        ishandled = escape_builtin!(f, args, pc, state, ir, changes)::Union{Nothing,Bool}
     end
+    ishandled = escape_builtin!(f, args, pc, state, ir, changes)::Union{Nothing,Bool}
     isnothing(ishandled) && return false # nothing to propagate
     if !ishandled
         # if this call hasn't been handled by any of pre-defined handlers,
@@ -558,7 +557,7 @@ function escape_call!(args::Vector{Any}, pc::Int,
 end
 
 # TODO implement more builtins, make them more accurate
-# TODO use `T_IFUNC`-like logic and don't not abuse the dispatch
+# TODO use `T_IFUNC`-like logic and don't not abuse dispatch ?
 
 escape_builtin!(@nospecialize(f), _...) = return false
 
@@ -574,13 +573,13 @@ function escape_builtin!(::typeof(ifelse), args::Vector{Any}, pc::Int, state::Es
     condt = argextype(cond, ir, ir.sptypes, ir.argtypes)
     if isa(condt, Const) && (cond = condt.val; isa(cond, Bool))
         if cond
-            push!(changes, (th, info))
+            add_change!(th, ir, info, changes)
         else
-            push!(changes, (el, info))
+            add_change!(el, ir, info, changes)
         end
     else
-        push!(changes, (th, info))
-        push!(changes, (el, info))
+        add_change!(th, ir, info, changes)
+        add_change!(el, ir, info, changes)
     end
     return true
 end
@@ -716,12 +715,8 @@ struct EscapeAnalysisResult
     state::EscapeState
 end
 Base.show(io::IO, result::EscapeAnalysisResult) = print_with_info(io, result.ir, result.state)
-
-function Base.iterate(result::EscapeAnalysisResult, state = nothing)
-    state == 2 && return nothing
-    isnothing(state) && return result.ir, 1
-    return result.state, 2
-end
+@eval Base.iterate(res::EscapeAnalysisResult, state=1) =
+    return state > $(fieldcount(EscapeAnalysisResult)) ? nothing : (getfield(res, state), state+1)
 
 # adapted from https://github.com/JuliaDebug/LoweredCodeUtils.jl/blob/4612349432447e868cf9285f647108f43bd0a11c/src/codeedges.jl#L881-L897
 function print_with_info(io::IO, ir::IRCode, (; arguments, ssavalues)::EscapeState)
