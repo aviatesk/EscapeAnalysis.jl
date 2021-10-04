@@ -590,7 +590,9 @@ end
 
 function escape_builtin!(::typeof(tuple), args::Vector{Any}, pc::Int, state::EscapeState, ir::IRCode, changes::Changes)
     info = state.ssavalues[pc]
-    info == NotAnalyzed() && (info = NoEscape())
+    if info == NotAnalyzed()
+        info = NoEscape()
+    end
     add_changes!(args[2:end], ir, info, changes)
     return true
 end
@@ -598,7 +600,9 @@ end
 # TODO don't propagate escape information to the 1st argument, but propagate information to aliased field
 function escape_builtin!(::typeof(getfield), args::Vector{Any}, pc::Int, state::EscapeState, ir::IRCode, changes::Changes)
     info = state.ssavalues[pc]
-    info == NotAnalyzed() && (info = NoEscape())
+    if info == NotAnalyzed()
+        info = NoEscape()
+    end
     # only propagate info when the field itself is non-bitstype
     if !isbitstype(widenconst(ir.stmts.type[pc]))
         add_changes!(args[2:end], ir, info, changes)
@@ -749,7 +753,8 @@ end
 function print_with_info(preprint, postprint, io::IO, ir::IRCode)
     io = IOContext(io, :displaysize=>displaysize(io))
     used = Base.IRShow.stmts_used(io, ir)
-    line_info_preprinter = Base.IRShow.inline_linfo_printer(ir)
+    # NOTE we can't use Base.IRShow.inline_linfo_printer here, otherwise `preprint` doesn't work
+    line_info_preprinter = Base.IRShow.lineinfo_disabled
     line_info_postprinter = Base.IRShow.default_expr_type_printer
     preprint(io)
     bb_idx_prev = bb_idx = 1

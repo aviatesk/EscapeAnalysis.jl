@@ -202,9 +202,11 @@ end
             unionsplit_noescape(a.value)
             return nothing
         end
-        i = findfirst(==(MutableSome{T}), result.ir.stmts.type) # find allocation statement
-        @assert !isnothing(i)
-        @test has_no_escape(result.state.ssavalues[i])
+        inds = findall(==(MutableSome{T}), result.ir.stmts.type) # find allocation statement
+        @assert !isempty(inds)
+        for i in inds
+            @test has_no_escape(result.state.ssavalues[i])
+        end
     end
 
     # appropriate conversion of inter-procedural context
