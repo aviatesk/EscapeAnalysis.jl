@@ -738,13 +738,14 @@ function print_with_info(io::IO, ir::IRCode, (; arguments, ssavalues)::EscapeSta
         c, color = get_name_color(ssavalues[idx], true)
         printstyled(io, lpad(idx, nd), ' ', c, ' '; color)
     end
+
     print_with_info(preprint, (args...)->nothing, io, ir)
 end
 
 function print_with_info(preprint, postprint, io::IO, ir::IRCode)
     io = IOContext(io, :displaysize=>displaysize(io))
     used = Base.IRShow.stmts_used(io, ir)
-    line_info_preprinter = Base.IRShow.lineinfo_disabled
+    line_info_preprinter = Base.IRShow.inline_linfo_printer(ir)
     line_info_postprinter = Base.IRShow.default_expr_type_printer
     preprint(io)
     bb_idx_prev = bb_idx = 1
