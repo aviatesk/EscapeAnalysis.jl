@@ -181,36 +181,42 @@ struct EscapeLattice
     ThrownEscape::Bool
     GlobalEscape::Bool
     # TODO: ArgEscape::Int
+    FieldsEscape::Vector{EscapeLattice}
 end
 
 function Base.:(==)(x::EscapeLattice, y::EscapeLattice)
     return x.Analyzed === y.Analyzed &&
            x.ReturnEscape == y.ReturnEscape &&
            x.ThrownEscape === y.ThrownEscape &&
-           x.GlobalEscape === y.GlobalEscape
+           x.GlobalEscape === y.GlobalEscape &&
+           x.FieldsEscape == y.FieldsEscape
 end
 
 # lattice constructors
 # precompute default values in order to eliminate computations at callsites
 const NO_RETURN = BitSet()
 const ARGUMENT_RETURN = BitSet(0)
-NotAnalyzed() = EscapeLattice(false, NO_RETURN, false, false) # not formally part of the lattice
-NoEscape() = EscapeLattice(true, NO_RETURN, false, false)
-ReturnEscape(pcs::BitSet) = EscapeLattice(true, pcs, false, false)
+const NO_FIELD_ESCAPE = EscapeLattice[]
+NotAnalyzed() = EscapeLattice(false, NO_RETURN, false, false, NO_FIELD_ESCAPE) # not formally part of the lattice
+NoEscape() = EscapeLattice(true, NO_RETURN, false, false, NO_FIELD_ESCAPE)
+ReturnEscape(pcs::BitSet) = EscapeLattice(true, pcs, false, false, NO_FIELD_ESCAPE)
 ReturnEscape(pc::Int) = ReturnEscape(BitSet(pc))
 ArgumentReturnEscape() = ReturnEscape(ARGUMENT_RETURN)
-ThrownEscape() = EscapeLattice(true, NO_RETURN, true, false)
-GlobalEscape() = EscapeLattice(true, NO_RETURN, false, true)
+ThrownEscape() = EscapeLattice(true, NO_RETURN, true, false, NO_FIELD_ESCAPE)
+GlobalEscape() = EscapeLattice(true, NO_RETURN, false, true, NO_FIELD_ESCAPE)
+FieldsEscape(finfos::Vector{EscapeLattice}) = EscapeLattice(true, NO_RETURN, false, false, finfos)
+NoFieldsEscape(info::EscapeLattice) = EscapeLattice(info.Analyzed, info.ReturnEscape, info.ThrownEscape, info.GlobalEscape, NO_FIELD_ESCAPE)
 let
     all_return = BitSet(0:100_000)
     global AllReturnEscape() = ReturnEscape(all_return) # used for `show`
-    global AllEscape() = EscapeLattice(true, all_return, true, true)
+    global AllEscape() = EscapeLattice(true, all_return, true, true, NO_FIELD_ESCAPE)
 end
 
 # Convenience names for some ⊑ queries
 export
     has_not_analyzed,
     has_no_escape,
+    has_no_escape′,
     has_return_escape,
     has_thrown_escape,
     has_global_escape,
@@ -218,11 +224,12 @@ export
     can_elide_finalizer
 has_not_analyzed(x::EscapeLattice) = x == NotAnalyzed()
 has_no_escape(x::EscapeLattice) = x ⊑ NoEscape()
+has_no_escape′(x::EscapeLattice) = NoFieldsEscape(x) ⊑ NoEscape()
 has_return_escape(x::EscapeLattice) = !isempty(x.ReturnEscape)
 has_return_escape(x::EscapeLattice, pc::Int) = pc in x.ReturnEscape
 has_thrown_escape(x::EscapeLattice) = x.ThrownEscape
 has_global_escape(x::EscapeLattice) = x.GlobalEscape
-has_all_escape(x::EscapeLattice) = AllEscape() == x
+has_all_escape(x::EscapeLattice) = AllEscape() ⊑ x
 
 """
     can_elide_finalizer(x::EscapeLattice, pc::Int) -> Bool
@@ -239,22 +246,47 @@ function can_elide_finalizer(x::EscapeLattice, pc::Int)
 end
 
 function ⊑(x::EscapeLattice, y::EscapeLattice)
+    xf, yf = x.FieldsEscape, y.FieldsEscape
+    length(xf) ≤ length(yf) || return false
+    for (x′, y′) in zip(xf, yf)
+        x′ ⊑ y′ || return false
+    end
     if x.Analyzed ≤ y.Analyzed &&
        x.ReturnEscape ⊆ y.ReturnEscape &&
        x.ThrownEscape ≤ y.ThrownEscape &&
        x.GlobalEscape ≤ y.GlobalEscape
-       return true
+        return true
     end
     return false
 end
 ⋤(x::EscapeLattice, y::EscapeLattice) = ⊑(x, y) && !⊑(y, x)
 
 function ⊔(x::EscapeLattice, y::EscapeLattice)
+    xf, yf = x.FieldsEscape, y.FieldsEscape
+    if isempty(xf) # fast pass
+        FieldsEscape = yf
+    elseif isempty(yf) # fast pass
+        FieldsEscape = xf
+    else
+        xn, yn = length(xf), length(yf)
+        xfn, yfn = (xf, xn), (yf, yn)
+        (sf, sn), (lf, ln) = xn ≤ yn ? (xfn, yfn) : (yfn, xfn)
+        FieldsEscape = Vector{EscapeLattice}(undef, ln)
+        for i in 1:ln
+            if i > sn
+                FieldEscape = lf[i]
+            else
+                FieldEscape = sf[i] ⊔ lf[i]
+            end
+            FieldsEscape[i] = FieldEscape
+        end
+    end
     return EscapeLattice(
         x.Analyzed | y.Analyzed,
         x.ReturnEscape ∪ y.ReturnEscape,
         x.ThrownEscape | y.ThrownEscape,
         x.GlobalEscape | y.GlobalEscape,
+        FieldsEscape,
         )
 end
 
@@ -347,7 +379,14 @@ function find_escapes(ir::IRCode, nargs::Int)
                         info = NoEscape()
                         add_change!(SSAValue(pc), ir, info, changes) # we will be interested in if this allocation escapes or not
                     end
-                    add_changes!(stmt.args[2:end], ir, info, changes)
+                    args = stmt.args[2:end]
+                    add_changes!(args, ir, NoFieldsEscape(info), changes)
+                    n = min(length(args), length(info.FieldsEscape))
+                    for i in 1:n
+                        arg = args[i]
+                        finfo = info.FieldsEscape[i]
+                        add_change!(arg, ir, finfo, changes)
+                    end
                 elseif head === :splatnew
                     info = state.ssavalues[pc]
                     if info == NotAnalyzed()
@@ -537,7 +576,7 @@ end
 # context of the caller frame using the escape information imposed on the return value (`retinfo`)
 function from_interprocedural(arginfo::EscapeLattice, retinfo::EscapeLattice)
     ar = arginfo.ReturnEscape
-    newarginfo = EscapeLattice(true, NO_RETURN, arginfo.ThrownEscape, arginfo.GlobalEscape)
+    newarginfo = EscapeLattice(true, NO_RETURN, arginfo.ThrownEscape, arginfo.GlobalEscape, arginfo.FieldsEscape)
     if ar == ARGUMENT_RETURN
         # if this is simply passed as the call argument, we can discard the `ReturnEscape`
         # information and just propagate the other escape information
@@ -606,21 +645,60 @@ function escape_builtin!(::typeof(tuple), args::Vector{Any}, pc::Int, state::Esc
     if info == NotAnalyzed()
         info = NoEscape()
     end
-    add_changes!(args[2:end], ir, info, changes)
+    args = args[2:end]
+    add_changes!(args, ir, info, changes)
+    n = min(length(args), length(info.FieldsEscape))
+    for i in 1:n
+        arg = args[i]
+        finfo = info.FieldsEscape[i]
+        add_change!(arg, ir, finfo, changes)
+    end
     return true
 end
 
-# TODO don't propagate escape information to the 1st argument, but propagate information to aliased field
+function try_compute_fieldidx_args(ir::IRCode, args::Vector{Any}, typ::DataType)
+    field = args[3]
+    if isa(field, QuoteNode)
+        field = field.value
+    elseif isa(field, Int)
+    # try to resolve other constants, e.g. global reference
+    else
+        field = argextype(field, ir, ir.sptypes, ir.argtypes)
+        if isa(field, Const)
+            field = field.val
+        else
+            return nothing
+        end
+    end
+    isa(field, Union{Int, Symbol}) || return nothing
+    return CC.try_compute_fieldidx(typ, field)
+end
+
 function escape_builtin!(::typeof(getfield), args::Vector{Any}, pc::Int, state::EscapeState, ir::IRCode, changes::Changes)
+    # only propagate info when the field itself is non-bitstype
+    isbitstype(widenconst(ir.stmts.type[pc])) && return true
     info = state.ssavalues[pc]
     if info == NotAnalyzed()
         info = NoEscape()
     end
-    # only propagate info when the field itself is non-bitstype
-    if !isbitstype(widenconst(ir.stmts.type[pc]))
-        add_changes!(args[2:end], ir, info, changes)
+    if length(args) ≥ 2
+        obj = args[2]
+        objt = widenconst(argextype(obj, ir, ir.sptypes, ir.argtypes))
+        if isa(objt, DataType)
+            idx = try_compute_fieldidx_args(ir, args, objt)
+            if !isnothing(idx)
+                n = CC.fieldcount_noerror(objt)
+                if !isnothing(n)
+                    newinfo = FieldsEscape(EscapeLattice[
+                        i == idx ? info : NoEscape() for i in 1:n])
+                    add_change!(obj, ir, newinfo, changes)
+                    return true
+                end
+            end
+        end
+        add_change!(obj, ir, info, changes)
     end
-    return true
+    return true # may throw, but we will handle that later
 end
 
 # entries
@@ -697,8 +775,10 @@ end
 # in order to run a whole analysis from ground zero (e.g. for benchmarking, etc.)
 __clear_caches!() = (__clear_code_cache!(); __clear_escape_cache!())
 
-function get_name_color(x::EscapeLattice, symbol::Bool = false)
+function get_name_color(x::EscapeLattice, short::Bool = false)
     getname(x) = string(nameof(x))
+    FieldsEscape = x.FieldsEscape
+    x = NoFieldsEscape(x)
     if x == NotAnalyzed()
         name, color = (getname(NotAnalyzed), '◌'), :plain
     elseif x == NoEscape()
@@ -717,7 +797,8 @@ function get_name_color(x::EscapeLattice, symbol::Bool = false)
     else
         name, color = (nothing, '*'), :red
     end
-    return (symbol ? last(name) : first(name), color)
+    s = string((short ? last : first)(name), (isempty(FieldsEscape) ? ' ' : '′'))
+    return s, color
 end
 
 function Base.show(io::IO, x::EscapeLattice)
