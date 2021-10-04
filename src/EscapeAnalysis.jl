@@ -72,6 +72,7 @@ mutable struct EscapeAnalyzer{State} <: AbstractInterpreter
     native::NativeInterpreter
     ir::IRCode
     state::State
+    linfo::MethodInstance
     EscapeAnalyzer(native::NativeInterpreter) = new{EscapeState}(native)
 end
 
@@ -643,6 +644,7 @@ register_init_hook!() do
         $setindex!($GLOBAL_ESCAPE_CACHE, state, sv.linfo)
         interp.ir = copy(ir)
         interp.state = state
+        interp.linfo = sv.linfo
         @timeit "finalizer elision" ir = $elide_finalizers(ir, state)
         #@Base.show ("before_sroa", ir)
         @timeit "SROA" ir = getfield_elim_pass!(ir)
@@ -671,7 +673,7 @@ function analyze_escapes(@nospecialize(f), @nospecialize(types=Tuple{});
     interp = EscapeAnalyzer(interp)
     results = code_typed(f, types; optimize=true, world, interp)
     isone(length(results)) || throw(ArgumentError("`analyze_escapes` only supports single analysis result"))
-    return EscapeAnalysisResult(interp.ir, interp.state)
+    return EscapeResult(interp.ir, interp.state, interp.linfo)
 end
 
 # utilities
@@ -720,16 +722,20 @@ function Base.show(io::IO, ::MIME"application/prs.juno.inline", x::EscapeLattice
     end
 end
 
-struct EscapeAnalysisResult
+struct EscapeResult
     ir::IRCode
     state::EscapeState
+    linfo::Union{Nothing,MethodInstance}
+    EscapeResult(ir::IRCode, state::EscapeState, linfo::Union{Nothing,MethodInstance} = nothing) =
+        new(ir, state, linfo)
 end
-Base.show(io::IO, result::EscapeAnalysisResult) = print_with_info(io, result.ir, result.state)
-@eval Base.iterate(res::EscapeAnalysisResult, state=1) =
-    return state > $(fieldcount(EscapeAnalysisResult)) ? nothing : (getfield(res, state), state+1)
+Base.show(io::IO, result::EscapeResult) = print_with_info(io, result.ir, result.state, result.linfo)
+@eval Base.iterate(res::EscapeResult, state=1) =
+    return state > $(fieldcount(EscapeResult)) ? nothing : (getfield(res, state), state+1)
 
 # adapted from https://github.com/JuliaDebug/LoweredCodeUtils.jl/blob/4612349432447e868cf9285f647108f43bd0a11c/src/codeedges.jl#L881-L897
-function print_with_info(io::IO, ir::IRCode, (; arguments, ssavalues)::EscapeState)
+function print_with_info(io::IO,
+    ir::IRCode, (; arguments, ssavalues)::EscapeState, linfo::Union{Nothing,MethodInstance})
     # print escape information on SSA values
     function preprint(io::IO)
         print(io, widenconst(ir.argtypes[1]), '(')
@@ -739,14 +745,20 @@ function print_with_info(io::IO, ir::IRCode, (; arguments, ssavalues)::EscapeSta
             printstyled(io, '_', i, "::", ir.argtypes[i], ' ', c; color)
             i ≠ length(arguments) && print(io, ", ")
         end
-        println(io, ')')
+        print(io, ')')
+        if !isnothing(linfo)
+            def = linfo.def
+            printstyled(io, " in ", (isa(def, Module) ? (def,) : (def.module, " at ", def.file, ':', def.line))...; color=:bold)
+        end
+        println(io)
     end
 
     # print escape information on SSA values
-    nd = ndigits(length(ssavalues))
+    # nd = ndigits(length(ssavalues))
     function preprint(io::IO, idx::Int)
         c, color = get_name_color(ssavalues[idx], true)
-        printstyled(io, lpad(idx, nd), ' ', c, ' '; color)
+        # printstyled(io, lpad(idx, nd), ' ', c, ' '; color)
+        printstyled(io, c, ' '; color)
     end
 
     print_with_info(preprint, (args...)->nothing, io, ir)
@@ -755,8 +767,12 @@ end
 function print_with_info(preprint, postprint, io::IO, ir::IRCode)
     io = IOContext(io, :displaysize=>displaysize(io))
     used = Base.IRShow.stmts_used(io, ir)
-    # NOTE we can't use Base.IRShow.inline_linfo_printer here, otherwise `preprint` doesn't work
-    line_info_preprinter = Base.IRShow.lineinfo_disabled
+    # line_info_preprinter = Base.IRShow.lineinfo_disabled
+    line_info_preprinter = function (io::IO, indent::String, idx::Int)
+        r = Base.IRShow.inline_linfo_printer(ir)(io, indent, idx)
+        idx ≠ 0 && preprint(io, idx)
+        return r
+    end
     line_info_postprinter = Base.IRShow.default_expr_type_printer
     preprint(io)
     bb_idx_prev = bb_idx = 1
