@@ -195,13 +195,13 @@ const NO_RETURN = BitSet()
 const ARGUMENT_RETURN = BitSet(0)
 NotAnalyzed() = EscapeLattice(false, NO_RETURN, false, false) # not formally part of the lattice
 NoEscape() = EscapeLattice(true, NO_RETURN, false, false)
-ReturnEscape(returns::BitSet) = EscapeLattice(true, returns, false, false)
+ReturnEscape(pcs::BitSet) = EscapeLattice(true, pcs, false, false)
 ReturnEscape(pc::Int) = ReturnEscape(BitSet(pc))
 ArgumentReturnEscape() = ReturnEscape(ARGUMENT_RETURN)
 ThrownEscape() = EscapeLattice(true, NO_RETURN, true, false)
 GlobalEscape() = EscapeLattice(true, NO_RETURN, false, true)
 let
-    all_return = BitSet(0:1000000)
+    all_return = BitSet(0:100_000)
     global AllReturnEscape() = ReturnEscape(all_return) # used for `show`
     global AllEscape() = EscapeLattice(true, all_return, true, true)
 end
@@ -695,6 +695,8 @@ function get_name_color(x::EscapeLattice, symbol::Bool = false)
         name, color = (getname(ThrownEscape), '↓'), :yellow
     elseif NoEscape() ⋤ x ⊑ GlobalEscape()
         name, color = (getname(GlobalEscape), 'G'), :red
+    elseif x == AllEscape()
+        name, color = (getname(AllEscape), '*'), :red
     else
         name, color = (nothing, '*'), :red
     end
