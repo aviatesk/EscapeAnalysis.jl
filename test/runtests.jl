@@ -211,7 +211,7 @@ end
         inds = findall(==(MutableSome{T}), result.ir.stmts.type) # find allocation statement
         @assert !isempty(inds)
         for i in inds
-            @test has_no_escape′(result.state.ssavalues[i])
+            @test has_no_escape(result.state.ssavalues[i])
         end
     end
 
@@ -266,23 +266,6 @@ end
         @assert !isnothing(i) && !isnothing(r)
         @test !has_return_escape(result.state.ssavalues[i], r)
     end
-
-    # # FIXME! `println` causes infinite loop ...
-    # @eval m @noinline f_no_return_escape2(a) = begin
-    #     println("hi")
-    #     identity("hi")
-    # end
-    # let
-    #     result = @eval m $analyze_escapes() do
-    #         obj = Ref("foo")              # better to not be "return escape"
-    #         ret = @noinline f_no_return_escape2(obj)
-    #         return ret                    # must not alias to `obj`
-    #     end
-    #     i = findfirst(==(Base.RefValue{String}), result.ir.stmts.type) # find allocation statement
-    #     r = findfirst(x->isa(x, Core.ReturnNode), result.ir.stmts.inst)
-    #     @assert !isnothing(i) && !isnothing(r)
-    #     @test !has_return_escape(result.state.ssavalues[i], r)
-    # end
 end
 
 @testset "builtins" begin
@@ -425,7 +408,7 @@ end
         @test !has_return_escape(result.state.ssavalues[i], r)
     end
 
-    let
+    let # nested unwrap
         result = analyze_escapes((String,)) do a # => ReturnEscape
             o1 = MutableSome(a) # => ReturnEscape
             o2 = MutableSome(o1) # no need to escape
@@ -438,6 +421,16 @@ end
         @test has_return_escape(result.state.arguments[2], r)
         @test has_return_escape(result.state.ssavalues[i1], r)
         @test !has_return_escape(result.state.ssavalues[i2], r)
+    end
+
+    let # TODO nested wrap (NOTE: we're interested in the value of field)
+        result = analyze_escapes((String,)) do a # => ReturnEscape
+            o1  = MutableSome(a)        # => ReturnEscape
+            o2  = MutableSome(o1)       # => NoEscape
+            o1′ = getfield(o2, :value)  # => FieldEscapes(ReturnEscape)
+            a′  = getfield(o1′, :value) # => ReturnEscape
+            return a′
+        end
     end
 
     let # multiple fields
@@ -465,6 +458,29 @@ end
         @assert !isnothing(i)
         @test has_global_escape(result.state.arguments[2])
         @test !has_global_escape(result.state.ssavalues[i])
+    end
+
+    let # inter-procedural conversion
+        m = Module()
+        @eval m @noinline getvalue(obj) = obj.value
+        result = @eval m $analyze_escapes((String,)) do a # => ReturnEscape
+            obj = $MutableSome(a) # no need to escape
+            fld = getvalue(obj)
+            return fld
+        end
+        i = findfirst(==(MutableSome{String}), result.ir.stmts.type)
+        r = findfirst(x->isa(x, Core.ReturnNode), result.ir.stmts.inst)
+        @assert !isnothing(i) && !isnothing(r)
+        @test has_return_escape(result.state.arguments[2], r)
+        @test !has_return_escape(result.state.ssavalues[i], r)
+    end
+
+    let # `popfirst!(InvasiveLinkedList{Task})` within this `println` used to cause infinite loop ...
+        result = analyze_escapes((String,)) do a
+            println(a)
+            nothing
+        end
+        @test true
     end
 end
 
