@@ -468,7 +468,8 @@ function propagate_changes!(state::EscapeState, changes::Changes)
                 state.arguments[x.n] = new
                 anychanged |= true
             end
-        elseif isa(x, SSAValue)
+        else
+            x = x::SSAValue
             old = state.ssavalues[x.id]
             new = old ⊔ info
             if old ≠ new
@@ -513,7 +514,8 @@ function escape_invoke!(args::Vector{Any}, pc::Int,
     else
         (linfostate, _ #=ir::IRCode=#) = cache
         retinfo = state.ssavalues[pc] # escape information imposed on the call statement
-        nargs = Int((linfo.def::Method).nargs)
+        method = linfo.def::Method
+        nargs = Int(method.nargs)
         for i in 1:length(args)
             arg = args[i]
             if i ≤ nargs
@@ -711,7 +713,7 @@ function get_name_color(x::EscapeLattice, symbol::Bool = false)
     elseif NoEscape() ⋤ x ⊑ GlobalEscape()
         name, color = (getname(GlobalEscape), 'G'), :red
     elseif x == AllEscape()
-        name, color = (getname(AllEscape), '*'), :red
+        name, color = (getname(AllEscape), 'X'), :red
     else
         name, color = (nothing, '*'), :red
     end
