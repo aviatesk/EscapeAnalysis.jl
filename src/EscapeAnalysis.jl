@@ -289,7 +289,8 @@ function EscapeState(nslots::Int, nargs::Int, nstmts::Int)
     return EscapeState(arguments, ssavalues)
 end
 
-const GLOBAL_ESCAPE_CACHE = IdDict{MethodInstance,EscapeState}()
+# we preserve `IRCode` as well just for debugging purpose
+const GLOBAL_ESCAPE_CACHE = IdDict{MethodInstance,Tuple{EscapeState,IRCode}}()
 __clear_escape_cache!() = empty!(GLOBAL_ESCAPE_CACHE)
 
 const Change  = Pair{Union{Argument,SSAValue},EscapeLattice}
@@ -505,11 +506,12 @@ end
 function escape_invoke!(args::Vector{Any}, pc::Int,
                         state::EscapeState, ir::IRCode, changes::Changes)
     linfo = first(args)::MethodInstance
-    linfostate = get(GLOBAL_ESCAPE_CACHE, linfo, nothing)
+    cache = get(GLOBAL_ESCAPE_CACHE, linfo, nothing)
     args = args[2:end]
-    if isnothing(linfostate)
+    if isnothing(cache)
         add_changes!(args, ir, AllEscape(), changes)
     else
+        (linfostate, _ #=ir::IRCode=#) = cache
         retinfo = state.ssavalues[pc] # escape information imposed on the call statement
         nargs = Int((linfo.def::Method).nargs)
         for i in 1:length(args)
@@ -641,8 +643,11 @@ register_init_hook!() do
         svdef = sv.linfo.def
         nargs = isa(svdef, Method) ? Int(svdef.nargs) : 0
         @timeit "collect escape information" state = $find_escapes(ir, nargs)
-        $setindex!($GLOBAL_ESCAPE_CACHE, state, sv.linfo)
-        interp.ir = copy(ir)
+        cacheir = copy(ir)
+        # cache
+        $setindex!($GLOBAL_ESCAPE_CACHE, (state, cacheir), sv.linfo)
+        # for entry result
+        interp.ir = cacheir
         interp.state = state
         interp.linfo = sv.linfo
         @timeit "finalizer elision" ir = $elide_finalizers(ir, state)
