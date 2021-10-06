@@ -738,7 +738,12 @@ function print_with_info(io::IO,
     ir::IRCode, (; arguments, ssavalues)::EscapeState, linfo::Union{Nothing,MethodInstance})
     # print escape information on SSA values
     function preprint(io::IO)
-        print(io, widenconst(ir.argtypes[1]), '(')
+        ft = ir.argtypes[1]
+        f = singleton_type(ft)
+        if f === nothing
+            f = widenconst(ft)
+        end
+        print(io, f, '(')
         for (i, arg) in enumerate(arguments)
             i == 1 && continue
             c, color = get_name_color(arg, true)
