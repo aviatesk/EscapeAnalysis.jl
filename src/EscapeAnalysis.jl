@@ -591,6 +591,14 @@ function escape_builtin!(::typeof(ifelse), args::Vector{Any}, pc::Int, state::Es
     return true
 end
 
+function escape_builtin!(::typeof(typeassert), args::Vector{Any}, pc::Int, state::EscapeState, ir::IRCode, changes::Changes)
+    length(args) == 3 || return false
+    f, obj, typ = args
+    info = state.ssavalues[pc]
+    add_change!(obj, ir, info, changes)
+    return true
+end
+
 function escape_builtin!(::typeof(tuple), args::Vector{Any}, pc::Int, state::EscapeState, ir::IRCode, changes::Changes)
     info = state.ssavalues[pc]
     if info == NotAnalyzed()

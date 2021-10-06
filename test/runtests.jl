@@ -330,6 +330,17 @@ end
         @assert !isnothing(i)
         @test has_no_escape(result.state.ssavalues[i])
     end
+
+    let # typeassert
+        result = analyze_escapes((Any,)) do x
+            y = x::String
+            return y
+        end
+        r = findfirst(x->isa(x,Core.ReturnNode), result.ir.stmts.inst)
+        @assert !isnothing(r)
+        @test has_return_escape(result.state.arguments[2], r)
+        @test !has_all_escape(result.state.arguments[2])
+    end
 end
 
 @testset "Exprs" begin
