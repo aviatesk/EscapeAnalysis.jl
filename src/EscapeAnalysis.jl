@@ -575,7 +575,7 @@ escape_builtin!(::typeof(typeof), _...) = return nothing
 escape_builtin!(::typeof(Core.sizeof), _...) = return nothing
 escape_builtin!(::typeof(===), _...) = return nothing
 
-function escape_builtin!(::typeof(ifelse), args::Vector{Any}, pc::Int, state::EscapeState, ir::IRCode, changes::Changes)
+function escape_builtin!(::typeof(Core.ifelse), args::Vector{Any}, pc::Int, state::EscapeState, ir::IRCode, changes::Changes)
     length(args) == 4 || return false
     f, cond, th, el = args
     info = state.ssavalues[pc]
