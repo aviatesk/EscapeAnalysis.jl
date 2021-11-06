@@ -575,7 +575,7 @@ escape_builtin!(::typeof(typeof), _...) = return nothing
 escape_builtin!(::typeof(Core.sizeof), _...) = return nothing
 escape_builtin!(::typeof(===), _...) = return nothing
 
-function escape_builtin!(::typeof(ifelse), args::Vector{Any}, pc::Int, state::EscapeState, ir::IRCode, changes::Changes)
+function escape_builtin!(::typeof(Core.ifelse), args::Vector{Any}, pc::Int, state::EscapeState, ir::IRCode, changes::Changes)
     length(args) == 4 || return false
     f, cond, th, el = args
     info = state.ssavalues[pc]
@@ -641,8 +641,7 @@ function run_passes_with_escape_analysis end
 register_init_hook!() do
 @eval CC begin
     function $EscapeAnalysis.run_passes_with_escape_analysis(interp::$EscapeAnalyzer, ci::CodeInfo, sv::OptimizationState)
-        preserve_coverage = coverage_enabled(sv.mod)
-        ir = convert_to_ircode(ci, copy_exprargs(ci.code), preserve_coverage, sv)
+        ir = convert_to_ircode(ci, sv)
         ir = slot2reg(ir, ci, sv)
         #@Base.show ("after_construct", ir)
         # TODO: Domsorting can produce an updated domtree - no need to recompute here
@@ -650,6 +649,7 @@ register_init_hook!() do
         @timeit "Inlining" ir = ssa_inlining_pass!(ir, ir.linetable, sv.inlining, ci.propagate_inbounds)
         #@timeit "verify 2" verify_ir(ir)
         ir = compact!(ir)
+
         svdef = sv.linfo.def
         nargs = isa(svdef, Method) ? Int(svdef.nargs) : 0
         @timeit "collect escape information" state = $find_escapes(ir, nargs)
@@ -662,6 +662,7 @@ register_init_hook!() do
         interp.linfo = sv.linfo
         @timeit "finalizer elision" ir = $elide_finalizers(ir, state)
         #@Base.show ("before_sroa", ir)
+
         @timeit "SROA" ir = getfield_elim_pass!(ir)
         #@Base.show ir.new_nodes
         #@Base.show ("after_sroa", ir)
