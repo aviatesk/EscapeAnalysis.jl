@@ -641,36 +641,29 @@ function run_passes_with_escape_analysis end
 register_init_hook!() do
 @eval CC begin
     function $EscapeAnalysis.run_passes_with_escape_analysis(interp::$EscapeAnalyzer, ci::CodeInfo, sv::OptimizationState)
-        ir = convert_to_ircode(ci, sv)
-        ir = slot2reg(ir, ci, sv)
-        #@Base.show ("after_construct", ir)
+        @timeit "convert"   ir = convert_to_ircode(ci, sv)
+        @timeit "slot2reg"  ir = slot2reg(ir, ci, sv)
         # TODO: Domsorting can produce an updated domtree - no need to recompute here
         @timeit "compact 1" ir = compact!(ir)
-        @timeit "Inlining" ir = ssa_inlining_pass!(ir, ir.linetable, sv.inlining, ci.propagate_inbounds)
-        #@timeit "verify 2" verify_ir(ir)
-        ir = compact!(ir)
-
-        svdef = sv.linfo.def
-        nargs = isa(svdef, Method) ? Int(svdef.nargs) : 0
+        @timeit "Inlining"  ir = ssa_inlining_pass!(ir, ir.linetable, sv.inlining, ci.propagate_inbounds)
+        # @timeit "verify 2" verify_ir(ir)
+        @timeit "compact 2" ir = compact!(ir)
+        nargs = let def = sv.linfo.def
+            isa(def, Method) ? Int(def.nargs) : 0
+        end
         @timeit "collect escape information" state = $find_escapes(ir, nargs)
         cacheir = copy(ir)
-        # cache
+        # cache this result
         $setindex!($GLOBAL_ESCAPE_CACHE, (state, cacheir), sv.linfo)
-        # for entry result
+        # return back the result
         interp.ir = cacheir
         interp.state = state
         interp.linfo = sv.linfo
         @timeit "finalizer elision" ir = $elide_finalizers(ir, state)
-        #@Base.show ("before_sroa", ir)
-
-        @timeit "SROA" ir = getfield_elim_pass!(ir)
-        #@Base.show ir.new_nodes
-        #@Base.show ("after_sroa", ir)
-        ir = adce_pass!(ir)
-        #@Base.show ("after_adce", ir)
+        @timeit "SROA"      ir = sroa_pass!(ir)
+        @timeit "ADCE"      ir = adce_pass!(ir)
         @timeit "type lift" ir = type_lift_pass!(ir)
         @timeit "compact 3" ir = compact!(ir)
-        #@Base.show ir
         if JLOptions().debug_level == 2
             @timeit "verify 3" (verify_ir(ir); verify_linetable(ir.linetable))
         end
