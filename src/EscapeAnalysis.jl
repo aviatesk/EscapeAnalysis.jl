@@ -183,13 +183,6 @@ struct EscapeLattice
     # TODO: ArgEscape::Int
 end
 
-function Base.:(==)(x::EscapeLattice, y::EscapeLattice)
-    return x.Analyzed === y.Analyzed &&
-           x.ReturnEscape == y.ReturnEscape &&
-           x.ThrownEscape === y.ThrownEscape &&
-           x.GlobalEscape === y.GlobalEscape
-end
-
 # lattice constructors
 # precompute default values in order to eliminate computations at callsites
 const NO_RETURN = BitSet()
@@ -222,7 +215,7 @@ has_return_escape(x::EscapeLattice) = !isempty(x.ReturnEscape)
 has_return_escape(x::EscapeLattice, pc::Int) = pc in x.ReturnEscape
 has_thrown_escape(x::EscapeLattice) = x.ThrownEscape
 has_global_escape(x::EscapeLattice) = x.GlobalEscape
-has_all_escape(x::EscapeLattice) = AllEscape() == x
+has_all_escape(x::EscapeLattice) = AllEscape() ⊑ x
 
 """
     can_elide_finalizer(x::EscapeLattice, pc::Int) -> Bool
@@ -238,16 +231,28 @@ function can_elide_finalizer(x::EscapeLattice, pc::Int)
     return pc ∉ x.ReturnEscape
 end
 
-function ⊑(x::EscapeLattice, y::EscapeLattice)
+# we need to make sure this `==` operator corresponds to lattice equality rather than object equality,
+# otherwise `propagate_changes` can't detect the convergence
+function Base.:(==)(x::EscapeLattice, y::EscapeLattice)
+    return x.Analyzed === y.Analyzed &&
+           x.ReturnEscape == y.ReturnEscape &&
+           x.ThrownEscape === y.ThrownEscape &&
+           x.GlobalEscape === y.GlobalEscape &&
+           true
+end
+
+x::EscapeLattice ⊑ y::EscapeLattice = begin
     if x.Analyzed ≤ y.Analyzed &&
        x.ReturnEscape ⊆ y.ReturnEscape &&
        x.ThrownEscape ≤ y.ThrownEscape &&
-       x.GlobalEscape ≤ y.GlobalEscape
-       return true
+       x.GlobalEscape ≤ y.GlobalEscape &&
+       true
+        return true
     end
     return false
 end
-⋤(x::EscapeLattice, y::EscapeLattice) = ⊑(x, y) && !⊑(y, x)
+x::EscapeLattice ⊏ y::EscapeLattice = ⊑(x, y) && !⊑(y, x)
+x::EscapeLattice ⋤ y::EscapeLattice = !⊑(y, x)
 
 function ⊔(x::EscapeLattice, y::EscapeLattice)
     return EscapeLattice(
@@ -543,7 +548,8 @@ function from_interprocedural(arginfo::EscapeLattice, retinfo::EscapeLattice)
         # information and just propagate the other escape information
         return newarginfo
     else
-        # if this can be a return value, we have to merge it with the escape information
+        # if this can be returned, we have to merge its escape information with
+        # that of the current statement
         return newarginfo ⊔ retinfo
     end
 end
@@ -612,14 +618,13 @@ end
 
 # TODO don't propagate escape information to the 1st argument, but propagate information to aliased field
 function escape_builtin!(::typeof(getfield), args::Vector{Any}, pc::Int, state::EscapeState, ir::IRCode, changes::Changes)
+    # only propagate info when the field itself is non-bitstype
+    isbitstype(widenconst(ir.stmts.type[pc])) && return true
     info = state.ssavalues[pc]
     if info == NotAnalyzed()
         info = NoEscape()
     end
-    # only propagate info when the field itself is non-bitstype
-    if !isbitstype(widenconst(ir.stmts.type[pc]))
-        add_changes!(args[2:end], ir, info, changes)
-    end
+    add_changes!(args[2:end], ir, info, changes)
     return true
 end
 
@@ -697,14 +702,14 @@ function get_name_color(x::EscapeLattice, symbol::Bool = false)
         name, color = (getname(NotAnalyzed), '◌'), :plain
     elseif x == NoEscape()
         name, color = (getname(NoEscape), '✓'), :green
-    elseif NoEscape() ⋤ x ⊑ AllReturnEscape()
+    elseif NoEscape() ⊏ x ⊑ AllReturnEscape()
         pcs = sprint(show, collect(x.ReturnEscape); context=:limit=>true)
         name1 = string(getname(ReturnEscape), '(', pcs, ')')
         name = name1, '↑'
         color = :cyan
-    elseif NoEscape() ⋤ x ⊑ ThrownEscape()
+    elseif NoEscape() ⊏ x ⊑ ThrownEscape()
         name, color = (getname(ThrownEscape), '↓'), :yellow
-    elseif NoEscape() ⋤ x ⊑ GlobalEscape()
+    elseif NoEscape() ⊏ x ⊑ GlobalEscape()
         name, color = (getname(GlobalEscape), 'G'), :red
     elseif x == AllEscape()
         name, color = (getname(AllEscape), 'X'), :red
