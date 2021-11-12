@@ -3,6 +3,7 @@ using EscapeAnalysis, InteractiveUtils, Test, JET
 mutable struct MutableSome{T}
     value::T
 end
+
 mutable struct MutableCondition
     cond::Bool
 end
@@ -140,36 +141,36 @@ let # simple allocation
 end
 
 @testset "inter-procedural" begin
-    m = Module()
+    M = Module()
 
     # FIXME currently we can't prove the effect-freeness of `getfield(RefValue{String}, :x)`
     # because of this check https://github.com/JuliaLang/julia/blob/94b9d66b10e8e3ebdb268e4be5f7e1f43079ad4e/base/compiler/tfuncs.jl#L745
     # and thus it leads to the following two broken tests
 
-    @eval m @noinline f_no_escape(x) = (broadcast(identity, x); nothing)
+    @eval M @noinline broadcast_NoEscape_a(a) = (broadcast(identity, a); nothing)
     let
-        result = @eval m $analyze_escapes() do
-            f_no_escape(Ref("Hi"))
+        result = @eval M $analyze_escapes() do
+            broadcast_NoEscape_a(Ref("Hi"))
         end
         i = findfirst(==(Base.RefValue{String}), result.ir.stmts.type) # find allocation statement
         @assert !isnothing(i)
         @test_broken has_no_escape(result.state.ssavalues[i])
     end
 
-    @eval m @noinline f_no_escape2(x) = broadcast(identity, x)
+    @eval M @noinline broadcast_NoEscape_b(b) = broadcast(identity, b)
     let
-        result = @eval m $analyze_escapes() do
-            f_no_escape2(Ref("Hi"))
+        result = @eval M $analyze_escapes() do
+            broadcast_NoEscape_b(Ref("Hi"))
         end
         i = findfirst(==(Base.RefValue{String}), result.ir.stmts.type) # find allocation statement
         @assert !isnothing(i)
         @test_broken has_no_escape(result.state.ssavalues[i])
     end
 
-    @eval m @noinline f_global_escape(x) = (global xx = x) # obvious escape
+    @eval M @noinline f_GlobalEscape_a(a) = (global globala = a) # obvious escape
     let
-        result = @eval m $analyze_escapes() do
-            f_global_escape(Ref("Hi"))
+        result = @eval M $analyze_escapes() do
+            f_GlobalEscape_a(Ref("Hi"))
         end
         i = findfirst(==(Base.RefValue{String}), result.ir.stmts.type) # find allocation statement
         @assert !isnothing(i)
@@ -178,28 +179,28 @@ end
 
     # if we can't determine the matching method statically, we should be conservative
     let
-        result = @eval m $analyze_escapes((Ref{Any},)) do a
+        result = @eval M $analyze_escapes((Ref{Any},)) do a
             may_exist(a)
         end
         @test has_all_escape(result.state.arguments[2])
     end
     let
-        result = @eval m $analyze_escapes((Ref{Any},)) do a
-            Base.@invokelatest f_no_escape(a)
+        result = @eval M $analyze_escapes((Ref{Any},)) do a
+            Base.@invokelatest broadcast_NoEscape_a(a)
         end
         @test has_all_escape(result.state.arguments[2])
     end
 
     # handling of simple union-split (just exploit the inliner's effort)
-    @eval m begin
-        @noinline unionsplit_noescape(_)      = string(nothing)
-        @noinline unionsplit_noescape(a::Int) = a + 10
+    @eval M begin
+        @noinline unionsplit_NoEscape_a(a)      = string(nothing)
+        @noinline unionsplit_NoEscape_a(a::Int) = a + 10
     end
     let
         T = Union{Int,Nothing}
-        result = @eval m $analyze_escapes(($T,)) do value
+        result = @eval M $analyze_escapes(($T,)) do value
             a = $MutableSome{$T}(value)
-            unionsplit_noescape(a.value)
+            unionsplit_NoEscape_a(a.value)
             return nothing
         end
         inds = findall(==(MutableSome{T}), result.ir.stmts.type) # find allocation statement
@@ -211,11 +212,11 @@ end
 
     # appropriate conversion of inter-procedural context
     # https://github.com/aviatesk/EscapeAnalysis.jl/issues/7
-    @eval m @noinline f_no_escape_simple(a) = Base.inferencebarrier(nothing)
+    @eval M @noinline f_NoEscape_a(a) = (println("prevent inlining"); Base.inferencebarrier(nothing))
     let
-        result = @eval m $analyze_escapes() do
-            aaa = Ref("foo") # shouldn't be "return escape"
-            a = f_no_escape_simple(aaa)
+        result = @eval M $analyze_escapes() do
+            a = Ref("foo") # shouldn't be "return escape"
+            b = f_NoEscape_a(a)
             nothing
         end
         i = findfirst(==(Base.RefValue{String}), result.ir.stmts.type) # find allocation statement
@@ -223,45 +224,42 @@ end
         @test has_no_escape(result.state.ssavalues[i])
     end
     let
-        result = @eval m $analyze_escapes() do
-            aaa = Ref("foo") # still should be "return escape"
-            a = f_no_escape_simple(aaa)
-            return aaa
+        result = @eval M $analyze_escapes() do
+            a = Ref("foo") # still should be "return escape"
+            b = f_NoEscape_a(a)
+            return a
         end
         i = findfirst(==(Base.RefValue{String}), result.ir.stmts.type) # find allocation statement
-        @assert !isnothing(i)
-        @test has_return_escape(result.state.ssavalues[i])
+        r = findfirst(x->isa(x, Core.ReturnNode), result.ir.stmts.inst)
+        @assert !isnothing(i) && !isnothing(r)
+        @test has_return_escape(result.state.ssavalues[i], r)
     end
 
     # should propagate escape information imposed on return value to the aliased call argument
-    @eval m @noinline function f_return_escape(a)
-        println("hi") # prevent inlining
-        return a
-    end
+    @eval M @noinline f_ReturnEscape_a(a) = (println("prevent inlining"); a)
     let
-        result = @eval m $analyze_escapes() do
+        result = @eval M $analyze_escapes() do
             obj = Ref("foo")           # should be "return escape"
-            ret = f_return_escape(obj)
+            ret = f_ReturnEscape_a(obj)
             return ret                 # alias of `obj`
         end
         i = findfirst(==(Base.RefValue{String}), result.ir.stmts.type) # find allocation statement
-        @assert !isnothing(i)
-        @test has_return_escape(result.state.ssavalues[i])
+        r = findfirst(x->isa(x, Core.ReturnNode), result.ir.stmts.inst)
+        @assert !isnothing(i) && !isnothing(r)
+        @test has_return_escape(result.state.ssavalues[i], r)
     end
 
-    @eval m @noinline function f_no_return_escape(a)
-        println("hi") # prevent inlining
-        return "hi"
-    end
+    @eval M @noinline f_NoReturnEscape_a(a) = (println("prevent inlining"); identity("hi"))
     let
-        result = @eval m $analyze_escapes() do
+        result = @eval M $analyze_escapes() do
             obj = Ref("foo")              # better to not be "return escape"
-            ret = f_no_return_escape(obj)
+            ret = f_NoReturnEscape_a(obj)
             return ret                    # must not alias to `obj`
         end
         i = findfirst(==(Base.RefValue{String}), result.ir.stmts.type) # find allocation statement
-        @assert !isnothing(i)
-        @test !has_return_escape(result.state.ssavalues[i])
+        r = findfirst(x->isa(x, Core.ReturnNode), result.ir.stmts.inst)
+        @assert !isnothing(i) && !isnothing(r)
+        @test !has_return_escape(result.state.ssavalues[i], r)
     end
 end
 

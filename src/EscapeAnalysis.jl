@@ -55,11 +55,9 @@ import .CC:
     IR_FLAG_EFFECT_FREE,
     is_meta_expr_head
 
-import Base.Meta:
-    isexpr
+import Base: ==
 
-import Base:
-    destructure_callex
+import Base.Meta: isexpr
 
 using InteractiveUtils
 
@@ -233,7 +231,7 @@ end
 
 # we need to make sure this `==` operator corresponds to lattice equality rather than object equality,
 # otherwise `propagate_changes` can't detect the convergence
-function Base.:(==)(x::EscapeLattice, y::EscapeLattice)
+x::EscapeLattice == y::EscapeLattice = begin
     return x.Analyzed === y.Analyzed &&
            x.ReturnEscape == y.ReturnEscape &&
            x.ThrownEscape === y.ThrownEscape &&
@@ -254,7 +252,7 @@ end
 x::EscapeLattice ⊏ y::EscapeLattice = ⊑(x, y) && !⊑(y, x)
 x::EscapeLattice ⋤ y::EscapeLattice = !⊑(y, x)
 
-function ⊔(x::EscapeLattice, y::EscapeLattice)
+x::EscapeLattice ⊔ y::EscapeLattice = begin
     return EscapeLattice(
         x.Analyzed | y.Analyzed,
         x.ReturnEscape ∪ y.ReturnEscape,
@@ -263,7 +261,7 @@ function ⊔(x::EscapeLattice, y::EscapeLattice)
         )
 end
 
-function ⊓(x::EscapeLattice, y::EscapeLattice)
+x::EscapeLattice ⊓ y::EscapeLattice = begin
     return EscapeLattice(
         x.Analyzed & y.Analyzed,
         x.ReturnEscape ∩ y.ReturnEscape,
@@ -321,7 +319,7 @@ function find_escapes(ir::IRCode, nargs::Int)
     nstmts = length(stmts)
 
     # only manage a single state, some flow-sensitivity is encoded as `EscapeLattice` properties
-    state = EscapeState(length(ir.argtypes), nargs, nstmts)
+    state = EscapeState(length(argtypes), nargs, nstmts)
     changes = Changes() # stashes changes that happen at current statement
 
     while true
