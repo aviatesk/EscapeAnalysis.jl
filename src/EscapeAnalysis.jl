@@ -338,27 +338,18 @@ function find_escapes(ir::IRCode, nargs::Int)
                 if head === :call
                     has_changes = escape_call!(stmt.args, pc, state, ir, changes)
                     if !is_effect_free
-                        add_changes!(stmt.args, ir, ThrownEscape(), changes)
+                        for x in stmt.args
+                            add_change!(x, ir, ThrownEscape(), changes)
+                        end
                     else
                         has_changes || continue
                     end
                 elseif head === :invoke
                     escape_invoke!(stmt.args, pc, state, ir, changes)
                 elseif head === :new
-                    info = state.ssavalues[pc]
-                    if info == NotAnalyzed()
-                        info = NoEscape()
-                        add_change!(SSAValue(pc), ir, info, changes) # we will be interested in if this allocation escapes or not
-                    end
-                    add_changes!(stmt.args[2:end], ir, info, changes)
+                    escape_new!(stmt.args, pc, state, ir, changes)
                 elseif head === :splatnew
-                    info = state.ssavalues[pc]
-                    if info == NotAnalyzed()
-                        info = NoEscape()
-                        add_change!(SSAValue(pc), ir, info, changes) # we will be interested in if this allocation escapes or not
-                    end
-                    # splatnew passes field values using a single tuple (args[2])
-                    add_change!(stmt.args[2], ir, info, changes)
+                    escape_new!(stmt.args, pc, state, ir, changes, true)
                 elseif head === :(=)
                     lhs, rhs = stmt.args
                     if isa(lhs, GlobalRef) # global store
@@ -374,7 +365,9 @@ function find_escapes(ir::IRCode, nargs::Int)
                     #     continue # XXX assume this finalizer call is valid for finalizer elision
                     # end
                     add_change!(name, ir, ThrownEscape(), changes)
-                    add_changes!(stmt.args[6:5+foreigncall_nargs], ir, ThrownEscape(), changes)
+                    for i in 6:5+foreigncall_nargs
+                        add_change!(stmt.args[i], ir, ThrownEscape(), changes)
+                    end
                 elseif head === :throw_undef_if_not # XXX when is this expression inserted ?
                     add_change!(stmt.args[1], ir, ThrownEscape(), changes)
                 elseif is_meta_expr_head(head)
@@ -407,7 +400,9 @@ function find_escapes(ir::IRCode, nargs::Int)
                     # imposed on `GC.@preserve` expressions since they're supposed to never be used elsewhere
                     continue
                 else
-                    add_changes!(stmt.args, ir, AllEscape(), changes)
+                    for x in stmt.args
+                        add_change!(x, ir, AllEscape(), changes)
+                    end
                 end
             elseif isa(stmt, GlobalRef) # global load
                 add_change!(SSAValue(pc), ir, GlobalEscape(), changes)
@@ -493,12 +488,6 @@ end
 #     end
 # end
 
-function add_changes!(args::Vector{Any}, ir::IRCode, info::EscapeLattice, changes::Changes)
-    for x in args
-        add_change!(x, ir, info, changes)
-    end
-end
-
 function add_change!(@nospecialize(x), ir::IRCode, info::EscapeLattice, changes::Changes)
     if isa(x, Argument) || isa(x, SSAValue)
         if !isbitstype(widenconst(argextype(x, ir, ir.sptypes, ir.argtypes)))
@@ -513,7 +502,9 @@ function escape_invoke!(args::Vector{Any}, pc::Int,
     cache = get(GLOBAL_ESCAPE_CACHE, linfo, nothing)
     args = args[2:end]
     if isnothing(cache)
-        add_changes!(args, ir, AllEscape(), changes)
+        for x in args
+            add_change!(x, ir, AllEscape(), changes)
+        end
     else
         (linfostate, _ #=ir::IRCode=#) = cache
         retinfo = state.ssavalues[pc] # escape information imposed on the call statement
@@ -564,9 +555,31 @@ function escape_call!(args::Vector{Any}, pc::Int,
     if !ishandled
         # if this call hasn't been handled by any of pre-defined handlers,
         # we escape this call conservatively
-        add_changes!(args[2:end], ir, AllEscape(), changes)
+        for i in 2:length(args)
+            add_change!(args[i], ir, AllEscape(), changes)
+        end
     end
     return true
+end
+
+function escape_new!(args::Vector{Any}, pc::Int,
+                     state::EscapeState, ir::IRCode, changes::Changes,
+                     splat_new::Bool = false)
+    info = state.ssavalues[pc]
+    if info == NotAnalyzed()
+        info = NoEscape()
+        add_change!(SSAValue(pc), ir, info, changes) # we will be interested in if this allocation escapes or not
+    end
+    # we need to propagate escape information of this object to its fields as well,
+    # since they can be accessed through the object
+    if splat_new
+        # splatnew passes field values using a single tuple (args[2])
+        add_change!(args[2], ir, info, changes)
+    else
+        for i in 2:length(args)
+            add_change!(args[i], ir, info, changes)
+        end
+    end
 end
 
 # TODO implement more builtins, make them more accurate
@@ -610,7 +623,9 @@ function escape_builtin!(::typeof(tuple), args::Vector{Any}, pc::Int, state::Esc
     if info == NotAnalyzed()
         info = NoEscape()
     end
-    add_changes!(args[2:end], ir, info, changes)
+    for i in 2:length(args)
+        add_change!(args[i], ir, info, changes)
+    end
     return true
 end
 
@@ -622,7 +637,9 @@ function escape_builtin!(::typeof(getfield), args::Vector{Any}, pc::Int, state::
     if info == NotAnalyzed()
         info = NoEscape()
     end
-    add_changes!(args[2:end], ir, info, changes)
+    for i in 2:length(args)
+        add_change!(args[i], ir, info, changes)
+    end
     return true
 end
 
