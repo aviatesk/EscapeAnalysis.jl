@@ -249,8 +249,8 @@ x::EscapeLattice ⊑ y::EscapeLattice = begin
     end
     return false
 end
-x::EscapeLattice ⊏ y::EscapeLattice = ⊑(x, y) && !⊑(y, x)
-x::EscapeLattice ⋤ y::EscapeLattice = !⊑(y, x)
+x::EscapeLattice ⊏ y::EscapeLattice = x ⊑ y && !(y ⊑ x)
+x::EscapeLattice ⋤ y::EscapeLattice = !(y ⊑ x)
 
 x::EscapeLattice ⊔ y::EscapeLattice = begin
     return EscapeLattice(
@@ -550,16 +550,19 @@ function escape_call!(args::Vector{Any}, pc::Int,
     if isa(f, Core.IntrinsicFunction)
         return false # COMBAK we may break soundness here, e.g. `pointerref`
     end
-    ishandled = escape_builtin!(f, args, pc, state, ir, changes)::Union{Nothing,Bool}
-    isnothing(ishandled) && return false # nothing to propagate
-    if !ishandled
+    result = escape_builtin!(f, args, pc, state, ir, changes)
+    if result === false
+        return false # nothing to propagate
+    elseif result === missing
         # if this call hasn't been handled by any of pre-defined handlers,
         # we escape this call conservatively
         for i in 2:length(args)
             add_change!(args[i], ir, AllEscape(), changes)
         end
+        return true
+    else
+        return true
     end
-    return true
 end
 
 function escape_new!(args::Vector{Any}, pc::Int,
@@ -582,18 +585,20 @@ function escape_new!(args::Vector{Any}, pc::Int,
     end
 end
 
+# NOTE error cases will be handled in `find_escapes` anyway, so we don't need to take care of them below
 # TODO implement more builtins, make them more accurate
 # TODO use `T_IFUNC`-like logic and don't not abuse dispatch ?
 
-escape_builtin!(@nospecialize(f), _...) = return false
+escape_builtin!(@nospecialize(f), _...) = return missing
 
-escape_builtin!(::typeof(isa), _...) = return nothing
-escape_builtin!(::typeof(typeof), _...) = return nothing
-escape_builtin!(::typeof(Core.sizeof), _...) = return nothing
-escape_builtin!(::typeof(===), _...) = return nothing
+# safe builtins
+escape_builtin!(::typeof(isa), _...) = return false
+escape_builtin!(::typeof(typeof), _...) = return false
+escape_builtin!(::typeof(Core.sizeof), _...) = return false
+escape_builtin!(::typeof(===), _...) = return false
 
 function escape_builtin!(::typeof(Core.ifelse), args::Vector{Any}, pc::Int, state::EscapeState, ir::IRCode, changes::Changes)
-    length(args) == 4 || return false
+    length(args) == 4 || return
     f, cond, th, el = args
     info = state.ssavalues[pc]
     condt = argextype(cond, ir, ir.sptypes, ir.argtypes)
@@ -607,15 +612,13 @@ function escape_builtin!(::typeof(Core.ifelse), args::Vector{Any}, pc::Int, stat
         add_change!(th, ir, info, changes)
         add_change!(el, ir, info, changes)
     end
-    return true
 end
 
 function escape_builtin!(::typeof(typeassert), args::Vector{Any}, pc::Int, state::EscapeState, ir::IRCode, changes::Changes)
-    length(args) == 3 || return false
+    length(args) == 3 || return
     f, obj, typ = args
     info = state.ssavalues[pc]
     add_change!(obj, ir, info, changes)
-    return true
 end
 
 function escape_builtin!(::typeof(tuple), args::Vector{Any}, pc::Int, state::EscapeState, ir::IRCode, changes::Changes)
@@ -626,7 +629,6 @@ function escape_builtin!(::typeof(tuple), args::Vector{Any}, pc::Int, state::Esc
     for i in 2:length(args)
         add_change!(args[i], ir, info, changes)
     end
-    return true
 end
 
 # TODO don't propagate escape information to the 1st argument, but propagate information to aliased field
@@ -640,7 +642,6 @@ function escape_builtin!(::typeof(getfield), args::Vector{Any}, pc::Int, state::
     for i in 2:length(args)
         add_change!(args[i], ir, info, changes)
     end
-    return true
 end
 
 # entries
