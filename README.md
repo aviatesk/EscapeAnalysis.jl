@@ -9,7 +9,6 @@ This analysis works on a lattice called `x::EscapeLattice`, which holds the foll
     where `x.ReturnEscape && 0 ∈ x.EscapeSites` has the special meaning that it's visible to
     the caller simply because it's passed as call argument
 - `x.ThrownEscape::Bool`: indicates `x` may escape to somewhere through an exception (possibly as a field)
-- `x.GlobalEscape::Bool`: indicates `x` may escape to a global space an exception (possibly as a field)
 - `x.EscapeSites::BitSet`: records program counters (SSA numbers) where `x` can escape
 - `x.ArgEscape::Int` (not implemented yet): indicates it will escape to the caller through `setfield!` on argument(s)
   * `-1` : no escape
