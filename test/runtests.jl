@@ -1,5 +1,11 @@
 using EscapeAnalysis, Test, JET
 
+isT(T) = (@nospecialize x) -> x === T
+subT(T) = (@nospecialize x) -> x <: T
+isreturn(@nospecialize x) = isa(x, Core.ReturnNode) && isdefined(x, :val)
+isthrow(@nospecialize x) = Meta.isexpr(x, :call) && Core.Compiler.is_throw_call(x)
+isglobal(@nospecialize x) = Meta.isexpr(x, :(=)) && isa(first(x.args), GlobalRef)
+
 mutable struct MutableSome{T}
     value::T
 end
@@ -123,8 +129,7 @@ end
             end
             nothing
         end
-        i = findfirst(==(MutableCondition), result.ir.stmts.type)
-        @assert !isnothing(i)
+        i = findfirst(==(MutableCondition), result.ir.stmts.type)::Int
         @test has_return_escape(result.state.ssavalues[i])
     end
 
@@ -152,11 +157,9 @@ let # more complex
         end
     end
 
-    i = findfirst(==(Vector{MutableCondition}), result.ir.stmts.type)
-    @assert !isnothing(i)
+    i = findfirst(==(Vector{MutableCondition}), result.ir.stmts.type)::Int
     @test has_return_escape(result.state.ssavalues[i])
-    i = findfirst(==(MutableCondition), result.ir.stmts.type)
-    @assert !isnothing(i)
+    i = findfirst(==(MutableCondition), result.ir.stmts.type)::Int
     @test has_return_escape(result.state.ssavalues[i])
 end
 
@@ -166,8 +169,7 @@ let # simple allocation
         return mm.cond ? nothing : 1
     end
 
-    i = findfirst(==(MutableCondition), result.ir.stmts.type) # allocation statement
-    @assert !isnothing(i)
+    i = findfirst(==(MutableCondition), result.ir.stmts.type)::Int
     @test has_no_escape(result.state.ssavalues[i])
 end
 
@@ -183,8 +185,7 @@ end
         result = @eval M $analyze_escapes() do
             broadcast_NoEscape_a(Ref("Hi"))
         end
-        i = findfirst(==(Base.RefValue{String}), result.ir.stmts.type) # find allocation statement
-        @assert !isnothing(i)
+        i = findfirst(==(Base.RefValue{String}), result.ir.stmts.type)::Int
         @test_broken has_no_escape(result.state.ssavalues[i])
     end
 
@@ -193,8 +194,7 @@ end
         result = @eval M $analyze_escapes() do
             broadcast_NoEscape_b(Ref("Hi"))
         end
-        i = findfirst(==(Base.RefValue{String}), result.ir.stmts.type) # find allocation statement
-        @assert !isnothing(i)
+        i = findfirst(==(Base.RefValue{String}), result.ir.stmts.type)::Int
         @test_broken has_no_escape(result.state.ssavalues[i])
     end
 
@@ -203,8 +203,7 @@ end
         result = @eval M $analyze_escapes() do
             f_GlobalEscape_a(Ref("Hi"))
         end
-        i = findfirst(==(Base.RefValue{String}), result.ir.stmts.type) # find allocation statement
-        @assert !isnothing(i)
+        i = findfirst(==(Base.RefValue{String}), result.ir.stmts.type)::Int
         @test has_global_escape(result.state.ssavalues[i])
     end
 
@@ -250,8 +249,7 @@ end
             b = f_NoEscape_a(a)
             nothing
         end
-        i = findfirst(==(Base.RefValue{String}), result.ir.stmts.type) # find allocation statement
-        @assert !isnothing(i)
+        i = findfirst(==(Base.RefValue{String}), result.ir.stmts.type)::Int
         @test has_no_escape(result.state.ssavalues[i])
     end
     let
@@ -260,9 +258,8 @@ end
             b = f_NoEscape_a(a)
             return a
         end
-        i = findfirst(==(Base.RefValue{String}), result.ir.stmts.type) # find allocation statement
-        r = findfirst(x->isa(x, Core.ReturnNode), result.ir.stmts.inst)
-        @assert !isnothing(i) && !isnothing(r)
+        i = findfirst(==(Base.RefValue{String}), result.ir.stmts.type)::Int
+        r = findfirst(x->isa(x, Core.ReturnNode), result.ir.stmts.inst)::Int
         @test has_return_escape(result.state.ssavalues[i], r)
     end
 
@@ -274,9 +271,8 @@ end
             ret = f_ReturnEscape_a(obj)
             return ret                 # alias of `obj`
         end
-        i = findfirst(==(Base.RefValue{String}), result.ir.stmts.type) # find allocation statement
-        r = findfirst(x->isa(x, Core.ReturnNode), result.ir.stmts.inst)
-        @assert !isnothing(i) && !isnothing(r)
+        i = findfirst(==(Base.RefValue{String}), result.ir.stmts.type)::Int
+        r = findfirst(x->isa(x, Core.ReturnNode), result.ir.stmts.inst)::Int
         @test has_return_escape(result.state.ssavalues[i], r)
     end
 
@@ -287,9 +283,8 @@ end
             ret = f_NoReturnEscape_a(obj)
             return ret                    # must not alias to `obj`
         end
-        i = findfirst(==(Base.RefValue{String}), result.ir.stmts.type) # find allocation statement
-        r = findfirst(x->isa(x, Core.ReturnNode), result.ir.stmts.inst)
-        @assert !isnothing(i) && !isnothing(r)
+        i = findfirst(==(Base.RefValue{String}), result.ir.stmts.type)::Int
+        r = findfirst(x->isa(x, Core.ReturnNode), result.ir.stmts.inst)::Int
         @test !has_return_escape(result.state.ssavalues[i], r)
     end
 end
@@ -320,8 +315,7 @@ end
             c = m === nothing
             return c
         end
-        i = findfirst(==(MutableSome{String}), result.ir.stmts.type) # find allocation statement
-        @assert !isnothing(i)
+        i = findfirst(==(MutableSome{String}), result.ir.stmts.type)::Int
         @test has_no_escape(result.state.ssavalues[i])
     end
 
@@ -331,8 +325,7 @@ end
             ary = $(QuoteNode(ary))
             sizeof(ary)
         end
-        i = findfirst(==(Core.Const(ary)), result.ir.stmts.type) # find allocation statement
-        @assert !isnothing(i)
+        i = findfirst(==(Core.Const(ary)), result.ir.stmts.type)::Int
         @test has_no_escape(result.state.ssavalues[i])
     end
 
@@ -341,7 +334,7 @@ end
             r = ifelse(c, Ref("yes"), Ref("no"))
             return r
         end
-        inds = findall(==(Base.RefValue{String}), result.ir.stmts.type) # find allocation statement
+        inds = findall(==(Base.RefValue{String}), result.ir.stmts.type)
         @assert !isempty(inds)
         for i in inds
             @test has_return_escape(result.state.ssavalues[i])
@@ -352,11 +345,9 @@ end
             r = ifelse(true, Ref("yes"), Ref(nothing))
             return r
         end
-        i = findfirst(==(Base.RefValue{String}), result.ir.stmts.type) # find allocation statement
-        @assert !isnothing(i)
+        i = findfirst(==(Base.RefValue{String}), result.ir.stmts.type)::Int
         @test has_return_escape(result.state.ssavalues[i])
-        i = findfirst(==(Base.RefValue{Nothing}), result.ir.stmts.type) # find allocation statement
-        @assert !isnothing(i)
+        i = findfirst(==(Base.RefValue{Nothing}), result.ir.stmts.type)::Int
         @test has_no_escape(result.state.ssavalues[i])
     end
 
@@ -365,18 +356,13 @@ end
             y = x::String
             return y
         end
-        r = findfirst(x->isa(x,Core.ReturnNode), result.ir.stmts.inst)
-        @assert !isnothing(r)
+        r = findfirst(isreturn, result.ir.stmts.inst)::Int
         @test has_return_escape(result.state.arguments[2], r)
         @test !has_all_escape(result.state.arguments[2])
     end
 end
 
 @testset "flow-sensitivity" begin
-    isT(T) = (@nospecialize x) -> x === T
-    isreturn(@nospecialize x) = isa(x, Core.ReturnNode)
-    isglobal(@nospecialize x) = Meta.isexpr(x, :(=)) && isa(first(x.args), GlobalRef)
-
     # ReturnEscape
     let result = analyze_escapes((Bool,)) do cond
             r = Ref("foo")
@@ -385,9 +371,8 @@ end
             end
             return r
         end
-        i = findfirst(isT(Base.RefValue{String}), result.ir.stmts.type) # allocation statement
-        @assert !isnothing(i)
-        rts = findall(isreturn, result.ir.stmts.inst) # return statement
+        i = findfirst(isT(Base.RefValue{String}), result.ir.stmts.type)::Int
+        rts = findall(isreturn, result.ir.stmts.inst)
         @assert length(rts) == 2
         @test count(rt->has_return_escape(result.state.ssavalues[i], rt), rts) == 1
     end
@@ -401,14 +386,13 @@ end
             rand(Bool) && return r
             return cnt
         end
-        i = findfirst(isT(Base.RefValue{String}), result.ir.stmts.type) # allocation statement
-        @assert !isnothing(i)
+        i = findfirst(isT(Base.RefValue{String}), result.ir.stmts.type)::Int
         rts = findall(isreturn, result.ir.stmts.inst) # return statement
         @assert length(rts) == 3
         @test count(rt->has_return_escape(result.state.ssavalues[i], rt), rts) == 2
     end
 
-    # GlobalEscape
+    # ThrownEscape
     let result = analyze_escapes((Bool,)) do cond
             r = Ref("foo")
             if cond
@@ -480,10 +464,9 @@ end
             o2 = MutableSome(o1) # no need to escape
             return getfield(o2, :value)
         end
-        i1 = findfirst(==(MutableSome{String}), result.ir.stmts.type)
-        i2 = findfirst(==(MutableSome{MutableSome{String}}), result.ir.stmts.type)
-        r = findfirst(x->isa(x, Core.ReturnNode), result.ir.stmts.inst)
-        @assert !isnothing(i1) && !isnothing(i2) && !isnothing(4)
+        i1 = findfirst(isT(MutableSome{String}), result.ir.stmts.type)::Int
+        i2 = findfirst(isT(MutableSome{MutableSome{String}}), result.ir.stmts.type)::Int
+        r = findfirst(isreturn, result.ir.stmts.inst)::Int
         @test has_return_escape(result.state.arguments[2], r)
         @test has_return_escape(result.state.ssavalues[i1])
         @test_broken !has_return_escape(result.state.ssavalues[i2])
@@ -505,18 +488,13 @@ end
 # demonstrate a simple type level analysis can sometimes improve the analysis accuracy
 # by compensating the lack of yet unimplemented analyses
 @testset "special-casing bitstype" begin
-    isT(T) = (@nospecialize x) -> x === T
-    subT(T) = (@nospecialize x) -> x <: T
-    isreturn(@nospecialize x) = isa(x, Core.ReturnNode)
-
     let result = analyze_escapes((Int,)) do a
             o = MutableSome(a) # no need to escape
             f = getfield(o, :value)
             return f
         end
-        i = findfirst(isT(MutableSome{Int}), result.ir.stmts.type) # allocation statement
-        r = findfirst(isreturn, result.ir.stmts.inst)
-        @assert !isnothing(i) && !isnothing(r)
+        i = findfirst(isT(MutableSome{Int}), result.ir.stmts.type)::Int
+        r = findfirst(isreturn, result.ir.stmts.inst)::Int
         @test !has_return_escape(result.state.ssavalues[i], r)
     end
 
@@ -525,9 +503,8 @@ end
             t = tuple(a, b)
             return t
         end
-        i = findfirst(subT(Tuple), result.ir.stmts.type) # allocation statement
-        r = findfirst(isreturn, result.ir.stmts.inst)
-        @assert !isnothing(i) && !isnothing(r)
+        i = findfirst(subT(Tuple), result.ir.stmts.type)::Int
+        r = findfirst(isreturn, result.ir.stmts.inst)::Int
         @test !has_return_escape(result.state.arguments[2], r)
         @test has_return_escape(result.state.arguments[3], r)
     end
