@@ -3,15 +3,14 @@
 
 `EscapeAnalysis` is a simple module that collects escape information from Julia's optimization IR (i.e. `IRCode`).
 
-This analysis works on a lattice called `EscapeLattice`, which holds the following properties:
-- `x.Analyzed::Bool`: not formally part of the lattice, indicates this statement has not been analyzed at all
-- `x.ReturnEscape::BitSet`: keeps SSA numbers of return statements where it can be returned to the caller
-  * `isempty(x.ReturnEscape)` means it never escapes to the caller
-  * otherwise it indicates it will escape to the caller via return (possibly as a field),
-    where `0 ∈ x.ReturnEscape` has the special meaning that it's visible to the caller
-    simply because it's passed as call argument
-- `x.ThrownEscape::Bool`: indicates it may escape to somewhere through an exception (possibly as a field)
-- `x.GlobalEscape::Bool`: indicates it may escape to a global space an exception (possibly as a field)
+This analysis works on a lattice called `x::EscapeLattice`, which holds the following properties:
+- `x.Analyzed::Bool`: not formally part of the lattice, indicates `x` has not been analyzed at all
+- `x.ReturnEscape::Bool`: indicates `x` may escape to the caller via return (possibly as a field),
+    where `x.ReturnEscape && 0 ∈ x.EscapeSites` has the special meaning that it's visible to
+    the caller simply because it's passed as call argument
+- `x.ThrownEscape::Bool`: indicates `x` may escape to somewhere through an exception (possibly as a field)
+- `x.GlobalEscape::Bool`: indicates `x` may escape to a global space an exception (possibly as a field)
+- `x.EscapeSites::BitSet`: records program counters (SSA numbers) where `x` can escape
 - `x.ArgEscape::Int` (not implemented yet): indicates it will escape to the caller through `setfield!` on argument(s)
   * `-1` : no escape
   * `0` : unknown or multiple
@@ -37,15 +36,10 @@ The analysis works on the lattice of [`EscapeLattice`](@ref) and transitions lat
 from the bottom to the top in a _backward_ way, i.e. data flows from usage cites to definitions,
 until every lattice gets converged to a fixed point by maintaining a (conceptual) working set
 that contains program counters corresponding to remaining SSA statements to be analyzed.
-Note that the analysis only manages a single global state, with some flow-sensitivity
-encoded as property of `EscapeLattice`.
+The analysis only manages a single global state that tracks `EscapeLattice` of each argument
+and SSA statement, but also note that some flow-sensitivity is encoded as program counters
+recorded in the `EscapeSites` property of each each lattice element.
 
-[^MM02]: A Graph-Free approach to Data-Flow Analysis.
+[^MM02]: _A Graph-Free approach to Data-Flow Analysis_.
          Markas Mohnen, 2002, April.
-         <https://api.semanticscholar.org/CorpusID:28519618>
-
-TODO:
-- [ ] implement more builtin function handlings, and make escape information more accurate
-- [ ] make analysis take into account alias information
-- [ ] implement `finalizer` elision optimization ([#17](https://github.com/aviatesk/EscapeAnalysis.jl/issues/17))
-- [ ] circumvent too conservative escapes through potential `throw` calls by copying stack-to-heap on exception ([#15](https://github.com/aviatesk/EscapeAnalysis.jl/issues/15))
+         <https://api.semanticscholar.org/CorpusID:28519618>.
