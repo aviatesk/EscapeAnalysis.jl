@@ -4,7 +4,6 @@ isT(T) = (@nospecialize x) -> x === T
 subT(T) = (@nospecialize x) -> x <: T
 isreturn(@nospecialize x) = isa(x, Core.ReturnNode) && isdefined(x, :val)
 isthrow(@nospecialize x) = Meta.isexpr(x, :call) && Core.Compiler.is_throw_call(x)
-isglobal(@nospecialize x) = Meta.isexpr(x, :(=)) && isa(first(x.args), GlobalRef)
 
 mutable struct MutableSome{T}
     value::T
@@ -32,28 +31,35 @@ end
         @test has_return_escape(result.state.arguments[2]) # argument
     end
 
-    let # global store
+    let
+        # global store
         result = analyze_escapes((Any,)) do a
             global aa = a
             return nothing
         end
-        @test has_global_escape(result.state.arguments[2])
-    end
+        @test has_all_escape(result.state.arguments[2])
 
-    let # global load
+        # global load
         result = analyze_escapes() do
             global gr
             return gr
         end
-        i = findfirst(has_return_escape, result.state.ssavalues)
-        @assert !isnothing(i)
-        has_global_escape(result.state.ssavalues[i])
-
+        i = findfirst(has_return_escape, result.state.ssavalues)::Int
+        has_all_escape(result.state.ssavalues[i])
         result = analyze_escapes((Any,)) do a
             global gr
             (gr::MutableSome{Any}).x = a
         end
-        @test has_global_escape(result.state.arguments[2])
+        @test has_all_escape(result.state.arguments[2])
+
+        # global store / load (https://github.com/aviatesk/EscapeAnalysis.jl/issues/56)
+        result = analyze_escapes((Any,)) do s
+            global v
+            v = s
+            return v
+        end
+        r = findfirst(isreturn, result.ir.stmts.inst)::Int
+        @test has_return_escape(result.state.arguments[2], r)
     end
 
     let # :gc_preserve_begin / :gc_preserve_end
@@ -92,7 +98,7 @@ end
         result = analyze_escapes((Nothing,)) do a
             global bb = a
         end
-        @test !(has_global_escape(result.state.arguments[2]))
+        @test !(has_all_escape(result.state.arguments[2]))
     end
 end
 
@@ -204,7 +210,7 @@ end
             f_GlobalEscape_a(Ref("Hi"))
         end
         i = findfirst(==(Base.RefValue{String}), result.ir.stmts.type)::Int
-        @test has_global_escape(result.state.ssavalues[i])
+        @test has_return_escape(result.state.ssavalues[i]) && has_thrown_escape(result.state.ssavalues[i])
     end
 
     # if we can't determine the matching method statically, we should be conservative
@@ -399,14 +405,12 @@ end
                 println("bar")
                 return
             end
-            global gr = r
-            return
+            throw(r)
         end
-        i = findfirst(isT(Base.RefValue{String}), result.ir.stmts.type) # allocation statement
-        g = findfirst(isglobal, result.ir.stmts.inst)
-        @assert !isnothing(i) && !isnothing(g)
+        i = findfirst(isT(Base.RefValue{String}), result.ir.stmts.type)::Int
+        t = findfirst(isthrow, result.ir.stmts.inst)::Int
         @test length(result.state.ssavalues[i].EscapeSites) == 1
-        @test has_global_escape(result.state.ssavalues[i], g)
+        @test has_thrown_escape(result.state.ssavalues[i], t)
     end
     let result = analyze_escapes((Bool,)) do cond
             r = Ref("foo")
@@ -414,18 +418,18 @@ end
             while rand(Bool)
                 cnt += 1
                 if rand(Bool)
-                    global gr = r
+                    throw(r)
                 end
             end
             if rand(Bool)
-                global gr = r
+                throw(r)
             end
             return
         end
-        i = findfirst(isT(Base.RefValue{String}), result.ir.stmts.type) # allocation statement
-        gs = findall(isglobal, result.ir.stmts.inst)
-        @assert !isnothing(i) && length(gs) == 2
-        @test all(g->has_global_escape(result.state.ssavalues[i], g), gs)
+        i = findfirst(isT(Base.RefValue{String}), result.ir.stmts.type)::Int
+        ts = findall(isthrow, result.ir.stmts.inst)
+        @assert length(ts) == 2
+        @test all(t->has_thrown_escape(result.state.ssavalues[i], t), ts)
     end
 end
 
@@ -436,25 +440,24 @@ end
             f = getfield(o, :value)
             return f
         end
-        i = findfirst(==(MutableSome{String}), result.ir.stmts.type)
-        r = findfirst(x->isa(x, Core.ReturnNode), result.ir.stmts.inst)
-        @assert !isnothing(i) && !isnothing(r)
+        i = findfirst(isT(MutableSome{String}), result.ir.stmts.type)::Int
+        r = findfirst(isreturn, result.ir.stmts.inst)::Int
         @test has_return_escape(result.state.arguments[2], r)
         @test_broken !has_return_escape(result.state.ssavalues[i], r)
     end
 
     let
-        result = analyze_escapes((String,)) do a # => ReturnEscape && GlobalEscape
+        result = analyze_escapes((String,Bool)) do a, cond # => ReturnEscape &&ThrownEscape
             o = MutableSome(a) # no need to escape
-            global oo = o
+            cond && throw(o)
             f = getfield(o, :value)
             return f
         end
-        i = findfirst(==(MutableSome{String}), result.ir.stmts.type)
-        r = findfirst(x->isa(x, Core.ReturnNode), result.ir.stmts.inst)
-        @assert !isnothing(i) && !isnothing(r)
+        i = findfirst(isT(MutableSome{String}), result.ir.stmts.type)
+        r = findfirst(isreturn, result.ir.stmts.inst)::Int
+        t = findfirst(isthrow, result.ir.stmts.inst)::Int
         @test has_return_escape(result.state.arguments[2], r)
-        @test has_global_escape(result.state.ssavalues[i])
+        @test has_thrown_escape(result.state.ssavalues[i], t)
         @test_broken !has_return_escape(result.state.ssavalues[i], r)
     end
 
@@ -473,15 +476,15 @@ end
     end
 
     let
-        result = analyze_escapes((Any,)) do a # => GlobalEscape
+        result = analyze_escapes((Any,Bool)) do a, cond # => ThrownEscape
             t = tuple(a) # no need to escape
-            global tt = t[1]
+            cond && throw(t[1])
             return nothing
         end
-        i = findfirst(t->t<:Tuple, result.ir.stmts.type) # allocation statement
-        @assert !isnothing(i)
-        @test has_global_escape(result.state.arguments[2])
-        @test_broken !has_global_escape(result.state.ssavalues[i])
+        i = findfirst(subT(Tuple), result.ir.stmts.type)::Int
+        t = findfirst(isthrow, result.ir.stmts.inst)::Int
+        @test has_thrown_escape(result.state.arguments[2], t)
+        @test_broken !has_thrown_escape(result.state.ssavalues[i], t)
     end
 end
 
@@ -515,7 +518,6 @@ end
     @test !can_elide_finalizer(EscapeAnalysis.ReturnEscape(1), 1)
     @test can_elide_finalizer(EscapeAnalysis.ReturnEscape(1), 2)
     @test !can_elide_finalizer(EscapeAnalysis.ArgumentReturnEscape(), 1)
-    @test !can_elide_finalizer(EscapeAnalysis.GlobalEscape(1), 1)
     @test can_elide_finalizer(EscapeAnalysis.ThrownEscape(1), 1)
 end
 
