@@ -356,10 +356,8 @@ function find_escapes(ir::IRCode, nargs::Int)
                     end
                 elseif head === :invoke
                     escape_invoke!(stmt.args, pc, state, ir, changes)
-                elseif head === :new
+                elseif head === :new || head === :splatnew
                     escape_new!(stmt.args, pc, state, ir, changes)
-                elseif head === :splatnew
-                    escape_new!(stmt.args, pc, state, ir, changes, true)
                 elseif head === :(=)
                     lhs, rhs = stmt.args
                     if isa(lhs, GlobalRef) # global store
@@ -447,7 +445,7 @@ function find_escapes(ir::IRCode, nargs::Int)
                     add_change!(stmt.val, ir, ReturnEscape(pc), changes)
                 end
             else
-                @assert stmt isa GotoNode || stmt isa GotoIfNot || stmt isa GlobalRef || isnothing(stmt) # TODO remove me
+                @assert stmt isa GotoNode || stmt isa GotoIfNot || isnothing(stmt) # TODO remove me
                 continue
             end
 
@@ -489,14 +487,6 @@ function propagate_changes!(state::EscapeState, changes::Changes)
 
     return anychanged
 end
-
-# function normalize(@nospecialize(x))
-#     if isa(x, QuoteNode)
-#         return x.value
-#     else
-#         return x
-#     end
-# end
 
 function add_change!(@nospecialize(x), ir::IRCode, info::EscapeLattice, changes::Changes)
     if isa(x, Argument) || isa(x, SSAValue)
@@ -582,21 +572,17 @@ end
 
 function escape_new!(args::Vector{Any}, pc::Int,
                      state::EscapeState, ir::IRCode, changes::Changes,
-                     splat_new::Bool = false)
+                     )
     info = state.ssavalues[pc]
     if info == NotAnalyzed()
         info = NoEscape()
         add_change!(SSAValue(pc), ir, info, changes) # we will be interested in if this allocation escapes or not
     end
-    # we need to propagate escape information of this object to its fields as well,
+
+    # propagate the escape information of this object to all its fields as well
     # since they can be accessed through the object
-    if splat_new
-        # splatnew passes field values using a single tuple (args[2])
-        add_change!(args[2], ir, info, changes)
-    else
-        for i in 2:length(args)
-            add_change!(args[i], ir, info, changes)
-        end
+    for i in 2:length(args)
+        add_change!(args[i], ir, info, changes)
     end
 end
 
