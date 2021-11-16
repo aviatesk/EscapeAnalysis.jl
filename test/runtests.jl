@@ -1,4 +1,4 @@
-using EscapeAnalysis, InteractiveUtils, Test, JET
+using EscapeAnalysis, Test, JET
 
 mutable struct MutableSome{T}
     value::T
@@ -431,50 +431,57 @@ end
     end
 end
 
-# demonstrate a simple type level analysis can sometimes compensate the lack of yet unimplemented analysis
+# demonstrate a simple type level analysis can sometimes improve the analysis accuracy
+# by compensating the lack of yet unimplemented analyses
 @testset "special-casing bitstype" begin
-    let # lack of field analysis
-        result = analyze_escapes((Int,)) do a
+    isT(T) = (@nospecialize x) -> x === T
+    subT(T) = (@nospecialize x) -> x <: T
+    isreturn(@nospecialize x) = isa(x, Core.ReturnNode)
+
+    let result = analyze_escapes((Int,)) do a
             o = MutableSome(a) # no need to escape
             f = getfield(o, :value)
             return f
         end
-        i = findfirst(==(MutableSome{Int}), result.ir.stmts.type) # allocation statement
-        @assert !isnothing(i)
-        @test has_no_escape(result.state.ssavalues[i])
+        i = findfirst(isT(MutableSome{Int}), result.ir.stmts.type) # allocation statement
+        r = findfirst(isreturn, result.ir.stmts.inst)
+        @assert !isnothing(i) && !isnothing(r)
+        @test !has_return_escape(result.state.ssavalues[i], r)
     end
 
-    let # an escaped tuple stmt will not propagate to its Int argument (since Int is of bitstype)
-        result = analyze_escapes((Int, Any, )) do a, b
+    # an escaped tuple stmt will not propagate to its Int argument (since `Int` is of bitstype)
+    let result = analyze_escapes((Int,Any,)) do a, b
             t = tuple(a, b)
-            global tt = t
-            return nothing
+            return t
         end
-        @test has_return_escape(result.state.arguments[2])
-        @test has_global_escape(result.state.arguments[3])
+        i = findfirst(subT(Tuple), result.ir.stmts.type) # allocation statement
+        r = findfirst(isreturn, result.ir.stmts.inst)
+        @assert !isnothing(i) && !isnothing(r)
+        @test !has_return_escape(result.state.arguments[2], r)
+        @test has_return_escape(result.state.arguments[3], r)
     end
 end
 
-@testset "return flow-sensitivity" begin
-    isa2(T) = x->isa(x,T)
+@testset "flow-sensitivity" begin
+    isT(T) = (@nospecialize x) -> x === T
+    isreturn(@nospecialize x) = isa(x, Core.ReturnNode)
+    isglobal(@nospecialize x) = Meta.isexpr(x, :(=)) && isa(first(x.args), GlobalRef)
 
-    let
-        result = analyze_escapes((Bool,)) do cond
+    # ReturnEscape
+    let result = analyze_escapes((Bool,)) do cond
             r = Ref("foo")
             if cond
                 return cond
             end
             return r
         end
-        i = findfirst(==(Base.RefValue{String}), result.ir.stmts.type) # allocation statement
+        i = findfirst(isT(Base.RefValue{String}), result.ir.stmts.type) # allocation statement
         @assert !isnothing(i)
-        rts = findall(isa2(Core.ReturnNode), result.ir.stmts.inst) # return statement
+        rts = findall(isreturn, result.ir.stmts.inst) # return statement
         @assert length(rts) == 2
         @test count(rt->has_return_escape(result.state.ssavalues[i], rt), rts) == 1
     end
-
-    let
-        result = analyze_escapes((Bool,)) do cond
+    let result = analyze_escapes((Bool,)) do cond
             r = Ref("foo")
             cnt = 0
             while rand(Bool)
@@ -484,11 +491,47 @@ end
             rand(Bool) && return r
             return cnt
         end
-        i = findfirst(==(Base.RefValue{String}), result.ir.stmts.type) # allocation statement
+        i = findfirst(isT(Base.RefValue{String}), result.ir.stmts.type) # allocation statement
         @assert !isnothing(i)
-        rts = findall(isa2(Core.ReturnNode), result.ir.stmts.inst) # return statement
+        rts = findall(isreturn, result.ir.stmts.inst) # return statement
         @assert length(rts) == 3
         @test count(rt->has_return_escape(result.state.ssavalues[i], rt), rts) == 2
+    end
+
+    # GlobalEscape
+    let result = analyze_escapes((Bool,)) do cond
+            r = Ref("foo")
+            if cond
+                println("bar")
+                return
+            end
+            global gr = r
+            return
+        end
+        i = findfirst(isT(Base.RefValue{String}), result.ir.stmts.type) # allocation statement
+        g = findfirst(isglobal, result.ir.stmts.inst)
+        @assert !isnothing(i) && !isnothing(g)
+        @test length(result.state.ssavalues[i].EscapeSites) == 1
+        @test has_global_escape(result.state.ssavalues[i], g)
+    end
+    let result = analyze_escapes((Bool,)) do cond
+            r = Ref("foo")
+            cnt = 0
+            while rand(Bool)
+                cnt += 1
+                if rand(Bool)
+                    global gr = r
+                end
+            end
+            if rand(Bool)
+                global gr = r
+            end
+            return
+        end
+        i = findfirst(isT(Base.RefValue{String}), result.ir.stmts.type) # allocation statement
+        gs = findall(isglobal, result.ir.stmts.inst)
+        @assert !isnothing(i) && length(gs) == 2
+        @test all(g->has_global_escape(result.state.ssavalues[i], g), gs)
     end
 end
 
@@ -516,8 +559,8 @@ end
     @test !can_elide_finalizer(EscapeAnalysis.ReturnEscape(1), 1)
     @test can_elide_finalizer(EscapeAnalysis.ReturnEscape(1), 2)
     @test !can_elide_finalizer(EscapeAnalysis.ArgumentReturnEscape(), 1)
-    @test !can_elide_finalizer(EscapeAnalysis.GlobalEscape(), 1)
-    @test can_elide_finalizer(EscapeAnalysis.ThrownEscape(), 1)
+    @test !can_elide_finalizer(EscapeAnalysis.GlobalEscape(1), 1)
+    @test can_elide_finalizer(EscapeAnalysis.ThrownEscape(1), 1)
 end
 
 @testset "code quality" begin
