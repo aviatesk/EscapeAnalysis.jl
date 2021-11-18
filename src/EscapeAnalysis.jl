@@ -332,7 +332,7 @@ function find_escapes(ir::IRCode, nargs::Int)
             if isa(stmt, Expr)
                 head = stmt.head
                 if head === :call
-                    has_changes = escape_call!(stmt.args, pc, state, ir, changes)
+                    has_changes = escape_call!(ir, pc, stmt.args, state, changes)
                     if !is_effect_free
                         for x in stmt.args
                             add_change!(x, ir, ThrownEscape(pc), changes)
@@ -341,27 +341,16 @@ function find_escapes(ir::IRCode, nargs::Int)
                         has_changes || continue
                     end
                 elseif head === :invoke
-                    escape_invoke!(stmt.args, pc, state, ir, changes)
+                    escape_invoke!(ir, pc, stmt.args, state, changes)
                 elseif head === :new || head === :splatnew
-                    escape_new!(stmt.args, pc, state, ir, changes)
+                    escape_new!(ir, pc, stmt.args, state, changes)
                 elseif head === :(=)
                     lhs, rhs = stmt.args
                     if isa(lhs, GlobalRef) # global store
                         add_change!(rhs, ir, AllEscape(), changes)
                     end
                 elseif head === :foreigncall
-                    # for foreigncall we simply escape every argument (args[6:length(args[3])])
-                    # and its name (args[1])
-                    # TODO: we can apply a similar strategy like builtin calls to specialize some foreigncalls
-                    foreigncall_nargs = length((stmt.args[3])::SimpleVector)
-                    name = stmt.args[1]
-                    # if normalize(name) === :jl_gc_add_finalizer_th
-                    #     continue # XXX assume this finalizer call is valid for finalizer elision
-                    # end
-                    add_change!(name, ir, ThrownEscape(pc), changes)
-                    for i in 6:5+foreigncall_nargs
-                        add_change!(stmt.args[i], ir, ThrownEscape(pc), changes)
-                    end
+                    escape_foreigncall!(ir, pc, stmt.args, state, changes)
                 elseif head === :throw_undef_if_not # XXX when is this expression inserted ?
                     add_change!(stmt.args[1], ir, ThrownEscape(pc), changes)
                 elseif is_meta_expr_head(head)
@@ -406,21 +395,9 @@ function find_escapes(ir::IRCode, nargs::Int)
                     add_change!(stmt.val, ir, info, changes)
                 end
             elseif isa(stmt, PhiNode)
-                info = state.ssavalues[pc]
-                values = stmt.values
-                for i in 1:length(values)
-                    if isassigned(values, i)
-                        add_change!(values[i], ir, info, changes)
-                    end
-                end
+                @inline escape_backedges!(ir, pc, stmt.values, state, changes)
             elseif isa(stmt, PhiCNode)
-                info = state.ssavalues[pc]
-                values = stmt.values
-                for i in 1:length(values)
-                    if isassigned(values, i)
-                        add_change!(values[i], ir, info, changes)
-                    end
-                end
+                escape_backedges!(ir, pc, stmt.values, state, changes)
             elseif isa(stmt, UpsilonNode)
                 if isdefined(stmt, :val)
                     info = state.ssavalues[pc]
@@ -482,8 +459,40 @@ function add_change!(@nospecialize(x), ir::IRCode, info::EscapeLattice, changes:
     end
 end
 
-function escape_invoke!(args::Vector{Any}, pc::Int,
-                        state::EscapeState, ir::IRCode, changes::Changes)
+function escape_backedges!(ir::IRCode, pc::Int, backedges::Vector{Any},
+                           state::EscapeState, changes::Changes)
+    info = state.ssavalues[pc]
+    for i in 1:length(backedges)
+        if isassigned(backedges, i)
+            add_change!(backedges[i], ir, info, changes)
+        end
+    end
+end
+
+function escape_call!(ir::IRCode, pc::Int, args::Vector{Any},
+                      state::EscapeState, changes::Changes)
+    ft = argextype(first(args), ir, ir.sptypes, ir.argtypes)
+    f = singleton_type(ft)
+    if isa(f, Core.IntrinsicFunction)
+        return false # COMBAK we may break soundness here, e.g. `pointerref`
+    end
+    result = escape_builtin!(f, ir, pc, args, state, changes)
+    if result === false
+        return false # nothing to propagate
+    elseif result === missing
+        # if this call hasn't been handled by any of pre-defined handlers,
+        # we escape this call conservatively
+        for i in 2:length(args)
+            add_change!(args[i], ir, AllEscape(), changes)
+        end
+        return true
+    else
+        return true
+    end
+end
+
+function escape_invoke!(ir::IRCode, pc::Int, args::Vector{Any},
+                        state::EscapeState, changes::Changes)
     linfo = first(args)::MethodInstance
     cache = get(GLOBAL_ESCAPE_CACHE, linfo, nothing)
     args = args[2:end]
@@ -534,31 +543,8 @@ function from_interprocedural(arginfo::EscapeLattice, retinfo::EscapeLattice, pc
     end
 end
 
-function escape_call!(args::Vector{Any}, pc::Int,
-                      state::EscapeState, ir::IRCode, changes::Changes)
-    ft = argextype(first(args), ir, ir.sptypes, ir.argtypes)
-    f = singleton_type(ft)
-    if isa(f, Core.IntrinsicFunction)
-        return false # COMBAK we may break soundness here, e.g. `pointerref`
-    end
-    result = escape_builtin!(f, args, pc, state, ir, changes)
-    if result === false
-        return false # nothing to propagate
-    elseif result === missing
-        # if this call hasn't been handled by any of pre-defined handlers,
-        # we escape this call conservatively
-        for i in 2:length(args)
-            add_change!(args[i], ir, AllEscape(), changes)
-        end
-        return true
-    else
-        return true
-    end
-end
-
-function escape_new!(args::Vector{Any}, pc::Int,
-                     state::EscapeState, ir::IRCode, changes::Changes,
-                     )
+function escape_new!(ir::IRCode, pc::Int, args::Vector{Any},
+                     state::EscapeState, changes::Changes)
     info = state.ssavalues[pc]
     if info == NotAnalyzed()
         info = NoEscape()
@@ -569,6 +555,21 @@ function escape_new!(args::Vector{Any}, pc::Int,
     # since they can be accessed through the object
     for i in 2:length(args)
         add_change!(args[i], ir, info, changes)
+    end
+end
+
+# escape every argument `(args[6:length(args[3])])` and the name `args[1]`
+# TODO: we can apply a similar strategy like builtin calls to specialize some foreigncalls
+function escape_foreigncall!(ir::IRCode, pc::Int, args::Vector{Any},
+                             state::EscapeState, changes::Changes)
+    foreigncall_nargs = length((args[3])::SimpleVector)
+    name = args[1]
+    # if normalize(name) === :jl_gc_add_finalizer_th
+    #     # add `FinalizerEscape` ?
+    # end
+    add_change!(name, ir, ThrownEscape(pc), changes)
+    for i in 6:5+foreigncall_nargs
+        add_change!(args[i], ir, ThrownEscape(pc), changes)
     end
 end
 
@@ -586,7 +587,7 @@ escape_builtin!(::typeof(===), _...) = return false
 # not really safe, but `ThrownEscape` will be imposed later
 escape_builtin!(::typeof(throw), _...) = return false
 
-function escape_builtin!(::typeof(Core.ifelse), args::Vector{Any}, pc::Int, state::EscapeState, ir::IRCode, changes::Changes)
+function escape_builtin!(::typeof(Core.ifelse), ir::IRCode, pc::Int, args::Vector{Any}, state::EscapeState, changes::Changes)
     length(args) == 4 || return
     f, cond, th, el = args
     info = state.ssavalues[pc]
@@ -603,14 +604,14 @@ function escape_builtin!(::typeof(Core.ifelse), args::Vector{Any}, pc::Int, stat
     end
 end
 
-function escape_builtin!(::typeof(typeassert), args::Vector{Any}, pc::Int, state::EscapeState, ir::IRCode, changes::Changes)
+function escape_builtin!(::typeof(typeassert), ir::IRCode, pc::Int, args::Vector{Any}, state::EscapeState, changes::Changes)
     length(args) == 3 || return
     f, obj, typ = args
     info = state.ssavalues[pc]
     add_change!(obj, ir, info, changes)
 end
 
-function escape_builtin!(::typeof(tuple), args::Vector{Any}, pc::Int, state::EscapeState, ir::IRCode, changes::Changes)
+function escape_builtin!(::typeof(tuple), ir::IRCode, pc::Int, args::Vector{Any}, state::EscapeState, changes::Changes)
     info = state.ssavalues[pc]
     if info == NotAnalyzed()
         info = NoEscape()
@@ -621,7 +622,7 @@ function escape_builtin!(::typeof(tuple), args::Vector{Any}, pc::Int, state::Esc
 end
 
 # TODO don't propagate escape information to the 1st argument, but propagate information to aliased field
-function escape_builtin!(::typeof(getfield), args::Vector{Any}, pc::Int, state::EscapeState, ir::IRCode, changes::Changes)
+function escape_builtin!(::typeof(getfield), ir::IRCode, pc::Int, args::Vector{Any}, state::EscapeState, changes::Changes)
     # only propagate info when the field itself is non-bitstype
     isbitstype(widenconst(ir.stmts.type[pc])) && return true
     info = state.ssavalues[pc]
