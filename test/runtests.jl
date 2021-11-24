@@ -366,6 +366,20 @@ end
         @test has_return_escape(result.state.arguments[2], r)
         @test !has_all_escape(result.state.arguments[2])
     end
+
+    let # isdefined
+        result = analyze_escapes((Any,)) do x
+            isdefined(x, :foo) ? x : throw("undefined")
+        end
+        r = findfirst(isreturn, result.ir.stmts.inst)::Int
+        @test has_return_escape(result.state.arguments[2], r)
+        @test !has_all_escape(result.state.arguments[2])
+
+        result = analyze_escapes((Module,)) do m
+            isdefined(m, 10) # throws
+        end
+        @test has_thrown_escape(result.state.arguments[2])
+    end
 end
 
 @testset "flow-sensitivity" begin

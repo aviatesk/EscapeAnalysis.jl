@@ -585,6 +585,7 @@ escape_builtin!(::typeof(typeof), _...) = return false
 escape_builtin!(::typeof(Core.sizeof), _...) = return false
 escape_builtin!(::typeof(===), _...) = return false
 # not really safe, but `ThrownEscape` will be imposed later
+escape_builtin!(::typeof(isdefined), _...) = return false
 escape_builtin!(::typeof(throw), _...) = return false
 
 function escape_builtin!(::typeof(Core.ifelse), ir::IRCode, pc::Int, args::Vector{Any}, state::EscapeState, changes::Changes)
