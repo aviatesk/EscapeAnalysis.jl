@@ -234,6 +234,9 @@ Base.show(io::IO, result::EscapeResult) = print_with_info(io, result.ir, result.
 @eval Base.iterate(res::EscapeResult, state=1) =
     return state > $(fieldcount(EscapeResult)) ? nothing : (getfield(res, state), state+1)
 
+# utitlity queries
+get_aliases(result::EscapeResult, @nospecialize(key)) = EA.get_aliases(result.state.aliasset, key, result.ir)
+
 # adapted from https://github.com/JuliaDebug/LoweredCodeUtils.jl/blob/4612349432447e868cf9285f647108f43bd0a11c/src/codeedges.jl#L881-L897
 function print_with_info(io::IO,
     ir::IRCode, (; arguments, ssavalues)::EscapeState, linfo::Union{Nothing,MethodInstance})
