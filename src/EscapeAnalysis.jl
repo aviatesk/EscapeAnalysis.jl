@@ -1,5 +1,14 @@
 baremodule EscapeAnalysis
 
+export
+    find_escapes,
+    has_not_analyzed,
+    has_no_escape,
+    has_return_escape,
+    has_thrown_escape,
+    has_all_escape,
+    can_elide_finalizer
+
 # analysis
 # ========
 
@@ -86,13 +95,6 @@ let
 end
 
 # Convenience names for some ⊑ queries
-export
-    has_not_analyzed,
-    has_no_escape,
-    has_return_escape,
-    has_thrown_escape,
-    has_all_escape,
-    can_elide_finalizer
 has_not_analyzed(x::EscapeLattice) = x == NotAnalyzed()
 has_no_escape(x::EscapeLattice) = x ⊑ NoEscape()
 has_return_escape(x::EscapeLattice) = x.ReturnEscape
