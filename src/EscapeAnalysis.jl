@@ -407,6 +407,10 @@ function find_escapes(ir::IRCode, nargs::Int)
                 if isdefined(stmt, :val)
                     add_change!(stmt.val, ir, ReturnEscape(pc), changes)
                 end
+            elseif isa(stmt, SSAValue)
+                # NOTE after SROA, we may see SSA value as statement
+                info = state.ssavalues[pc]
+                add_change!(stmt, ir, info, changes)
             else
                 @assert stmt isa GotoNode || stmt isa GotoIfNot || isnothing(stmt) # TODO remove me
                 continue
