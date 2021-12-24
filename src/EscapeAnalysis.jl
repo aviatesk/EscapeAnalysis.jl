@@ -277,26 +277,20 @@ function find_escapes(ir::IRCode, nargs::Int)
                         add_change!(x, ir, AllEscape(), changes)
                     end
                 end
-            elseif isa(stmt, GlobalRef) # global load
-                add_change!(SSAValue(pc), ir, AllEscape(), changes)
-            elseif isa(stmt, PiNode)
-                if isdefined(stmt, :val)
-                    info = state.ssavalues[pc]
-                    add_change!(stmt.val, ir, info, changes)
-                end
-            elseif isa(stmt, PhiNode)
-                escape_backedges!(ir, pc, stmt.values, state, changes)
-            elseif isa(stmt, PhiCNode)
-                escape_backedges!(ir, pc, stmt.values, state, changes)
-            elseif isa(stmt, UpsilonNode)
-                if isdefined(stmt, :val)
-                    info = state.ssavalues[pc]
-                    add_change!(stmt.val, ir, info, changes)
-                end
             elseif isa(stmt, ReturnNode)
                 if isdefined(stmt, :val)
                     add_change!(stmt.val, ir, ReturnEscape(pc), changes)
                 end
+            elseif isa(stmt, PhiNode)
+                escape_edges!(ir, pc, stmt.values, state, changes)
+            elseif isa(stmt, PiNode)
+                escape_val!(ir, pc, stmt, state, changes)
+            elseif isa(stmt, PhiCNode)
+                escape_edges!(ir, pc, stmt.values, state, changes)
+            elseif isa(stmt, UpsilonNode)
+                escape_val!(ir, pc, stmt, state, changes)
+            elseif isa(stmt, GlobalRef) # global load
+                add_change!(SSAValue(pc), ir, AllEscape(), changes)
             elseif isa(stmt, SSAValue)
                 # NOTE after SROA, we may see SSA value as statement
                 info = state.ssavalues[pc]
@@ -353,13 +347,20 @@ function add_change!(@nospecialize(x), ir::IRCode, info::EscapeLattice, changes:
     end
 end
 
-function escape_backedges!(ir::IRCode, pc::Int, backedges::Vector{Any},
-                           state::EscapeState, changes::Changes)
+function escape_edges!(ir::IRCode, pc::Int, backedges::Vector{Any},
+                       state::EscapeState, changes::Changes)
     info = state.ssavalues[pc]
     for i in 1:length(backedges)
         if isassigned(backedges, i)
             add_change!(backedges[i], ir, info, changes)
         end
+    end
+end
+
+function escape_val!(ir::IRCode, pc::Int, x, state::EscapeState, changes::Changes)
+    if isdefined(x, :val)
+        info = state.ssavalues[pc]
+        add_change!(x.val, ir, info, changes)
     end
 end
 

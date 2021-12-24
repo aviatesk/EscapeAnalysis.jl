@@ -21,24 +21,27 @@ Base.setindex!(s::SafeRef{T}, x::T) where T = s.x = x
         end
         @test has_return_escape(result.state.arguments[2])
     end
-
-    let # :return
+    let # return
         result = analyze_escapes((Any,)) do a
             return a
         end
         @test has_return_escape(result.state.arguments[1]) # self
         @test has_return_escape(result.state.arguments[2]) # argument
     end
-
-    let
-        # global store
+    let # global store
         result = analyze_escapes((Any,)) do a
             global aa = a
-            return nothing
+            nothing
         end
         @test has_all_escape(result.state.arguments[2])
-
-        # global load
+        result = analyze_escapes((Any,)) do a
+            global gr
+            (gr::SafeRef{Any})[] = a
+            nothing
+        end
+        @test has_all_escape(result.state.arguments[2])
+    end
+    let # global load
         result = analyze_escapes() do
             global gr
             return gr
@@ -50,8 +53,8 @@ Base.setindex!(s::SafeRef{T}, x::T) where T = s.x = x
             (gr::SafeRef{Any})[] = a
         end
         @test has_all_escape(result.state.arguments[2])
-
-        # global store / load (https://github.com/aviatesk/EscapeAnalysis.jl/issues/56)
+    end
+    let # global store / load (https://github.com/aviatesk/EscapeAnalysis.jl/issues/56)
         result = analyze_escapes((Any,)) do s
             global v
             v = s
@@ -60,7 +63,6 @@ Base.setindex!(s::SafeRef{T}, x::T) where T = s.x = x
         r = findfirst(isreturn, result.ir.stmts.inst)::Int
         @test has_return_escape(result.state.arguments[2], r)
     end
-
     let # :gc_preserve_begin / :gc_preserve_end
         result = analyze_escapes((String,)) do s
             m = SafeRef(s)
@@ -72,7 +74,6 @@ Base.setindex!(s::SafeRef{T}, x::T) where T = s.x = x
         @test !isnothing(i)
         @test has_no_escape(result.state.ssavalues[i])
     end
-
     let # :isdefined
         result = analyze_escapes((String, Bool, )) do a, b
             if b
@@ -84,24 +85,49 @@ Base.setindex!(s::SafeRef{T}, x::T) where T = s.x = x
         @test !isnothing(i)
         @test has_no_escape(result.state.ssavalues[i])
     end
-
     let # :foreigncall
         result = analyze_escapes((Vector{String}, Int, )) do a, b
             return isassigned(a, b) # TODO: specialize isassigned
         end
         @test has_all_escape(result.state.arguments[2])
     end
-
-    # https://github.com/aviatesk/EscapeAnalysis.jl/pull/16
-    let # don't propagate escape information for bitypes
-        result = analyze_escapes((Nothing,)) do a
-            global bb = a
+    let # ϕ-node
+        result = analyze_escapes((Bool,Any,Any)) do cond, a, b
+            c = cond ? a : b # ϕ(a, b)
+            return c
         end
-        @test !(has_all_escape(result.state.arguments[2]))
+        @assert any(@nospecialize(x)->isa(x, Core.PhiNode), result.ir.stmts.inst)
+        i = findfirst(isreturn, result.ir.stmts.inst)::Int
+        @test has_return_escape(result.state.arguments[3], i) # a
+        @test has_return_escape(result.state.arguments[4], i) # b
     end
-end
-
-@testset "control flows" begin
+    let # π-node
+        result = analyze_escapes((Any,)) do a
+            if isa(a, Regex) # a::π(Regex)
+                return a
+            end
+            return nothing
+        end
+        @assert any(@nospecialize(x)->isa(x, Core.PiNode), result.ir.stmts.inst)
+        i = findfirst(isreturn, result.ir.stmts.inst)::Int
+        @test has_return_escape(result.state.arguments[2], i)
+    end
+    let # φᶜ-node / ϒ-node
+        result = analyze_escapes((Any,String)) do a, b
+            local x::String
+            try
+                x = a
+            catch err
+                x = b
+            end
+            return x
+        end
+        @assert any(@nospecialize(x)->isa(x, Core.PhiCNode), result.ir.stmts.inst)
+        @assert any(@nospecialize(x)->isa(x, Core.UpsilonNode), result.ir.stmts.inst)
+        i = findfirst(isreturn, result.ir.stmts.inst)::Int
+        @test has_return_escape(result.state.arguments[2], i)
+        @test has_return_escape(result.state.arguments[3], i)
+    end
     let # branching
         result = analyze_escapes((Any,Bool,)) do a, c
             if c
@@ -112,20 +138,6 @@ end
         end
         @test has_return_escape(result.state.arguments[2])
     end
-
-    let # π node
-        result = analyze_escapes((Any,)) do a
-            if isa(a, Regex)
-                identity(a) # compiler will introduce π node here
-                return a    # return escape !
-            else
-                return nothing
-            end
-        end
-        @assert any(@nospecialize(x)->isa(x, Core.PiNode), result.ir.stmts.inst)
-        @test has_return_escape(result.state.arguments[2])
-    end
-
     let # loop
         result = analyze_escapes((Int,)) do n
             c = SafeRef{Bool}(false)
@@ -137,7 +149,6 @@ end
         i = findfirst(isT(SafeRef{Bool}), result.ir.stmts.type)::Int
         @test has_return_escape(result.state.ssavalues[i])
     end
-
     let # exception
         result = analyze_escapes((Any,)) do a
             try
@@ -498,6 +509,12 @@ end
 # demonstrate a simple type level analysis can sometimes improve the analysis accuracy
 # by compensating the lack of yet unimplemented analyses
 @testset "special-casing bitstype" begin
+    let result = analyze_escapes((Nothing,)) do a
+            global bb = a
+        end
+        @test !(has_all_escape(result.state.arguments[2]))
+    end
+
     let result = analyze_escapes((Int,)) do a
             o = SafeRef(a) # no need to escape
             f = o[]
