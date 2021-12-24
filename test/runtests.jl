@@ -5,13 +5,12 @@ issubT(T) = (@nospecialize x) -> x <: T
 isreturn(@nospecialize x) = isa(x, Core.ReturnNode) && isdefined(x, :val)
 isthrow(@nospecialize x) = Meta.isexpr(x, :call) && Core.Compiler.is_throw_call(x)
 
-mutable struct MutableSome{T}
-    value::T
+mutable struct SafeRef{T}
+    x::T
 end
-
-mutable struct MutableCondition
-    cond::Bool
-end
+Base.getindex(s::SafeRef) = s.x
+Base.setindex!(s::SafeRef{Any}, @nospecialize x) = s.x = x
+Base.setindex!(s::SafeRef{T}, x::T) where T = s.x = x
 
 @testset "EscapeAnalysis" begin
 
@@ -48,7 +47,7 @@ end
         has_all_escape(result.state.ssavalues[i])
         result = analyze_escapes((Any,)) do a
             global gr
-            (gr::MutableSome{Any}).x = a
+            (gr::SafeRef{Any})[] = a
         end
         @test has_all_escape(result.state.arguments[2])
 
@@ -64,12 +63,12 @@ end
 
     let # :gc_preserve_begin / :gc_preserve_end
         result = analyze_escapes((String,)) do s
-            m = MutableSome(s)
+            m = SafeRef(s)
             GC.@preserve m begin
                 return nothing
             end
         end
-        i = findfirst(isT(MutableSome{String}), result.ir.stmts.type) # find allocation statement
+        i = findfirst(isT(SafeRef{String}), result.ir.stmts.type) # find allocation statement
         @test !isnothing(i)
         @test has_no_escape(result.state.ssavalues[i])
     end
@@ -129,13 +128,13 @@ end
 
     let # loop
         result = analyze_escapes((Int,)) do n
-            c = MutableCondition(false)
+            c = SafeRef{Bool}(false)
             while n > 0
                 rand(Bool) && return c
             end
             nothing
         end
-        i = findfirst(isT(MutableCondition), result.ir.stmts.type)::Int
+        i = findfirst(isT(SafeRef{Bool}), result.ir.stmts.type)::Int
         @test has_return_escape(result.state.ssavalues[i])
     end
 
@@ -153,8 +152,8 @@ end
 
 let # more complex
     result = analyze_escapes((Bool,)) do c
-        x = Vector{MutableCondition}() # return escape
-        y = MutableCondition(c) # return escape
+        x = Vector{SafeRef{Bool}}() # return escape
+        y = SafeRef{Bool}(c) # return escape
         if c
             push!(x, y)
             return nothing
@@ -163,83 +162,80 @@ let # more complex
         end
     end
 
-    i = findfirst(isT(Vector{MutableCondition}), result.ir.stmts.type)::Int
+    i = findfirst(isT(Vector{SafeRef{Bool}}), result.ir.stmts.type)::Int
     @test has_return_escape(result.state.ssavalues[i])
-    i = findfirst(isT(MutableCondition), result.ir.stmts.type)::Int
+    i = findfirst(isT(SafeRef{Bool}), result.ir.stmts.type)::Int
     @test has_return_escape(result.state.ssavalues[i])
 end
 
 let # simple allocation
     result = analyze_escapes((Bool,)) do c
-        mm = MutableCondition(c) # just allocated, never escapes
-        return mm.cond ? nothing : 1
+        mm = SafeRef{Bool}(c) # just allocated, never escapes
+        return mm[] ? nothing : 1
     end
 
-    i = findfirst(isT(MutableCondition), result.ir.stmts.type)::Int
+    i = findfirst(isT(SafeRef{Bool}), result.ir.stmts.type)::Int
     @test has_no_escape(result.state.ssavalues[i])
 end
 
 @testset "inter-procedural" begin
-    M = Module()
-
     # FIXME currently we can't prove the effect-freeness of `getfield(RefValue{String}, :x)`
     # because of this check https://github.com/JuliaLang/julia/blob/94b9d66b10e8e3ebdb268e4be5f7e1f43079ad4e/base/compiler/tfuncs.jl#L745
     # and thus it leads to the following two broken tests
-
-    @eval M @noinline broadcast_NoEscape_a(a) = (broadcast(identity, a); nothing)
-    let
-        result = @eval M $analyze_escapes() do
-            broadcast_NoEscape_a(Ref("Hi"))
+    let result = @eval Module() begin
+            @noinline broadcast_NoEscape(a) = (broadcast(identity, a); nothing)
+            $analyze_escapes() do
+                broadcast_NoEscape(Ref("Hi"))
+            end
         end
         i = findfirst(isT(Base.RefValue{String}), result.ir.stmts.type)::Int
         @test_broken has_no_escape(result.state.ssavalues[i])
     end
-
-    @eval M @noinline broadcast_NoEscape_b(b) = broadcast(identity, b)
-    let
-        result = @eval M $analyze_escapes() do
-            broadcast_NoEscape_b(Ref("Hi"))
+    let result = @eval Module() begin
+            @noinline broadcast_NoEscape2(b) = broadcast(identity, b)
+            $analyze_escapes() do
+                broadcast_NoEscape2(Ref("Hi"))
+            end
         end
         i = findfirst(isT(Base.RefValue{String}), result.ir.stmts.type)::Int
         @test_broken has_no_escape(result.state.ssavalues[i])
     end
-
-    @eval M @noinline f_GlobalEscape_a(a) = (global globala = a) # obvious escape
-    let
-        result = @eval M $analyze_escapes() do
-            f_GlobalEscape_a(Ref("Hi"))
+    let result = @eval Module() begin
+            @noinline f_GlobalEscape_a(a) = (global globala = a) # obvious escape
+            $analyze_escapes() do
+                f_GlobalEscape_a(Ref("Hi"))
+            end
         end
         i = findfirst(isT(Base.RefValue{String}), result.ir.stmts.type)::Int
         @test has_return_escape(result.state.ssavalues[i]) && has_thrown_escape(result.state.ssavalues[i])
     end
-
     # if we can't determine the matching method statically, we should be conservative
-    let
-        result = @eval M $analyze_escapes((Ref{Any},)) do a
+    let result = @eval Module() $analyze_escapes((Ref{Any},)) do a
             may_exist(a)
         end
         @test has_all_escape(result.state.arguments[2])
     end
-    let
-        result = @eval M $analyze_escapes((Ref{Any},)) do a
-            Base.@invokelatest broadcast_NoEscape_a(a)
+    let result = @eval Module() begin
+            @noinline broadcast_NoEscape(a) = (broadcast(identity, a); nothing)
+            $analyze_escapes((Ref{Any},)) do a
+                Base.@invokelatest broadcast_NoEscape(a)
+            end
         end
         @test has_all_escape(result.state.arguments[2])
     end
 
     # handling of simple union-split (just exploit the inliner's effort)
-    @eval M begin
-        @noinline unionsplit_NoEscape_a(a)      = string(nothing)
-        @noinline unionsplit_NoEscape_a(a::Int) = a + 10
-    end
-    let
-        T = Union{Int,Nothing}
-        result = @eval M $analyze_escapes(($T,)) do value
-            a = $MutableSome{$T}(value)
-            unionsplit_NoEscape_a(a.value)
-            return nothing
+    let T = Union{Int,Nothing}
+        result = @eval Module() begin
+            @noinline unionsplit_NoEscape_a(a)      = string(nothing)
+            @noinline unionsplit_NoEscape_a(a::Int) = a + 10
+            $analyze_escapes(($T,)) do x
+                s = $SafeRef{$T}(x)
+                unionsplit_NoEscape_a(s[])
+                return nothing
+            end
         end
-        inds = findall(isT(MutableSome{T}), result.ir.stmts.type) # find allocation statement
+        inds = findall(isT(SafeRef{T}), result.ir.stmts.type) # find allocation statement
         @assert !isempty(inds)
         for i in inds
             @test has_no_escape(result.state.ssavalues[i])
@@ -248,8 +244,9 @@ end
 
     # appropriate conversion of inter-procedural context
     # https://github.com/aviatesk/EscapeAnalysis.jl/issues/7
-    @eval M @noinline f_NoEscape_a(a) = (println("prevent inlining"); Base.inferencebarrier(nothing))
-    let
+    let M = Module()
+        @eval M @noinline f_NoEscape_a(a) = (println("prevent inlining"); Base.inferencebarrier(nothing))
+
         result = @eval M $analyze_escapes() do
             a = Ref("foo") # shouldn't be "return escape"
             b = f_NoEscape_a(a)
@@ -257,40 +254,40 @@ end
         end
         i = findfirst(isT(Base.RefValue{String}), result.ir.stmts.type)::Int
         @test has_no_escape(result.state.ssavalues[i])
-    end
-    let
+
         result = @eval M $analyze_escapes() do
             a = Ref("foo") # still should be "return escape"
             b = f_NoEscape_a(a)
             return a
         end
         i = findfirst(isT(Base.RefValue{String}), result.ir.stmts.type)::Int
-        r = findfirst(x->isa(x, Core.ReturnNode), result.ir.stmts.inst)::Int
+        r = findfirst(isreturn, result.ir.stmts.inst)::Int
         @test has_return_escape(result.state.ssavalues[i], r)
     end
 
     # should propagate escape information imposed on return value to the aliased call argument
-    @eval M @noinline f_ReturnEscape_a(a) = (println("prevent inlining"); a)
-    let
-        result = @eval M $analyze_escapes() do
-            obj = Ref("foo")           # should be "return escape"
-            ret = f_ReturnEscape_a(obj)
-            return ret                 # alias of `obj`
+    let result = @eval Module() begin
+            @noinline f_ReturnEscape_a(a) = (println("prevent inlining"); a)
+            $analyze_escapes() do
+                obj = Ref("foo")           # should be "return escape"
+                ret = f_ReturnEscape_a(obj)
+                return ret                 # alias of `obj`
+            end
         end
         i = findfirst(isT(Base.RefValue{String}), result.ir.stmts.type)::Int
-        r = findfirst(x->isa(x, Core.ReturnNode), result.ir.stmts.inst)::Int
+        r = findfirst(isreturn, result.ir.stmts.inst)::Int
         @test has_return_escape(result.state.ssavalues[i], r)
     end
-
-    @eval M @noinline f_NoReturnEscape_a(a) = (println("prevent inlining"); identity("hi"))
-    let
-        result = @eval M $analyze_escapes() do
-            obj = Ref("foo")              # better to not be "return escape"
-            ret = f_NoReturnEscape_a(obj)
-            return ret                    # must not alias to `obj`
+    let result = @eval Module() begin
+            @noinline f_NoReturnEscape_a(a) = (println("prevent inlining"); identity("hi"))
+            $analyze_escapes() do
+                obj = Ref("foo")              # better to not be "return escape"
+                ret = f_NoReturnEscape_a(obj)
+                return ret                    # must not alias to `obj`
+            end
         end
         i = findfirst(isT(Base.RefValue{String}), result.ir.stmts.type)::Int
-        r = findfirst(x->isa(x, Core.ReturnNode), result.ir.stmts.inst)::Int
+        r = findfirst(isreturn, result.ir.stmts.inst)::Int
         @test !has_return_escape(result.state.ssavalues[i], r)
     end
 end
@@ -317,11 +314,11 @@ end
 
     let # :===
         result = analyze_escapes((Bool, String)) do cond, s
-            m = cond ? MutableSome(s) : nothing
+            m = cond ? SafeRef(s) : nothing
             c = m === nothing
             return c
         end
-        i = findfirst(isT(MutableSome{String}), result.ir.stmts.type)::Int
+        i = findfirst(isT(SafeRef{String}), result.ir.stmts.type)::Int
         @test has_no_escape(result.state.ssavalues[i])
     end
 
@@ -448,26 +445,24 @@ end
 end
 
 @testset "field analysis" begin
-    let
-        result = analyze_escapes((String,)) do a # => ReturnEscape
-            o = MutableSome(a) # no need to escape
-            f = getfield(o, :value)
+    let result = analyze_escapes((String,)) do a # => ReturnEscape
+            o = SafeRef(a) # no need to escape
+            f = o[]
             return f
         end
-        i = findfirst(isT(MutableSome{String}), result.ir.stmts.type)::Int
+        i = findfirst(isT(SafeRef{String}), result.ir.stmts.type)::Int
         r = findfirst(isreturn, result.ir.stmts.inst)::Int
         @test has_return_escape(result.state.arguments[2], r)
         @test_broken !has_return_escape(result.state.ssavalues[i], r)
     end
 
-    let
-        result = analyze_escapes((String,Bool)) do a, cond # => ReturnEscape &&ThrownEscape
-            o = MutableSome(a) # no need to escape
+    let result = analyze_escapes((String,Bool)) do a, cond # => ReturnEscape &&ThrownEscape
+            o = SafeRef(a) # no need to escape
             cond && throw(o)
-            f = getfield(o, :value)
+            f = o[]
             return f
         end
-        i = findfirst(isT(MutableSome{String}), result.ir.stmts.type)
+        i = findfirst(isT(SafeRef{String}), result.ir.stmts.type)
         r = findfirst(isreturn, result.ir.stmts.inst)::Int
         t = findfirst(isthrow, result.ir.stmts.inst)::Int
         @test has_return_escape(result.state.arguments[2], r)
@@ -475,22 +470,20 @@ end
         @test_broken !has_return_escape(result.state.ssavalues[i], r)
     end
 
-    let
-        result = analyze_escapes((String,)) do a # => ReturnEscape
-            o1 = MutableSome(a) # => ReturnEscape
-            o2 = MutableSome(o1) # no need to escape
-            return getfield(o2, :value)
+    let result = analyze_escapes((String,)) do a # => ReturnEscape
+            o1 = SafeRef(a) # => ReturnEscape
+            o2 = SafeRef(o1) # no need to escape
+            return o2[]
         end
-        i1 = findfirst(isT(MutableSome{String}), result.ir.stmts.type)::Int
-        i2 = findfirst(isT(MutableSome{MutableSome{String}}), result.ir.stmts.type)::Int
+        i1 = findfirst(isT(SafeRef{String}), result.ir.stmts.type)::Int
+        i2 = findfirst(isT(SafeRef{SafeRef{String}}), result.ir.stmts.type)::Int
         r = findfirst(isreturn, result.ir.stmts.inst)::Int
         @test has_return_escape(result.state.arguments[2], r)
         @test has_return_escape(result.state.ssavalues[i1])
         @test_broken !has_return_escape(result.state.ssavalues[i2])
     end
 
-    let
-        result = analyze_escapes((Any,Bool)) do a, cond # => ThrownEscape
+    let result = analyze_escapes((Any,Bool)) do a, cond # => ThrownEscape
             t = tuple(a) # no need to escape
             cond && throw(t[1])
             return nothing
@@ -506,11 +499,11 @@ end
 # by compensating the lack of yet unimplemented analyses
 @testset "special-casing bitstype" begin
     let result = analyze_escapes((Int,)) do a
-            o = MutableSome(a) # no need to escape
-            f = getfield(o, :value)
+            o = SafeRef(a) # no need to escape
+            f = o[]
             return f
         end
-        i = findfirst(isT(MutableSome{Int}), result.ir.stmts.type)::Int
+        i = findfirst(isT(SafeRef{Int}), result.ir.stmts.type)::Int
         r = findfirst(isreturn, result.ir.stmts.inst)::Int
         @test !has_return_escape(result.state.ssavalues[i], r)
     end
