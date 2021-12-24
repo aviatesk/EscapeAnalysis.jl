@@ -4,18 +4,30 @@ isT(T) = (@nospecialize x) -> x === T
 issubT(T) = (@nospecialize x) -> x <: T
 isreturn(@nospecialize x) = isa(x, Core.ReturnNode) && isdefined(x, :val)
 isthrow(@nospecialize x) = Meta.isexpr(x, :call) && Core.Compiler.is_throw_call(x)
+isnew(@nospecialize x) = Meta.isexpr(x, :new)
+isϕ(@nospecialize x) = isa(x, Core.PhiNode)
+import Core.Compiler: argextype, singleton_type
+const EMPTY_SPTYPES = Any[]
+iscall(y) = @nospecialize(x) -> iscall(y, x)
+function iscall((ir, f), @nospecialize(x))
+    return iscall(x) do @nospecialize x
+        Core.Compiler.singleton_type(Core.Compiler.argextype(x, ir, EMPTY_SPTYPES)) === f
+    end
+end
+iscall(pred::Function, @nospecialize(x)) = Meta.isexpr(x, :call) && pred(x.args[1])
 
 mutable struct SafeRef{T}
     x::T
 end
-Base.getindex(s::SafeRef) = s.x
-Base.setindex!(s::SafeRef{Any}, @nospecialize x) = s.x = x
-Base.setindex!(s::SafeRef{T}, x::T) where T = s.x = x
+Base.getindex(s::SafeRef) = getfield(s, 1)
+Base.setindex!(s::SafeRef, x) = setfield!(s, 1, x)
 
-mutable struct MutableFields{S,T}
-    field1::S
-    field2::T
+mutable struct SafeRefs{S,T}
+    x1::S
+    x2::T
 end
+Base.getindex(s::SafeRefs, idx::Int) = getfield(s, idx)
+Base.setindex!(s::SafeRefs, x, idx::Int) = setfield!(s, idx, x)
 
 @testset "EscapeAnalysis" begin
 
@@ -30,18 +42,15 @@ end
         result = analyze_escapes((Any,)) do a
             return a
         end
-        @test has_return_escape(result.state.arguments[1]) # self
-        @test has_return_escape(result.state.arguments[2]) # argument
+        i = findfirst(isreturn, result.ir.stmts.inst)::Int
+        @test has_return_escape(result.state.arguments[1], 0) # self
+        @test !has_return_escape(result.state.arguments[1], i) # self
+        @test has_return_escape(result.state.arguments[2], 0) # a
+        @test has_return_escape(result.state.arguments[2], i) # a
     end
     let # global store
         result = analyze_escapes((Any,)) do a
             global aa = a
-            nothing
-        end
-        @test has_all_escape(result.state.arguments[2])
-        result = analyze_escapes((Any,)) do a
-            global gr
-            (gr::SafeRef{Any})[] = a
             nothing
         end
         @test has_all_escape(result.state.arguments[2])
@@ -53,11 +62,6 @@ end
         end
         i = findfirst(has_return_escape, result.state.ssavalues)::Int
         has_all_escape(result.state.ssavalues[i])
-        result = analyze_escapes((Any,)) do a
-            global gr
-            (gr::SafeRef{Any})[] = a
-        end
-        @test has_all_escape(result.state.arguments[2])
     end
     let # global store / load (https://github.com/aviatesk/EscapeAnalysis.jl/issues/56)
         result = analyze_escapes((Any,)) do s
@@ -460,13 +464,13 @@ end
     end
 end
 
-@testset "field analysis" begin
-    # definitions (:new, :splatnew, setfield!)
-    # ========================================
+@testset "field analysis / alias analysis" begin
+    # escaped allocations
+    # -------------------
 
-    # escaped object should escape its fields
+    # escaped object should escape its fields as well
     let result = analyze_escapes((Any,)) do a
-            global o = SafeRef{Any}(a)
+            global g = SafeRef{Any}(a)
             nothing
         end
         i = findfirst(isT(SafeRef{Any}), result.ir.stmts.type)::Int
@@ -474,7 +478,7 @@ end
         @test has_all_escape(result.state.arguments[2])
     end
     let result = analyze_escapes((Any,)) do a
-            global t = (a,)
+            global g = (a,)
             nothing
         end
         i = findfirst(issubT(Tuple), result.ir.stmts.type)::Int
@@ -483,18 +487,18 @@ end
     end
     let result = analyze_escapes((Any,)) do a
             o0 = SafeRef{Any}(a)
-            global o = MutableSome(o0)
+            global g = SafeRef(o0)
             nothing
         end
         i0 = findfirst(isT(SafeRef{Any}), result.ir.stmts.type)::Int
-        i1 = findfirst(isT(MutableSome{SafeRef{Any}}), result.ir.stmts.type)::Int
+        i1 = findfirst(isT(SafeRef{SafeRef{Any}}), result.ir.stmts.type)::Int
         @test has_all_escape(result.state.ssavalues[i0])
         @test has_all_escape(result.state.ssavalues[i1])
         @test has_all_escape(result.state.arguments[2])
     end
     let result = analyze_escapes((Any,)) do a
             t0 = (a,)
-            global t = (t0,)
+            global g = (t0,)
             nothing
         end
         inds = findall(issubT(Tuple), result.ir.stmts.type)
@@ -502,38 +506,39 @@ end
         for i in inds; @test has_all_escape(result.state.ssavalues[i]); end
         @test has_all_escape(result.state.arguments[2])
     end
+    # global escape through `setfield!`
     let result = analyze_escapes((Any,)) do a
-            r = Ref{Any}()
-            global o = r
+            r = SafeRef{Any}(:init)
+            global g = r
             r[] = a
             nothing
         end
-        i = findfirst(isT(Base.RefValue{Any}), result.ir.stmts.type)::Int
+        i = findfirst(isT(SafeRef{Any}), result.ir.stmts.type)::Int
         @test has_all_escape(result.state.ssavalues[i])
         @test has_all_escape(result.state.arguments[2])
     end
-    let result = analyze_escapes((Any,Any)) do a0, a1
-            r = Ref{Any}(a0)
-            global o = r
-            r[] = a1
+    let result = analyze_escapes((Any,Any)) do a, b
+            r = SafeRef{Any}(a)
+            global g = r
+            r[] = b
             nothing
         end
-        i = findfirst(isT(Base.RefValue{Any}), result.ir.stmts.type)::Int
+        i = findfirst(isT(SafeRef{Any}), result.ir.stmts.type)::Int
         @test has_all_escape(result.state.ssavalues[i])
-        @test_broken !has_all_escape(result.state.arguments[2]) # requires flow-sensitivity ?
-        @test has_all_escape(result.state.arguments[3])
+        @test has_all_escape(result.state.arguments[2]) # a
+        @test has_all_escape(result.state.arguments[3]) # b
     end
     let result = @eval Module() begin
-            const Rx = Ref{Any}()
+            const Rx = Ref{String}()
             $analyze_escapes((String,)) do s
-                Rx[] = s # global store => AllEscape
+                Rx[] = s
                 Core.sizeof(Rx[])
             end
         end
         @test has_all_escape(result.state.arguments[2])
     end
     let result = @eval Module() begin
-            const Rx = Ref{Any}()
+            const Rx = Ref{String}()
             $analyze_escapes((String,)) do s
                 setfield!(Rx, :x, s)
                 Core.sizeof(Rx[])
@@ -542,191 +547,376 @@ end
         @test has_all_escape(result.state.arguments[2])
     end
 
-    # usages (getfield)
-    # =================
+    # field escape
+    # ------------
 
-    # field escape doens't escape object if the field is known precisely
-    let result = analyze_escapes((String,)) do a # => ReturnEscape
-            o = MutableSome(a) # no need to escape
-            f = getfield(o, :value)
+    # field escape doens't escape object
+    let result = analyze_escapes((String,)) do a
+            o = SafeRef(a)
+            f = o[]
             return f
         end
         i = findfirst(isT(SafeRef{String}), result.ir.stmts.type)::Int
         r = findfirst(isreturn, result.ir.stmts.inst)::Int
         @test has_return_escape(result.state.arguments[2], r)
-        @test !has_return_escape(result.state.ssavalues[i], r)
+        @test is_sroa_eligible(result.state.ssavalues[i])
     end
-    let result = analyze_escapes((String,)) do a # => ReturnEscape
-            t = (a,) # no need to escape
+    let result = analyze_escapes((String,)) do a
+            t = (a,)
             f = t[1]
             return f
         end
         i = findfirst(t->t<:Tuple, result.ir.stmts.type)::Int
         r = findfirst(isreturn, result.ir.stmts.inst)::Int
         @test has_return_escape(result.state.arguments[2], r)
-        @test !has_return_escape(result.state.ssavalues[i], r)
+        @test is_sroa_eligible(result.state.ssavalues[i])
     end
-    let # multiple fields
-        result = analyze_escapes((String, String)) do a, b # => ReturnEscape, ReturnEscape
-            obj = MutableFields(a, b) # => NoEscape
-            fld1 = obj.field1
-            fld2 = obj.field2
+    let result = analyze_escapes((String, String)) do a, b
+            obj = SafeRefs(a, b)
+            fld1 = obj[1]
+            fld2 = obj[2]
             return (fld1, fld2)
         end
-        i = findfirst(isT(MutableFields{String,String}), result.ir.stmts.type)::Int
+        i = findfirst(isT(SafeRefs{String,String}), result.ir.stmts.type)::Int
         r = findfirst(isreturn, result.ir.stmts.inst)::Int
         @test has_return_escape(result.state.arguments[2], r) # a
         @test has_return_escape(result.state.arguments[3], r) # b
-        @test !has_return_escape(result.state.ssavalues[i], r)
+        @test is_sroa_eligible(result.state.ssavalues[i])
     end
 
-    # should work with `setfield!`
-    let result = analyze_escapes((String,)) do a # => ReturnEscape
-            o = Ref{String}() # no need to escape
-            o[] = a
-            f = o[]
-            return f
-        end
-        i = findfirst(isT(Base.RefValue{String}), result.ir.stmts.type)
-        r = findfirst(isreturn, result.ir.stmts.inst)
-        @assert !isnothing(i) && !isnothing(r)
-        @test has_return_escape(result.state.arguments[2], r)
-        @test !has_return_escape(result.state.ssavalues[i], r)
-    end
-    let result = analyze_escapes((String, Symbol)) do a, fld # => ReturnEscape
-            o = Ref{String}("foo") # no need to escape
-            setfield!(o, fld, a)
-            f = o[]
-            return f
-        end
-        i = findfirst(isT(Base.RefValue{String}), result.ir.stmts.type)
-        r = findfirst(isreturn, result.ir.stmts.inst)
-        @assert !isnothing(i) && !isnothing(r)
-        @test has_return_escape(result.state.arguments[2], r)
-        @test !has_return_escape(result.state.ssavalues[i], r)
-    end
-    let result = analyze_escapes((String, Symbol)) do a, fld
-            obj = MutableFields("foo", "bar")
-            setfield!(obj, fld, a)
-            return obj.field1 # this should escape `a`
-        end
-        i = findfirst(isT(MutableFields{String,String}), result.ir.stmts.type)::Int
-        r = findfirst(isreturn, result.ir.stmts.inst)::Int
-        @test has_return_escape(result.state.arguments[2], r) # a
-        @test !has_return_escape(result.state.ssavalues[i], r)
-    end
-
-    let # unknown field
-        result = analyze_escapes((String, String, Symbol)) do a, b, fld # => ReturnEscape, ReturnEscape
-            obj = MutableFields(a, b) # => NoEscape
-            return getfield(obj, fld)
-        end
-        i = findfirst(isT(MutableFields{String,String}), result.ir.stmts.type)::Int
-        r = findfirst(isreturn, result.ir.stmts.inst)::Int
-        @test has_return_escape(result.state.arguments[2], r) # a
-        @test has_return_escape(result.state.arguments[3], r) # b
-        @test !has_return_escape(result.state.ssavalues[i], r)
-    end
-
-    let # nested object instantiation (not aliased)
-        result = analyze_escapes((String,)) do a # => ReturnEscape
-            o1 = MutableSome(a) # => ReturnEscape
-            o2 = MutableSome(o1) # no need to escape
-            return getfield(o2, :value)
+    # nested allocations
+    let result = analyze_escapes((String,)) do a
+            o1 = SafeRef(a)
+            o2 = SafeRef(o1)
+            return o2[]
         end
         i1 = findfirst(isT(SafeRef{String}), result.ir.stmts.type)::Int
         i2 = findfirst(isT(SafeRef{SafeRef{String}}), result.ir.stmts.type)::Int
         r = findfirst(isreturn, result.ir.stmts.inst)::Int
         @test has_return_escape(result.state.arguments[2], r)
         @test has_return_escape(result.state.ssavalues[i1], r)
-        @test !has_return_escape(result.state.ssavalues[i2], r)
+        @test is_sroa_eligible(result.state.ssavalues[i2])
     end
-
-    # inter-procedural
-    # ================
-
-    let result = @eval Module() begin
-            @noinline getvalue(obj) = obj.value
-            $analyze_escapes((String,)) do a # => ReturnEscape
-                obj = $MutableSome(a) # no need to escape
-                fld = getvalue(obj)
-                return fld
-            end
+    let result = analyze_escapes((String,)) do a
+            o1 = (a,)
+            o2 = (o1,)
+            return o2[1]
         end
-        i = findfirst(isT(MutableSome{String}), result.ir.stmts.type)::Int
+        i1 = findfirst(isT(Tuple{String}), result.ir.stmts.type)::Int
+        i2 = findfirst(isT(Tuple{Tuple{String}}), result.ir.stmts.type)::Int
         r = findfirst(isreturn, result.ir.stmts.inst)::Int
         @test has_return_escape(result.state.arguments[2], r)
-        # NOTE we can't scalar replace `obj`, but still we may want to stack allocate it
-        @test_broken !has_return_escape(result.state.ssavalues[i], r)
+        @test has_return_escape(result.state.ssavalues[i1], r)
+        @test is_sroa_eligible(result.state.ssavalues[i2])
     end
-
-    # TODO
-    # flow-sensitivity
-    # ================
-    let result = analyze_escapes((Any,Any)) do a1, a2
-            r   = Ref{Any}()
-            r[] = a1
-            r[] = a2
-            return r[]
-        end
-        i = findfirst(isT(Base.RefValue{Any}), result.ir.stmts.type)::Int
-        r = findfirst(isreturn, result.ir.stmts.inst)::Int
-        @test_broken !has_return_escape(result.state.arguments[2], r)
-        @test has_return_escape(result.state.arguments[3], r)
-        @test !has_return_escape(result.state.ssavalues[i], r)
-    end
-    let result = analyze_escapes((Any,Any,Bool)) do a1, a2, cond
-            r = Ref{Any}()
-            if cond
-                r[] = a1
-                return r[]
-            else
-                r[] = a2
-                return nothing
-            end
-        end
-        i = findfirst(isT(Base.RefValue{Any}), result.ir.stmts.type)::Int
-        r = findfirst(isreturn, result.ir.stmts.inst)::Int
-        @test has_return_escape(result.state.arguments[2], r)
-        @test_broken !has_return_escape(result.state.arguments[3], r)
-        @test !has_return_escape(result.state.ssavalues[i], r)
-    end
-
-    # end to end
-    # ==========
-
-    let # `popfirst!(InvasiveLinkedList{Task})` within this `println` used to cause infinite loop ...
-        result = analyze_escapes((String,)) do a
-            println(a)
-            nothing
-        end
-        @test true
-    end
-end
-
-@testset "alias analysis" begin
-    let result = analyze_escapes((String,)) do a # => ReturnEscape
-            o1  = MutableSome(a)        # => NoEscape
-            o2  = MutableSome(o1)       # => NoEscape
-            o1′ = getfield(o2, :value)  # o1
-            a′  = getfield(o1′, :value) # a
+    let result = analyze_escapes((String,)) do a
+            o1  = SafeRef(a)
+            o2  = SafeRef(o1)
+            o1′ = o2[]
+            a′  = o1′[]
             return a′
         end
-        i1 = findfirst(isT(MutableSome{String}), result.ir.stmts.type)::Int
-        i2 = findfirst(isT(MutableSome{MutableSome{String}}), result.ir.stmts.type)::Int
         r = findfirst(isreturn, result.ir.stmts.inst)::Int
         @test has_return_escape(result.state.arguments[2], r)
-        @test !has_return_escape(result.state.ssavalues[i1], r)
-        @test !has_return_escape(result.state.ssavalues[i2], r)
+        for i in findall(isnew, result.ir.stmts.inst)
+            @test is_sroa_eligible(result.state.ssavalues[i])
+        end
     end
-
     let result = analyze_escapes((String,)) do x
             broadcast(identity, Ref(x))
         end
         i = findfirst(isT(Base.RefValue{String}), result.ir.stmts.type)::Int
         r = findfirst(isreturn, result.ir.stmts.inst)::Int
         @test has_return_escape(result.state.arguments[2], r)
-        @test !has_return_escape(result.state.ssavalues[i], r)
+        @test is_sroa_eligible(result.state.ssavalues[i])
+    end
+
+    # ϕ-node allocations
+    let result = analyze_escapes((Bool,Any,Any)) do cond, x, y
+            if cond
+                ϕ = SafeRef{Any}(x)
+            else
+                ϕ = SafeRef{Any}(y)
+            end
+            return ϕ[]
+        end
+        r = findfirst(isreturn, result.ir.stmts.inst)::Int
+        @test has_return_escape(result.state.arguments[3], r) # x
+        @test has_return_escape(result.state.arguments[4], r) # y
+        i = findfirst(isϕ, result.ir.stmts.inst)::Int
+        @test is_sroa_eligible(result.state.ssavalues[i])
+        for i in findall(isnew, result.ir.stmts.inst)
+            @test is_sroa_eligible(result.state.ssavalues[i])
+        end
+    end
+    let result = analyze_escapes((Bool,Any,Any)) do cond, x, y
+            if cond
+                ϕ2 = ϕ1 = SafeRef{Any}(x)
+            else
+                ϕ2 = ϕ1 = SafeRef{Any}(y)
+            end
+            return ϕ1[], ϕ2[]
+        end
+        r = findfirst(isreturn, result.ir.stmts.inst)::Int
+        @test has_return_escape(result.state.arguments[3], r) # x
+        @test has_return_escape(result.state.arguments[4], r) # y
+        for i in findall(isϕ, result.ir.stmts.inst)
+            @test is_sroa_eligible(result.state.ssavalues[i])
+        end
+        for i in findall(isnew, result.ir.stmts.inst)
+            @test is_sroa_eligible(result.state.ssavalues[i])
+        end
+    end
+
+    # alias analysis
+    # --------------
+
+    # should propagate escapes through `setfield!`
+    let result = analyze_escapes((String,)) do a
+            o = SafeRef("init")
+            o[] = a
+            f = o[]
+            return f
+        end
+        i = findfirst(isT(SafeRef{String}), result.ir.stmts.type)::Int
+        r = findfirst(isreturn, result.ir.stmts.inst)::Int
+        @test has_return_escape(result.state.arguments[2], r)
+        @test is_sroa_eligible(result.state.ssavalues[i])
+    end
+    # propagate escape information imposed on return value of `setfield!` call
+    let result = analyze_escapes((String,)) do a
+            obj = SafeRef("foo")
+            return (obj[] = a)
+        end
+        i = findfirst(isT(SafeRef{String}), result.ir.stmts.type)::Int
+        r = findfirst(isreturn, result.ir.stmts.inst)::Int
+        @test has_return_escape(result.state.arguments[2], r)
+        @test is_sroa_eligible(result.state.ssavalues[i])
+    end
+    # alias via typeassert
+    let result = analyze_escapes((Any,)) do a
+            global g
+            (g::SafeRef{Any})[] = a
+            nothing
+        end
+        @test has_all_escape(result.state.arguments[2])
+    end
+    # alias via ifelse
+    let result = @eval begin
+            const Lx, Rx = Ref{String}(), Ref{String}()
+            analyze_escapes((Bool,String,)) do c, a
+                r = ifelse(c, Lx, Rx)
+                r[] = a
+                nothing
+            end
+        end
+        @test has_all_escape(result.state.arguments[3]) # a
+    end
+    # alias via ϕ-node
+    let result = analyze_escapes((Bool,String)) do cond, x
+            if cond
+                ϕ2 = ϕ1 = SafeRef("foo")
+            else
+                ϕ2 = ϕ1 = SafeRef("bar")
+            end
+            ϕ2[] = x
+            return ϕ1[]
+        end
+        r = findfirst(isreturn, result.ir.stmts.inst)::Int
+        @test has_return_escape(result.state.arguments[3], r) # x
+        i = findfirst(isϕ, result.ir.stmts.inst)::Int
+        @test is_sroa_eligible(result.state.ssavalues[i])
+        for i in findall(isnew, result.ir.stmts.inst)
+            @test is_sroa_eligible(result.state.ssavalues[i])
+        end
+    end
+    let result = analyze_escapes((Bool,Bool,String)) do cond1, cond2, x
+            if cond1
+                ϕ2 = ϕ1 = SafeRef("foo")
+            else
+                ϕ2 = ϕ1 = SafeRef("bar")
+            end
+            cond2 && (ϕ2[] = x)
+            return ϕ1[]
+        end
+        r = findfirst(isreturn, result.ir.stmts.inst)::Int
+        @test has_return_escape(result.state.arguments[4], r) # x
+        i = findfirst(isϕ, result.ir.stmts.inst)::Int
+        @test is_sroa_eligible(result.state.ssavalues[i])
+        for i in findall(isnew, result.ir.stmts.inst)
+            @test is_sroa_eligible(result.state.ssavalues[i])
+        end
+    end
+    # alias via π-node
+    let result = analyze_escapes((String,)) do x
+            global g
+            l = g
+            if isa(l, SafeRef{String})
+                l[] = x
+            end
+            nothing
+        end
+        @test has_all_escape(result.state.arguments[2]) # x
+    end
+
+    # dynamic semantics
+    # -----------------
+
+    # conservatively handle untyped objects
+    let result = @eval analyze_escapes((Any,Any,Any,Any)) do T, x, y, z
+            obj = $(Expr(:new, :T, :x, :y))
+            return getfield(obj, :field1)
+        end
+        i = findfirst(isnew, result.ir.stmts.inst)::Int
+        r = findfirst(isreturn, result.ir.stmts.inst)::Int
+        @test #=x=# has_return_escape(result.state.arguments[3], r)
+        @test #=y=# has_return_escape(result.state.arguments[4], r)
+        @test #=z=# !has_return_escape(result.state.arguments[5], r)
+    end
+    let result = @eval analyze_escapes((Any,Any,Any,Any)) do T, x, y, z
+            obj = $(Expr(:new, :T, :x))
+            setfield!(obj, :field1, y)
+            return getfield(obj, :field1)
+        end
+        i = findfirst(isnew, result.ir.stmts.inst)::Int
+        r = findfirst(isreturn, result.ir.stmts.inst)::Int
+        @test #=x=# has_return_escape(result.state.arguments[3], r)
+        @test #=y=# has_return_escape(result.state.arguments[4], r)
+        @test #=z=# !has_return_escape(result.state.arguments[5], r)
+    end
+
+    # conservatively handle unknown field:
+    # all fields should be escaped, but the allocation itself doesn't need to be escaped
+    let result = analyze_escapes((String, Symbol)) do a, fld
+            obj = SafeRef(a)
+            return getfield(obj, fld)
+        end
+        i = findfirst(isT(SafeRef{String}), result.ir.stmts.type)::Int
+        r = findfirst(isreturn, result.ir.stmts.inst)::Int
+        @test has_return_escape(result.state.arguments[2], r) # a
+        @test is_sroa_eligible(result.state.ssavalues[i]) # obj
+    end
+    let result = analyze_escapes((String, String, Symbol)) do a, b, fld
+            obj = SafeRefs(a, b)
+            return getfield(obj, fld) # should escape both `a` and `b`
+        end
+        i = findfirst(isT(SafeRefs{String,String}), result.ir.stmts.type)::Int
+        r = findfirst(isreturn, result.ir.stmts.inst)::Int
+        @test has_return_escape(result.state.arguments[2], r) # a
+        @test has_return_escape(result.state.arguments[3], r) # b
+        @test is_sroa_eligible(result.state.ssavalues[i]) # obj
+    end
+    let result = analyze_escapes((String, String, Int)) do a, b, idx
+            obj = SafeRefs(a, b)
+            return obj[idx] # should escape both `a` and `b`
+        end
+        i = findfirst(isT(SafeRefs{String,String}), result.ir.stmts.type)::Int
+        r = findfirst(isreturn, result.ir.stmts.inst)::Int
+        @test has_return_escape(result.state.arguments[2], r) # a
+        @test has_return_escape(result.state.arguments[3], r) # b
+        @test is_sroa_eligible(result.state.ssavalues[i]) # obj
+    end
+    let result = analyze_escapes((String, String, Symbol)) do a, b, fld
+            obj = SafeRefs("a", "b")
+            setfield!(obj, fld, a)
+            return obj[2] # should escape `a`
+        end
+        i = findfirst(isT(SafeRefs{String,String}), result.ir.stmts.type)::Int
+        r = findfirst(isreturn, result.ir.stmts.inst)::Int
+        @test has_return_escape(result.state.arguments[2], r) # a
+        @test !has_return_escape(result.state.arguments[3], r) # b
+        @test is_sroa_eligible(result.state.ssavalues[i]) # obj
+    end
+    let result = analyze_escapes((String, Symbol)) do a, fld
+            obj = SafeRefs("a", "b")
+            setfield!(obj, fld, a)
+            return obj[1] # this should escape `a`
+        end
+        i = findfirst(isT(SafeRefs{String,String}), result.ir.stmts.type)::Int
+        r = findfirst(isreturn, result.ir.stmts.inst)::Int
+        @test has_return_escape(result.state.arguments[2], r) # a
+        @test is_sroa_eligible(result.state.ssavalues[i]) # obj
+    end
+    let result = analyze_escapes((String, String, Int)) do a, b, idx
+            obj = SafeRefs("a", "b")
+            obj[idx] = a
+            return obj[2] # should escape `a`
+        end
+        i = findfirst(isT(SafeRefs{String,String}), result.ir.stmts.type)::Int
+        r = findfirst(isreturn, result.ir.stmts.inst)::Int
+        @test has_return_escape(result.state.arguments[2], r) # a
+        @test !has_return_escape(result.state.arguments[3], r) # b
+        @test is_sroa_eligible(result.state.ssavalues[i]) # obj
+    end
+
+    # interprocedural
+    # ---------------
+
+    let result = @eval Module() begin
+            @noinline getx(obj) = obj[]
+            $analyze_escapes((String,)) do a
+                obj = $SafeRef(a)
+                fld = getx(obj)
+                return fld
+            end
+        end
+        i = findfirst(isT(SafeRef{String}), result.ir.stmts.type)::Int
+        r = findfirst(isreturn, result.ir.stmts.inst)::Int
+        @test has_return_escape(result.state.arguments[2], r)
+        # NOTE we can't scalar replace `obj`, but still we may want to stack allocate it
+        @test_broken is_sroa_eligible(result.state.ssavalues[i])
+    end
+
+    # TODO interprocedural field analysis
+    let result = analyze_escapes((SafeRef{String},)) do s
+            s[] = "bar"
+            global sv = s[]
+            nothing
+        end
+        @test_broken !has_all_escape(result.state.arguments[2])
+    end
+
+    # TODO flow-sensitivity?
+    # ----------------------
+
+    let result = analyze_escapes((Any,Any)) do a, b
+            r = SafeRef{Any}(a)
+            r[] = b
+            return r[]
+        end
+        i = findfirst(isT(SafeRef{Any}), result.ir.stmts.type)::Int
+        r = findfirst(isreturn, result.ir.stmts.inst)::Int
+        @test_broken !has_return_escape(result.state.arguments[2], r) # a
+        @test has_return_escape(result.state.arguments[3], r) # b
+        @test is_sroa_eligible(result.state.ssavalues[i])
+    end
+    let result = analyze_escapes((Any,Any)) do a, b
+            r = SafeRef{Any}(:init)
+            r[] = a
+            r[] = b
+            return r[]
+        end
+        i = findfirst(isT(SafeRef{Any}), result.ir.stmts.type)::Int
+        r = findfirst(isreturn, result.ir.stmts.inst)::Int
+        @test_broken !has_return_escape(result.state.arguments[2], r) # a
+        @test has_return_escape(result.state.arguments[3], r) # b
+        @test is_sroa_eligible(result.state.ssavalues[i])
+    end
+    let result = analyze_escapes((Any,Any,Bool)) do a, b, cond
+            r = SafeRef{Any}(:init)
+            if cond
+                r[] = a
+                return r[]
+            else
+                r[] = b
+                return nothing
+            end
+        end
+        i = findfirst(isT(SafeRef{Any}), result.ir.stmts.type)::Int
+        r = findfirst(isreturn, result.ir.stmts.inst)::Int
+        @test has_return_escape(result.state.arguments[2], r) # a
+        @test_broken !has_return_escape(result.state.arguments[3], r) # b
+        @test is_sroa_eligible(result.state.ssavalues[i])
     end
 end
 
@@ -740,7 +930,7 @@ end
     end
 
     let result = analyze_escapes((Int,)) do a
-            o = SafeRef(a) # no need to escape
+            o = SafeRef(a)
             f = o[]
             return f
         end

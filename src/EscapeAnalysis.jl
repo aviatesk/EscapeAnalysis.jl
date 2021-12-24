@@ -7,6 +7,7 @@ export
     has_return_escape,
     has_thrown_escape,
     has_all_escape,
+    is_sroa_eligible,
     can_elide_finalizer
 
 # analysis
@@ -22,14 +23,13 @@ import Core:
     ReturnNode, GotoNode, GotoIfNot, SimpleVector
 import ._TOP_MOD:     # Base definitions
     @__MODULE__, @eval, @assert, @nospecialize, @inbounds, @inline, @noinline, @label, @goto,
-    Vector, BitSet, IdDict, IdSet,
-    !, !==, !=, ≠, +, -, ≤, <, ≥, >, &, |, include, error, missing, println,
-    ∪, ⊆, ∩, :, length, get, first, last, in, isempty, isassigned, push!, empty!,
-    max, min
+    !, !==, !=, ≠, +, -, ≤, <, ≥, >, &, |, include, error, missing,
+    Vector, BitSet, IdDict, IdSet, ∪, ⊆, ∩, :, length, get, first, last, in, isempty,
+    isassigned, push!, empty!, max, min
 import Core.Compiler: # Core.Compiler specific definitions
-    IRCode, IR_FLAG_EFFECT_FREE,
-    isbitstype, isexpr, is_meta_expr_head, widenconst, argextype, singleton_type,
-    fieldcount_noerror, try_compute_fieldidx
+    isbitstype, isexpr, is_meta_expr_head, copy, println,
+    IRCode, IR_FLAG_EFFECT_FREE, widenconst, argextype, singleton_type, fieldcount_noerror,
+    try_compute_fieldidx
 
 if isdefined(Core.Compiler, :try_compute_field)
     import Core.Compiler: try_compute_field
@@ -52,154 +52,8 @@ else
     end
 end
 
-begin # A disjoint set implementation adapted from
-      # https://github.com/JuliaCollections/DataStructures.jl/blob/f57330a3b46f779b261e6c07f199c88936f28839/src/disjoint_set.jl
-      # under the MIT license: https://github.com/JuliaCollections/DataStructures.jl/blob/master/License.md
-
-    # imports
-    import ._TOP_MOD:
-        length,
-        eltype,
-        union!,
-        push!
-    # usings
-    import ._TOP_MOD:
-        OneTo, collect, zero, zeros, one, typemax
-
-    # Disjoint-Set
-
-    ############################################################
-    #
-    #   A forest of disjoint sets of integers
-    #
-    #   Since each element is an integer, we can use arrays
-    #   instead of dictionary (for efficiency)
-    #
-    #   Disjoint sets over other key types can be implemented
-    #   based on an IntDisjointSet through a map from the key
-    #   to an integer index
-    #
-    ############################################################
-
-    _intdisjointset_bounds_err_msg(T) = "the maximum number of elements in IntDisjointSet{$T} is $(typemax(T))"
-
-    """
-        IntDisjointSet{T<:Integer}(n::Integer)
-
-    A forest of disjoint sets of integers, which is a data structure
-    (also called a union–find data structure or merge–find set)
-    that tracks a set of elements partitioned
-    into a number of disjoint (non-overlapping) subsets.
-    """
-    mutable struct IntDisjointSet{T<:Integer}
-        parents::Vector{T}
-        ranks::Vector{T}
-        ngroups::T
-    end
-
-    IntDisjointSet(n::T) where {T<:Integer} = IntDisjointSet{T}(collect(OneTo(n)), zeros(T, n), n)
-    IntDisjointSet{T}(n::Integer) where {T<:Integer} = IntDisjointSet{T}(collect(OneTo(T(n))), zeros(T, T(n)), T(n))
-    length(s::IntDisjointSet) = length(s.parents)
-
-    """
-        num_groups(s::IntDisjointSet)
-
-    Get a number of groups.
-    """
-    num_groups(s::IntDisjointSet) = s.ngroups
-    eltype(::Type{IntDisjointSet{T}}) where {T<:Integer} = T
-
-    # find the root element of the subset that contains x
-    # path compression is implemented here
-    function find_root_impl!(parents::Vector{T}, x::Integer) where {T<:Integer}
-        p = parents[x]
-        @inbounds if parents[p] != p
-            parents[x] = p = _find_root_impl!(parents, p)
-        end
-        return p
-    end
-
-    # unsafe version of the above
-    function _find_root_impl!(parents::Vector{T}, x::Integer) where {T<:Integer}
-        @inbounds p = parents[x]
-        @inbounds if parents[p] != p
-            parents[x] = p = _find_root_impl!(parents, p)
-        end
-        return p
-    end
-
-    """
-        find_root!(s::IntDisjointSet{T}, x::T)
-
-    Find the root element of the subset that contains an member `x`.
-    Path compression happens here.
-    """
-    find_root!(s::IntDisjointSet{T}, x::T) where {T<:Integer} = find_root_impl!(s.parents, x)
-
-    """
-        in_same_set(s::IntDisjointSet{T}, x::T, y::T)
-
-    Returns `true` if `x` and `y` belong to the same subset in `s`, and `false` otherwise.
-    """
-    in_same_set(s::IntDisjointSet{T}, x::T, y::T) where {T<:Integer} = find_root!(s, x) == find_root!(s, y)
-
-    """
-        union!(s::IntDisjointSet{T}, x::T, y::T)
-
-    Merge the subset containing `x` and that containing `y` into one
-    and return the root of the new set.
-    """
-    function union!(s::IntDisjointSet{T}, x::T, y::T) where {T<:Integer}
-        parents = s.parents
-        xroot = find_root_impl!(parents, x)
-        yroot = find_root_impl!(parents, y)
-        return xroot != yroot ? root_union!(s, xroot, yroot) : xroot
-    end
-
-    """
-        root_union!(s::IntDisjointSet{T}, x::T, y::T)
-
-    Form a new set that is the union of the two sets whose root elements are
-    `x` and `y` and return the root of the new set.
-    Assume `x ≠ y` (unsafe).
-    """
-    function root_union!(s::IntDisjointSet{T}, x::T, y::T) where {T<:Integer}
-        parents = s.parents
-        rks = s.ranks
-        @inbounds xrank = rks[x]
-        @inbounds yrank = rks[y]
-
-        if xrank < yrank
-            x, y = y, x
-        elseif xrank == yrank
-            rks[x] += one(T)
-        end
-        @inbounds parents[y] = x
-        s.ngroups -= one(T)
-        return x
-    end
-
-    """
-        push!(s::IntDisjointSet{T})
-
-    Make a new subset with an automatically chosen new element `x`.
-    Returns the new element. Throw an `ArgumentError` if the
-    capacity of the set would be exceeded.
-    """
-    function push!(s::IntDisjointSet{T}) where {T<:Integer}
-        l = length(s)
-        l < typemax(T) || throw(ArgumentError(_intdisjointset_bounds_err_msg(T)))
-        x = l + one(T)
-        push!(s.parents, x)
-        push!(s.ranks, zero(T))
-        s.ngroups += one(T)
-        return x
-    end
-end # begin
-
 const FieldInfo  = IdSet{Any}
 const FieldsInfo = Vector{FieldInfo}
-struct UnintializedField end
 
 """
     x::EscapeLattice
@@ -281,38 +135,46 @@ struct EscapeLattice
 end
 
 # precomputed default values in order to eliminate computations at each callsite
-const EMPTY_ESCAPE_SITES = BitSet()
+const BOT_ESCAPE_SITES = BitSet()
 const ARGUMENT_ESCAPE_SITES = BitSet(0)
+const TOP_ESCAPE_SITES = BitSet(0:100_000)
+
+const BOT_FIELD_SETS = false
+const TOP_FIELD_SETS = true
 
 # the constructors
-NotAnalyzed() = EscapeLattice(false, false, false, EMPTY_ESCAPE_SITES, false) # not formally part of the lattice
-NoEscape() = EscapeLattice(true, false, false, EMPTY_ESCAPE_SITES, false)
-ReturnEscape(pc::Int) = EscapeLattice(true, true, false, BitSet(pc), false)
-ThrownEscape(pc::Int) = EscapeLattice(true, false, true, BitSet(pc), false)
-ArgumentReturnEscape() = EscapeLattice(true, true, false, ARGUMENT_ESCAPE_SITES, true)
-let
-    ALL_ESCAPE_SITES = BitSet(0:100_000)
-    global AllEscape() = EscapeLattice(true, true, true, ALL_ESCAPE_SITES, true)
-    # used for `show`
-    global AllReturnEscape() = EscapeLattice(true, true, false, ALL_ESCAPE_SITES, false)
-    global AllThrownEscape() = EscapeLattice(true, false, true, ALL_ESCAPE_SITES, false)
-end
-ignore_fieldsets(info::EscapeLattice) =
-    EscapeLattice(info, info.FieldSets === true ? true : false)
+NotAnalyzed() = EscapeLattice(false, false, false, BOT_ESCAPE_SITES, BOT_FIELD_SETS) # not formally part of the lattice
+NoEscape() = EscapeLattice(true, false, false, BOT_ESCAPE_SITES, BOT_FIELD_SETS)
+ReturnEscape(pc::Int) = EscapeLattice(true, true, false, BitSet(pc), BOT_FIELD_SETS)
+ThrownEscape(pc::Int) = EscapeLattice(true, false, true, BitSet(pc), BOT_FIELD_SETS)
+ArgumentReturnEscape() = EscapeLattice(true, true, false, ARGUMENT_ESCAPE_SITES, TOP_FIELD_SETS) # TODO allow interprocedural field analysis?
+AllEscape() = EscapeLattice(true, true, true, TOP_ESCAPE_SITES, TOP_FIELD_SETS)
 
 # Convenience names for some ⊑ queries
 has_not_analyzed(x::EscapeLattice) = x == NotAnalyzed()
-has_no_escape(x::EscapeLattice) = x ⊑ₑ NoEscape()
+has_no_escape(x::EscapeLattice) = ignore_fieldsets(x) ⊑ NoEscape()
 has_return_escape(x::EscapeLattice) = x.ReturnEscape
 has_return_escape(x::EscapeLattice, pc::Int) = has_return_escape(x) && pc in x.EscapeSites
 has_thrown_escape(x::EscapeLattice) = x.ThrownEscape
 has_thrown_escape(x::EscapeLattice, pc::Int) = has_thrown_escape(x) && pc in x.EscapeSites
 has_all_escape(x::EscapeLattice) = AllEscape() ⊑ x
 
+has_fieldsets(x::EscapeLattice) = x.FieldSets !== BOT_FIELD_SETS
+ignore_fieldsets(x::EscapeLattice) = EscapeLattice(x, BOT_FIELD_SETS)
+
+# TODO is_sroa_eligible: consider throwness?
+
+"""
+    is_sroa_eligible(x::EscapeLattice) -> Bool
+
+Queries allocation eliminability by SROA.
+"""
+is_sroa_eligible(x::EscapeLattice) = x.FieldSets !== TOP_FIELD_SETS && !has_return_escape(x)
+
 """
     can_elide_finalizer(x::EscapeLattice, pc::Int) -> Bool
 
-Queries the validity of the finalizer elision optimization at the `return` site of statement `pc`,
+Queries the validity of the finalizer elision optimization at the return site of SSA statement `pc`,
 which inserts `finalize` call when the lifetime of interested object ends.
 Note that we don't need to take `x.ThrownEscape` into account because it would have never
 been thrown when the program execution reaches the `return` site.
@@ -354,9 +216,6 @@ x::EscapeLattice ⊑ y::EscapeLattice = begin
             end
         end
     end
-    return x ⊑ₑ y
-end
-x::EscapeLattice ⊑ₑ y::EscapeLattice = begin # partial order excluding the `FieldSets` order
     if x.Analyzed ≤ y.Analyzed &&
        x.ReturnEscape ≤ y.ReturnEscape &&
        x.ThrownEscape ≤ y.ThrownEscape &&
@@ -367,9 +226,7 @@ x::EscapeLattice ⊑ₑ y::EscapeLattice = begin # partial order excluding the `
     return false
 end
 x::EscapeLattice ⊏ y::EscapeLattice = x ⊑ y && !(y ⊑ x)
-x::EscapeLattice ⊏ₑ y::EscapeLattice = x ⊑ₑ y && !(y ⊑ₑ x)
 x::EscapeLattice ⋤ y::EscapeLattice = !(y ⊑ x)
-x::EscapeLattice ⋤ₑ y::EscapeLattice = !(y ⊑ₑ x)
 
 x::EscapeLattice ⊔ y::EscapeLattice = begin
     xf, yf = x.FieldSets, y.FieldSets
@@ -385,7 +242,7 @@ x::EscapeLattice ⊔ y::EscapeLattice = begin
         nmax, nmin = max(xn, yn), min(xn, yn)
         FieldSets = FieldsInfo(undef, nmax)
         for i in 1:nmax
-            if i > nmax
+            if i > nmin
                 FieldSets[i] = (xn > yn ? xf : yf)[i]
             else
                 FieldSets[i] = xf[i] ∪ yf[i]
@@ -421,19 +278,16 @@ Extended lattice that maps arguments and SSA values to escape information repres
 - `state.arguments::Vector{EscapeLattice}`: escape information about "arguments" – note that
   "argument" can include both call arguments and slots appearing in analysis frame
 - `ssavalues::Vector{EscapeLattice}`: escape information about each SSA value
-- `aliaset::IntDisjointSet{Int}`: a disjoint set that represents aliased arguments and SSA values
 """
 struct EscapeState
     arguments::Vector{EscapeLattice}
     ssavalues::Vector{EscapeLattice}
-    aliasset::IntDisjointSet{Int}
 end
 function EscapeState(nslots::Int, nargs::Int, nstmts::Int)
     arguments = EscapeLattice[
         1 ≤ i ≤ nargs ? ArgumentReturnEscape() : NotAnalyzed() for i in 1:nslots]
     ssavalues = EscapeLattice[NotAnalyzed() for _ in 1:nstmts]
-    aliaset = AliasSet(nslots+nstmts)
-    return EscapeState(arguments, ssavalues, aliaset)
+    return EscapeState(arguments, ssavalues)
 end
 
 # we preserve `IRCode` as well just for debugging purpose
@@ -441,41 +295,7 @@ const GLOBAL_ESCAPE_CACHE = IdDict{MethodInstance,Tuple{EscapeState,IRCode}}()
 __clear_escape_cache!() = empty!(GLOBAL_ESCAPE_CACHE)
 
 const EscapeChange = Pair{Union{Argument,SSAValue},EscapeLattice}
-const AliasChange  = Pair{Int,Int}
-const Changes      = Vector{Union{EscapeChange,AliasChange}}
-
-const AliasSet = IntDisjointSet{Int}
-function alias_idx(@nospecialize(x), ir::IRCode)
-    if isa(x, Argument)
-        return x.n
-    elseif isa(x, SSAValue)
-        return x.id + length(ir.argtypes)
-    else
-        return nothing
-    end
-end
-function alias_val(idx::Int, ir::IRCode)
-    n = length(ir.argtypes)
-    return idx > n ? SSAValue(idx-n) : Argument(idx)
-end
-function get_aliases(aliasset::AliasSet, @nospecialize(key), ir::IRCode)
-    idx = alias_idx(key, ir)
-    idx === nothing && return nothing
-    root = find_root!(aliasset, idx)
-    if idx ≠ root || aliasset.ranks[idx] > 0
-        # the size of this alias set containing `key` is larger than 1,
-        # collect the entire alias set
-        aliases = Union{Argument,SSAValue}[]
-        for i in 1:length(aliasset.parents)
-            if aliasset.parents[i] == root
-                push!(aliases, alias_val(i, ir))
-            end
-        end
-        return aliases
-    else
-        return nothing
-    end
-end
+const Changes      = Vector{EscapeChange}
 
 """
     find_escapes(ir::IRCode, nargs::Int) -> EscapeState
@@ -519,6 +339,7 @@ function find_escapes(ir::IRCode, nargs::Int)
     state = EscapeState(length(argtypes), nargs, nstmts)
     changes = Changes() # stashes changes that happen at current statement
 
+    local debug_itr_counter = 0
     while true
         local anyupdate = false
 
@@ -534,6 +355,7 @@ function find_escapes(ir::IRCode, nargs::Int)
                 head = stmt.head
                 if head === :call
                     has_changes = escape_call!(ir, pc, stmt.args, state, changes)
+                    # TODO throwness ≠ "effect-free-ness"
                     if !is_effect_free
                         for x in stmt.args
                             add_escape_change!(x, ir, ThrownEscape(pc), changes)
@@ -620,8 +442,14 @@ function find_escapes(ir::IRCode, nargs::Int)
             empty!(changes)
         end
 
+        debug_itr_counter += 1
+
         anyupdate || break
     end
+
+    # if debug_itr_counter > 2
+    #     println("[EA]: excessive iteration count found ", debug_itr_counter, " (", singleton_type(ir.argtypes[1]), ")")
+    # end
 
     return state
 end
@@ -629,56 +457,26 @@ end
 # propagate changes, and check convergence
 function propagate_changes!(state::EscapeState, changes::Changes, ir::IRCode)
     local anychanged = false
-
     for change in changes
-        if isa(change, EscapeChange)
-            anychanged |= propagate_escape_change!(state, change)
-            x, info = change
-            aliases = get_aliases(state.aliasset, x, ir)
-            if aliases !== nothing
-                for alias in aliases
-                    morechange = EscapeChange(alias, info)
-                    anychanged |= propagate_escape_change!(state, morechange)
-                end
+        x, info = change
+        if isa(x, Argument)
+            old = state.arguments[x.n]
+            new = old ⊔ info
+            if old ≠ new
+                state.arguments[x.n] = new
+                anychanged = true
             end
         else
-            anychanged |= propagate_alias_change!(state, change)
+            x = x::SSAValue
+            old = state.ssavalues[x.id]
+            new = old ⊔ info
+            if old ≠ new
+                state.ssavalues[x.id] = new
+                anychanged = true
+            end
         end
     end
-
     return anychanged
-end
-
-function propagate_escape_change!(state::EscapeState, change::EscapeChange)
-    x, info = change
-    if isa(x, Argument)
-        old = state.arguments[x.n]
-        new = old ⊔ info
-        if old ≠ new
-            state.arguments[x.n] = new
-            return true
-        end
-    else
-        x = x::SSAValue
-        old = state.ssavalues[x.id]
-        new = old ⊔ info
-        if old ≠ new
-            state.ssavalues[x.id] = new
-            return true
-        end
-    end
-    return false
-end
-
-function propagate_alias_change!(state::EscapeState, change::AliasChange)
-    x, y = change
-    xroot = find_root!(state.aliasset, x)
-    yroot = find_root!(state.aliasset, y)
-    if xroot ≠ yroot
-        union!(state.aliasset, xroot, yroot)
-        return true
-    end
-    return false
 end
 
 function add_escape_change!(@nospecialize(x), ir::IRCode, info::EscapeLattice, changes::Changes)
@@ -689,20 +487,14 @@ function add_escape_change!(@nospecialize(x), ir::IRCode, info::EscapeLattice, c
     end
 end
 
-function add_alias_change!(@nospecialize(x), @nospecialize(y), ir::IRCode, changes::Changes)
-    xidx = alias_idx(x, ir)
-    yidx = alias_idx(y, ir)
-    if xidx !== nothing && yidx !== nothing
-        push!(changes, AliasChange(xidx, yidx))
-    end
-end
-
-function escape_edges!(ir::IRCode, pc::Int, backedges::Vector{Any},
+function escape_edges!(ir::IRCode, pc::Int, edges::Vector{Any},
                        state::EscapeState, changes::Changes)
     info = state.ssavalues[pc]
-    for i in 1:length(backedges)
-        if isassigned(backedges, i)
-            add_escape_change!(backedges[i], ir, info, changes)
+    for i in 1:length(edges)
+        if isassigned(edges, i)
+            v = edges[i]
+            add_escape_change!(v, ir, info, changes)
+            escape_alias!(SSAValue(pc), v, ir, state, changes)
         end
     end
 end
@@ -711,7 +503,22 @@ function escape_val!(ir::IRCode, pc::Int, x, state::EscapeState, changes::Change
     if isdefined(x, :val)
         info = state.ssavalues[pc]
         add_escape_change!(x.val, ir, info, changes)
+        escape_alias!(SSAValue(pc), x.val, ir, state, changes)
     end
+end
+
+# lhs = rhs: propagate escape information of `rhs` to `lhs`
+# TODO maintain as an external alias set?
+function escape_alias!(@nospecialize(lhs), @nospecialize(rhs),
+    ir::IRCode, state::EscapeState, changes::Changes)
+    if isa(rhs, SSAValue)
+        vinfo = state.ssavalues[rhs.id]
+    elseif isa(rhs, Argument)
+        vinfo = state.arguments[rhs.n]
+    else
+        return
+    end
+    add_escape_change!(lhs, ir, vinfo, changes)
 end
 
 function escape_invoke!(ir::IRCode, pc::Int, args::Vector{Any},
@@ -749,16 +556,16 @@ function from_interprocedural(arginfo::EscapeLattice, retinfo::EscapeLattice, pc
     if arginfo.ThrownEscape
         EscapeSites = BitSet(pc)
     else
-        EscapeSites = EMPTY_ESCAPE_SITES
+        EscapeSites = BOT_ESCAPE_SITES
     end
     newarginfo = EscapeLattice(
         #=Analyzed=#true, #=ReturnEscape=#false, arginfo.ThrownEscape, EscapeSites,
-        # FIXME implement inter-procedural effect-analysis
+        # FIXME implement interprocedural effect-analysis
         # currently, this essentially disables the entire field analysis
         # it might be okay from the SROA point of view, since we can't remove the allocation
         # as far as it's passed to a callee anyway, but still we may want some field analysis
         # in order to stack allocate it
-        #=FieldSets=#true)
+        TOP_FIELD_SETS)
     if arginfo.EscapeSites === ARGUMENT_ESCAPE_SITES
         # if this is simply passed as the call argument, we can discard the `ReturnEscape`
         # information and just propagate the other escape information
@@ -782,40 +589,30 @@ end
 
 function escape_new!(ir::IRCode, pc::Int, args::Vector{Any},
                      state::EscapeState, changes::Changes)
-    info = state.ssavalues[pc]
-    if info == NotAnalyzed()
-        info = NoEscape()
+    objinfo = state.ssavalues[pc]
+    if objinfo == NotAnalyzed()
+        objinfo = NoEscape()
     end
-    newinfo = add_fieldsets(info, ir.stmts[pc][:type], pc, args)
-    add_escape_change!(SSAValue(pc), ir, newinfo, changes)
-
-    # propagate the escape information of this object to all its fields as well
-    # since they can be accessed through the object
-    for i in 2:length(args)
-        add_escape_change!(args[i], ir, ignore_fieldsets(info), changes)
-    end
-end
-
-function add_fieldsets(info::EscapeLattice, @nospecialize(typ), pc::Int, args::Vector{Any})
-    FieldSets = info.FieldSets
-    nfields = fieldcount_noerror(typ)
-    if isa(FieldSets, Bool) && !FieldSets
-        if nfields === nothing
-            # abstract type, can't propagate
-            FieldSets = true
-        else
-            FieldSets = FieldInfo[FieldInfo() for _ in 1:nfields]
+    FieldSets = objinfo.FieldSets
+    nargs = length(args)
+    if isa(FieldSets, Bool)
+        # the fields couldn't be analyzed precisely: propagate the escape information of this object to all its fields
+        for i in 2:nargs
+            add_escape_change!(args[i], ir, objinfo, changes)
+        end
+    else
+        @assert length(FieldSets) ≥ nargs-1
+        for i in 2:nargs
+            val = args[i]
+            for fld in FieldSets[i-1]
+                if isa(fld, SSAValue)
+                    add_escape_change!(val, ir, state.ssavalues[fld.id], changes)
+                elseif isa(fld, Argument)
+                    add_escape_change!(val, ir, state.arguments[fld.n], changes)
+                end
+            end
         end
     end
-    if !isa(FieldSets, Bool)
-        @assert isa(nfields, Int) && nfields == length(FieldSets)
-        nargs = length(args)
-        for i in 1:nfields
-            val = nargs < i+1 ? UnintializedField() : args[i+1]
-            push!(FieldSets[i], val)
-        end
-    end
-    return EscapeLattice(info, FieldSets)
 end
 
 # escape every argument `(args[6:length(args[3])])` and the name `args[1]`
@@ -875,15 +672,20 @@ function escape_builtin!(::typeof(Core.ifelse), ir::IRCode, pc::Int, args::Vecto
     f, cond, th, el = args
     info = state.ssavalues[pc]
     condt = argextype(cond, ir)
+    node = SSAValue(pc)
     if isa(condt, Const) && (cond = condt.val; isa(cond, Bool))
         if cond
             add_escape_change!(th, ir, info, changes)
+            escape_alias!(node, th, ir, state, changes)
         else
             add_escape_change!(el, ir, info, changes)
+            escape_alias!(node, el, ir, state, changes)
         end
     else
         add_escape_change!(th, ir, info, changes)
         add_escape_change!(el, ir, info, changes)
+        escape_alias!(node, th, ir, state, changes)
+        escape_alias!(node, el, ir, state, changes)
     end
 end
 
@@ -892,6 +694,7 @@ function escape_builtin!(::typeof(typeassert), ir::IRCode, pc::Int, args::Vector
     f, obj, typ = args
     info = state.ssavalues[pc]
     add_escape_change!(obj, ir, info, changes)
+    escape_alias!(SSAValue(pc), obj, ir, state, changes)
 end
 
 function escape_builtin!(::typeof(tuple), ir::IRCode, pc::Int, args::Vector{Any}, state::EscapeState, changes::Changes)
@@ -900,28 +703,36 @@ end
 
 function escape_builtin!(::typeof(getfield), ir::IRCode, pc::Int, args::Vector{Any}, state::EscapeState, changes::Changes)
     length(args) ≥ 3 || return
-    info = state.ssavalues[pc]
-    if info == NotAnalyzed()
-        info = NoEscape()
-    end
 
     obj = args[2]
     if isa(obj, SSAValue)
-        FieldSets = state.ssavalues[obj.id].FieldSets
+        objinfo = state.ssavalues[obj.id]
     elseif isa(obj, Argument)
-        FieldSets = state.arguments[obj.n].FieldSets
+        objinfo = state.arguments[obj.n]
     else
         return
     end
+    FieldSets = objinfo.FieldSets
     if isa(FieldSets, Bool)
-        if FieldSets
-            # the field can't be analyzed, escape the object itself (including all its fields) conservatively
-            add_escape_change!(obj, ir, info, changes)
-        else
-            # this field hasn't been analyzed yet, do nothing for now
+        if !FieldSets
+            typ = argextype(obj, ir)
+            nfields = fieldcount_noerror(typ)
+            if nfields !== nothing
+                FieldSets = FieldInfo[FieldInfo() for _ in 1:nfields]
+                @goto add_field_escape
+            end
         end
+        # fields aren't be known precisely: propagate this escape information to the object itself,
+        # which is the most conservative propagation
+        ssainfo = state.ssavalues[pc]
+        if ssainfo == NotAnalyzed()
+            ssainfo = NoEscape()
+        end
+        add_escape_change!(obj, ir, EscapeLattice(ssainfo, TOP_FIELD_SETS), changes)
     else
         typ = argextype(obj, ir)
+        FieldSets = copy(FieldSets)
+        @label add_field_escape
         if isa(typ, DataType)
             fld = args[3]
             fldval = try_compute_field(ir, fld)
@@ -930,18 +741,15 @@ function escape_builtin!(::typeof(getfield), ir::IRCode, pc::Int, args::Vector{A
             fidx = nothing
         end
         if fidx !== nothing
-            for x in FieldSets[fidx]
-                add_escape_change!(x, ir, info, changes)
-                add_alias_change!(x, SSAValue(pc), ir, changes)
-            end
+            # the field is known precisely: propagate this escape information to the field
+            push!(FieldSets[fidx], SSAValue(pc))
         else
-            # when the field can't be known precisely,
-            # propagate this escape information to all the fields conservatively
-            for FieldSet in FieldSets, x in FieldSet
-                add_escape_change!(x, ir, info, changes)
-                add_alias_change!(x, SSAValue(pc), ir, changes)
+            # the field isn't known precisely: propagate this escape information to all the fields
+            for FieldSet in FieldSets
+                push!(FieldSet, SSAValue(pc))
             end
         end
+        add_escape_change!(obj, ir, EscapeLattice(objinfo, FieldSets), changes)
     end
 end
 
@@ -954,32 +762,32 @@ function escape_builtin!(::typeof(setfield!), ir::IRCode, pc::Int, args::Vector{
     elseif isa(obj, Argument)
         objinfo = state.arguments[obj.n]
     else
-        if isa(obj, GlobalRef)
-            add_escape_change!(val, ir, AllEscape(), changes)
-            return
-        else
-            # XXX add_escape_change!(val, ir, AllEscape(), changes) ?
-            @goto add_ssa_escape
-        end
+        # e.g. obj::GlobalRef
+        add_escape_change!(val, ir, AllEscape(), changes)
+        return
     end
     FieldSets = objinfo.FieldSets
-    typ = argextype(obj, ir)
     if isa(FieldSets, Bool)
         if FieldSets
             # the field analysis on this object was already done and unsuccessful,
             # nothing can't be done here
+            add_escape_change!(val, ir, objinfo, changes)
         else
+            typ = argextype(obj, ir)
             nfields = fieldcount_noerror(typ)
             if nfields !== nothing
                 FieldSets = FieldInfo[FieldInfo() for _ in 1:nfields]
-                @goto add_field
+                @goto add_field_escape
             else
-                # fields aren't known precisely
-                add_escape_change!(obj, ir, EscapeLattice(objinfo, #=FieldSets=#true), changes)
+                objinfo = EscapeLattice(objinfo, TOP_FIELD_SETS)
+                add_escape_change!(obj, ir, objinfo, changes)
+                add_escape_change!(val, ir, objinfo, changes)
             end
         end
     else
-        @label add_field # the field sets have been initialized, now add the alias information
+        typ = argextype(obj, ir)
+        FieldSets = copy(FieldSets)
+        @label add_field_escape
         if isa(typ, DataType)
             fldval = try_compute_field(ir, fld)
             fidx = try_compute_fieldidx(typ, fldval)
@@ -987,22 +795,30 @@ function escape_builtin!(::typeof(setfield!), ir::IRCode, pc::Int, args::Vector{
             fidx = nothing
         end
         if fidx !== nothing
-            push!(FieldSets[fidx], val)
+            # the field is known precisely: propagate this escape information to the field
+            for fld in FieldSets[fidx]
+                if isa(fld, SSAValue)
+                    add_escape_change!(val, ir, state.ssavalues[fld.id], changes)
+                elseif isa(fld, Argument)
+                    add_escape_change!(val, ir, state.arguments[fld.n], changes)
+                end
+            end
         else
-            # when the field can't be known precisely,
-            # add this alias information to all the field sets conservatively
-            for FieldSet in FieldSets
-                push!(FieldSet, val)
+            # the field isn't known precisely: propagate this escape information to all the fields
+            for FieldSet in FieldSets, fld in FieldSet
+                if isa(fld, SSAValue)
+                    add_escape_change!(val, ir, state.ssavalues[fld.id], changes)
+                elseif isa(fld, Argument)
+                    add_escape_change!(val, ir, state.arguments[fld.n], changes)
+                end
             end
         end
         # update `obj`'s escape information with the new field sets
-        add_escape_change!(obj, ir, EscapeLattice(objinfo, FieldSets), changes)
+        objinfo = EscapeLattice(objinfo, FieldSets)
+        add_escape_change!(obj, ir, objinfo, changes)
     end
-    # propagate `obj`'s escape information to `val` as well
-    add_escape_change!(val, ir, ignore_fieldsets(objinfo), changes)
 
     # propagate escape information imposed on the return value of this `setfield!`
-    @label add_ssa_escape
     ssainfo = state.ssavalues[pc]
     if ssainfo == NotAnalyzed()
         ssainfo = NoEscape()

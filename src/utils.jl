@@ -181,7 +181,7 @@ end # register_init_hook!() do
 import .CC:
     widenconst, singleton_type
 import .EA:
-    EscapeLattice, EscapeState,
+    EscapeLattice, EscapeState, TOP_ESCAPE_SITES, BOT_FIELD_SETS,
     ⊑, ⊏, __clear_escape_cache!
 
 # in order to run a whole analysis from ground zero (e.g. for benchmarking, etc.)
@@ -190,20 +190,27 @@ __clear_caches!() = (__clear_code_cache!(); __clear_escape_cache!())
 function get_name_color(x::EscapeLattice, symbol::Bool = false)
     getname(x) = string(nameof(x))
     if x == EA.NotAnalyzed()
-        name, color = (getname(EA.NotAnalyzed), '◌'), :plain
-    elseif x == EA.NoEscape()
-        name, color = (getname(EA.NoEscape), '✓'), :green
-    elseif EA.NoEscape() ⊏ x ⊑ EA.AllReturnEscape()
-        name, color = (getname(EA.ReturnEscape), '↑'), :cyan
-    elseif EA.NoEscape() ⊏ x ⊑ EA.AllThrownEscape()
-        name, color = (getname(EA.ThrownEscape), '↓'), :yellow
-    elseif x == EA.AllEscape()
-        name, color = (getname(EA.AllEscape), 'X'), :red
+        name, color = (getname(EA.NotAnalyzed), "◌"), :plain
+    elseif EA.has_no_escape(x)
+        name, color = (getname(EA.NoEscape), "✓"), :green
+    elseif EA.NoEscape() ⊏ EA.ignore_fieldsets(x) ⊑ AllReturnEscape()
+        name, color = (getname(EA.ReturnEscape), "↑"), :cyan
+    elseif EA.NoEscape() ⊏ EA.ignore_fieldsets(x) ⊑ AllThrownEscape()
+        name, color = (getname(EA.ThrownEscape), "↓"), :yellow
+    elseif EA.has_all_escape(x)
+        name, color = (getname(EA.AllEscape), "X"), :red
     else
-        name, color = (nothing, '*'), :red
+        name, color = (nothing, "*"), :red
     end
-    return (symbol ? last(name) : first(name), color)
+    name = symbol ? last(name) : first(name)
+    if name !== nothing && EA.has_fieldsets(x)
+        name = string(name, "′")
+    end
+    return name, color
 end
+
+AllReturnEscape() = EscapeLattice(true, true, false, TOP_ESCAPE_SITES, BOT_FIELD_SETS)
+AllThrownEscape() = EscapeLattice(true, false, true, TOP_ESCAPE_SITES, BOT_FIELD_SETS)
 
 # pcs = sprint(show, collect(x.EscapeSites); context=:limit=>true)
 function Base.show(io::IO, x::EscapeLattice)
@@ -233,9 +240,6 @@ end
 Base.show(io::IO, result::EscapeResult) = print_with_info(io, result.ir, result.state, result.linfo)
 @eval Base.iterate(res::EscapeResult, state=1) =
     return state > $(fieldcount(EscapeResult)) ? nothing : (getfield(res, state), state+1)
-
-# utitlity queries
-get_aliases(result::EscapeResult, @nospecialize(key)) = EA.get_aliases(result.state.aliasset, key, result.ir)
 
 # adapted from https://github.com/JuliaDebug/LoweredCodeUtils.jl/blob/4612349432447e868cf9285f647108f43bd0a11c/src/codeedges.jl#L881-L897
 function print_with_info(io::IO,
@@ -267,7 +271,7 @@ function print_with_info(io::IO,
     function preprint(io::IO, idx::Int)
         c, color = get_name_color(ssavalues[idx], true)
         # printstyled(io, lpad(idx, nd), ' ', c, ' '; color)
-        printstyled(io, c, ' '; color)
+        printstyled(io, rpad(c, 2), ' '; color)
     end
 
     print_with_info(preprint, (args...)->nothing, io, ir)
