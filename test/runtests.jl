@@ -555,6 +555,20 @@ end
         end
         @test has_all_escape(result.state.arguments[2])
     end
+    let M = EATModule()
+        @eval M module ___xxx___
+            import ..SafeRef
+            const Rx = SafeRef("Rx")
+        end
+        result = @eval M begin
+            $analyze_escapes((String,)) do s
+                rx = getfield(___xxx___, :Rx)
+                rx[] = s
+                nothing
+            end
+        end
+        @test has_all_escape(result.state.arguments[2])
+    end
 
     # field escape
     # ------------
@@ -909,7 +923,7 @@ end
     # TODO interprocedural field analysis
     let result = analyze_escapes((SafeRef{String},)) do s
             s[] = "bar"
-            global sv = s[]
+            global g = s[]
             nothing
         end
         @test_broken !has_all_escape(result.state.arguments[2])

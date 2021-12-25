@@ -29,7 +29,7 @@ import ._TOP_MOD:     # Base definitions
 import Core.Compiler: # Core.Compiler specific definitions
     isbitstype, isexpr, is_meta_expr_head, copy, println,
     IRCode, IR_FLAG_EFFECT_FREE, widenconst, argextype, singleton_type, fieldcount_noerror,
-    try_compute_fieldidx
+    try_compute_fieldidx, hasintersect
 
 if isdefined(Core.Compiler, :try_compute_field)
     import Core.Compiler: try_compute_field
@@ -799,6 +799,10 @@ end
 function escape_builtin!(::typeof(getfield), ir::IRCode, pc::Int, args::Vector{Any}, state::EscapeState, changes::Changes)
     length(args) ≥ 3 || return nothing
     obj = args[2]
+    typ = widenconst(argextype(obj, ir))
+    if hasintersect(typ, Module) # global load
+        add_escape_change!(SSAValue(pc), ir, AllEscape(), changes)
+    end
     if isa(obj, SSAValue)
         objinfo = state.ssavalues[obj.id]
     elseif isa(obj, Argument)
@@ -810,7 +814,6 @@ function escape_builtin!(::typeof(getfield), ir::IRCode, pc::Int, args::Vector{A
     if isa(FieldEscapes, Bool)
         if !FieldEscapes
             # the fields of this object aren't analyzed yet: analyze them now
-            typ = argextype(obj, ir)
             nfields = fieldcount_noerror(typ)
             if nfields !== nothing
                 FieldEscapes = EscapeSet[EscapeSet() for _ in 1:nfields]
@@ -827,7 +830,6 @@ function escape_builtin!(::typeof(getfield), ir::IRCode, pc::Int, args::Vector{A
         add_escape_change!(obj, ir, EscapeLattice(ssainfo, TOP_FIELD_SETS), changes)
     else
         # fields are known: record the return value of this `getfield` call as a possibility that imposes escape
-        typ = argextype(obj, ir)
         FieldEscapes = copy(FieldEscapes)
         @label add_field_escape
         if isa(typ, DataType)
@@ -867,7 +869,7 @@ function escape_builtin!(::typeof(setfield!), ir::IRCode, pc::Int, args::Vector{
     if isa(FieldEscapes, Bool)
         if !FieldEscapes
             # the fields of this object aren't analyzed yet: analyze them now
-            typ = argextype(obj, ir)
+            typ = widenconst(argextype(obj, ir))
             nfields = fieldcount_noerror(typ)
             if nfields !== nothing
                 # unsuccessful field analysis: update obj's escape information with new field information
