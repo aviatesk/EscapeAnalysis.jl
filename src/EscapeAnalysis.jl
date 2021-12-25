@@ -58,8 +58,8 @@ else
     include("disjoint_set.jl")
 end
 
-const FieldInfo  = IdSet{Any}
-const FieldsInfo = Vector{FieldInfo}
+const EscapeSet  = IdSet{Any}
+const EscapeSets = Vector{EscapeSet}
 
 """
     x::EscapeLattice
@@ -70,13 +70,14 @@ A lattice for escape information, which holds the following properties:
   where `x.ReturnEscape && 0 ∈ x.EscapeSites` has the special meaning that it's visible to
   the caller simply because it's passed as call argument
 - `x.ThrownEscape::Bool`: indicates `x` may escape to somewhere through an exception
-- `x.EscapeSites::BitSet`: records program counters (SSA numbers) where `x` can escape (via any kinds of escape)
-- `x.FieldSets::Union{Vector{IdSet{Any}},Bool}`: maintains all possible values that impose
+- `x.EscapeSites::BitSet`: records SSA statements where `x` can escape via any of
+  `ReturnEscape` or `ThrownEscape`
+- `x.FieldEscapes::Union{Vector{IdSet{Any}},Bool}`: maintains all possible values that impose
   escape information on fields of `x`:
-  * `x.FieldSets === false` indicates the fields of `x` isn't analyzed yet
-  * `x.FieldSets === true` indicates the fields of `x` can't be analyzed, e.g. the type of `x`
+  * `x.FieldEscapes === false` indicates the fields of `x` isn't analyzed yet
+  * `x.FieldEscapes === true` indicates the fields of `x` can't be analyzed, e.g. the type of `x`
     is not known or is not concrete and thus its fields can't be known precisely
-  * otherwise `x.FieldSets::Vector{IdSet{Any}}` holds all the possible values that can escape
+  * otherwise `x.FieldEscapes::Vector{IdSet{Any}}` holds all the possible values that can escape
     fields of `x`, which allows EA to propagate propagate escape information imposed on a field
     of `x` to its values (by analyzing `Expr(:new, ...)` and `setfield!(x, ...)`).
 - `x.ArgEscape::Int` (not implemented yet): indicates it will escape to the caller through
@@ -102,40 +103,40 @@ struct EscapeLattice
     ReturnEscape::Bool
     ThrownEscape::Bool
     EscapeSites::BitSet
-    FieldSets::Union{FieldsInfo,Bool}
+    FieldEscapes::Union{EscapeSets,Bool}
     # TODO: ArgEscape::Int
 
     function EscapeLattice(Analyzed::Bool,
                            ReturnEscape::Bool,
                            ThrownEscape::Bool,
                            EscapeSites::BitSet,
-                           FieldSets,
+                           FieldEscapes,
                            )
-        @nospecialize FieldSets
+        @nospecialize FieldEscapes
         return new(
             Analyzed,
             ReturnEscape,
             ThrownEscape,
             EscapeSites,
-            FieldSets,
+            FieldEscapes,
             )
     end
     function EscapeLattice(x::EscapeLattice,
                            # non-concrete fields should be passed as default arguments
                            # in order to avoid allocating non-concrete `NamedTuple`s
-                           FieldSets = x.FieldSets;
+                           FieldEscapes = x.FieldEscapes;
                            Analyzed::Bool = x.Analyzed,
                            ReturnEscape::Bool = x.ReturnEscape,
                            ThrownEscape::Bool = x.ThrownEscape,
                            EscapeSites::BitSet = x.EscapeSites,
                            )
-        @nospecialize FieldSets
+        @nospecialize FieldEscapes
         return new(
             Analyzed,
             ReturnEscape,
             ThrownEscape,
             EscapeSites,
-            FieldSets,
+            FieldEscapes,
             )
     end
 end
@@ -166,7 +167,7 @@ has_thrown_escape(x::EscapeLattice, pc::Int) = has_thrown_escape(x) && pc in x.E
 has_all_escape(x::EscapeLattice) = AllEscape() ⊑ x
 
 ignore_fieldsets(x::EscapeLattice) = EscapeLattice(x, BOT_FIELD_SETS)
-has_fieldsets(x::EscapeLattice) = !isa(x.FieldSets, Bool)
+has_fieldsets(x::EscapeLattice) = !isa(x.FieldEscapes, Bool)
 
 # TODO is_sroa_eligible: consider throwness?
 
@@ -175,7 +176,7 @@ has_fieldsets(x::EscapeLattice) = !isa(x.FieldSets, Bool)
 
 Queries allocation eliminability by SROA.
 """
-is_sroa_eligible(x::EscapeLattice) = x.FieldSets !== TOP_FIELD_SETS && !has_return_escape(x)
+is_sroa_eligible(x::EscapeLattice) = x.FieldEscapes !== TOP_FIELD_SETS && !has_return_escape(x)
 
 """
     can_elide_finalizer(x::EscapeLattice, pc::Int) -> Bool
@@ -191,7 +192,7 @@ can_elide_finalizer(x::EscapeLattice, pc::Int) =
 # we need to make sure this `==` operator corresponds to lattice equality rather than object equality,
 # otherwise `propagate_changes` can't detect the convergence
 x::EscapeLattice == y::EscapeLattice = begin
-    xf, yf = x.FieldSets, y.FieldSets
+    xf, yf = x.FieldEscapes, y.FieldEscapes
     if isa(xf, Bool)
         isa(yf, Bool) || return false
         xf === yf || return false
@@ -212,14 +213,14 @@ end
 The non-strict partial order over `EscapeLattice`.
 """
 x::EscapeLattice ⊑ y::EscapeLattice = begin
-    xf, yf = x.FieldSets, y.FieldSets
+    xf, yf = x.FieldEscapes, y.FieldEscapes
     if isa(xf, Bool)
         xf && yf !== true && return false
     else
         if isa(yf, Bool)
             yf === false && return false
         else
-            xf, yf = xf::FieldsInfo, yf::FieldsInfo
+            xf, yf = xf::EscapeSets, yf::EscapeSets
             xn, yn = length(xf), length(yf)
             xn > yn && return false
             for i in 1:xn
@@ -259,23 +260,23 @@ x::EscapeLattice ⋤ y::EscapeLattice = !(y ⊑ x)
 Computes the join of `x` and `y` in the partial order defined by `EscapeLattice`.
 """
 x::EscapeLattice ⊔ y::EscapeLattice = begin
-    xf, yf = x.FieldSets, y.FieldSets
+    xf, yf = x.FieldEscapes, y.FieldEscapes
     if xf === true || yf === true
-        FieldSets = true
+        FieldEscapes = true
     elseif xf === false
-        FieldSets = yf
+        FieldEscapes = yf
     elseif yf === false
-        FieldSets = xf
+        FieldEscapes = xf
     else
-        xf, yf = xf::FieldsInfo, yf::FieldsInfo
+        xf, yf = xf::EscapeSets, yf::EscapeSets
         xn, yn = length(xf), length(yf)
         nmax, nmin = max(xn, yn), min(xn, yn)
-        FieldSets = FieldsInfo(undef, nmax)
+        FieldEscapes = EscapeSets(undef, nmax)
         for i in 1:nmax
             if i > nmin
-                FieldSets[i] = (xn > yn ? xf : yf)[i]
+                FieldEscapes[i] = (xn > yn ? xf : yf)[i]
             else
-                FieldSets[i] = xf[i] ∪ yf[i]
+                FieldEscapes[i] = xf[i] ∪ yf[i]
             end
         end
     end
@@ -284,7 +285,7 @@ x::EscapeLattice ⊔ y::EscapeLattice = begin
         x.ReturnEscape | y.ReturnEscape,
         x.ThrownEscape | y.ThrownEscape,
         x.EscapeSites ∪ y.EscapeSites,
-        FieldSets,
+        FieldEscapes,
         )
 end
 
@@ -299,7 +300,7 @@ x::EscapeLattice ⊓ y::EscapeLattice = begin
         x.ReturnEscape & y.ReturnEscape,
         x.ThrownEscape & y.ThrownEscape,
         x.EscapeSites ∩ y.EscapeSites,
-        x.FieldSets, # FIXME
+        x.FieldEscapes, # FIXME
         )
 end
 
@@ -502,7 +503,6 @@ end
 # propagate changes, and check convergence
 function propagate_changes!(state::EscapeState, changes::Changes, ir::IRCode)
     local anychanged = false
-
     for change in changes
         if isa(change, EscapeChange)
             anychanged |= propagate_escape_change!(state, change)
@@ -518,7 +518,6 @@ function propagate_changes!(state::EscapeState, changes::Changes, ir::IRCode)
             anychanged |= propagate_alias_change!(state, change)
         end
     end
-
     return anychanged
 end
 
@@ -678,9 +677,9 @@ function escape_new!(ir::IRCode, pc::Int, args::Vector{Any},
     if objinfo == NotAnalyzed()
         objinfo = NoEscape()
     end
-    FieldSets = objinfo.FieldSets
+    FieldEscapes = objinfo.FieldEscapes
     nargs = length(args)
-    if isa(FieldSets, Bool)
+    if isa(FieldEscapes, Bool)
         # the fields couldn't be analyzed precisely: directly propagate the escape information
         # of this object to all its fields (which is the most conservative option)
         for i in 2:nargs
@@ -688,15 +687,15 @@ function escape_new!(ir::IRCode, pc::Int, args::Vector{Any},
         end
     else
         # fields are known: propagate escape information imposed on recorded possibilities
-        @assert length(FieldSets) ≥ nargs-1
+        @assert length(FieldEscapes) ≥ nargs-1
         for i in 2:nargs
-            escape_field!(args[i], FieldSets[i-1], ir, state, changes)
+            escape_field!(args[i], FieldEscapes[i-1], ir, state, changes)
         end
     end
 end
 
-function escape_field!(@nospecialize(v), FieldSet::FieldInfo, ir::IRCode, state::EscapeState, changes::Changes)
-    for x in FieldSet
+function escape_field!(@nospecialize(v), FieldEscape::EscapeSet, ir::IRCode, state::EscapeState, changes::Changes)
+    for x in FieldEscape
         if isa(x, SSAValue)
             add_escape_change!(v, ir, state.ssavalues[x.id], changes)
         elseif isa(x, Argument)
@@ -807,14 +806,14 @@ function escape_builtin!(::typeof(getfield), ir::IRCode, pc::Int, args::Vector{A
     else
         return
     end
-    FieldSets = objinfo.FieldSets
-    if isa(FieldSets, Bool)
-        if !FieldSets
+    FieldEscapes = objinfo.FieldEscapes
+    if isa(FieldEscapes, Bool)
+        if !FieldEscapes
             # the fields of this object aren't analyzed yet: analyze them now
             typ = argextype(obj, ir)
             nfields = fieldcount_noerror(typ)
             if nfields !== nothing
-                FieldSets = FieldInfo[FieldInfo() for _ in 1:nfields]
+                FieldEscapes = EscapeSet[EscapeSet() for _ in 1:nfields]
                 @goto add_field_escape
             end
         end
@@ -829,7 +828,7 @@ function escape_builtin!(::typeof(getfield), ir::IRCode, pc::Int, args::Vector{A
     else
         # fields are known: record the return value of this `getfield` call as a possibility that imposes escape
         typ = argextype(obj, ir)
-        FieldSets = copy(FieldSets)
+        FieldEscapes = copy(FieldEscapes)
         @label add_field_escape
         if isa(typ, DataType)
             fld = args[3]
@@ -840,14 +839,14 @@ function escape_builtin!(::typeof(getfield), ir::IRCode, pc::Int, args::Vector{A
         end
         if fidx !== nothing
             # the field is known precisely: propagate this escape information to the field
-            push!(FieldSets[fidx], SSAValue(pc))
+            push!(FieldEscapes[fidx], SSAValue(pc))
         else
             # the field isn't known precisely: propagate this escape information to all the fields
-            for FieldSet in FieldSets
-                push!(FieldSet, SSAValue(pc))
+            for FieldEscape in FieldEscapes
+                push!(FieldEscape, SSAValue(pc))
             end
         end
-        add_escape_change!(obj, ir, EscapeLattice(objinfo, FieldSets), changes)
+        add_escape_change!(obj, ir, EscapeLattice(objinfo, FieldEscapes), changes)
     end
     return nothing
 end
@@ -864,16 +863,16 @@ function escape_builtin!(::typeof(setfield!), ir::IRCode, pc::Int, args::Vector{
         add_escape_change!(val, ir, AllEscape(), changes)
         return
     end
-    FieldSets = objinfo.FieldSets
-    if isa(FieldSets, Bool)
-        if !FieldSets
+    FieldEscapes = objinfo.FieldEscapes
+    if isa(FieldEscapes, Bool)
+        if !FieldEscapes
             # the fields of this object aren't analyzed yet: analyze them now
             typ = argextype(obj, ir)
             nfields = fieldcount_noerror(typ)
             if nfields !== nothing
                 # unsuccessful field analysis: update obj's escape information with new field information
-                FieldSets = FieldInfo[FieldInfo() for _ in 1:nfields]
-                objinfo = EscapeLattice(objinfo, FieldSets)
+                FieldEscapes = EscapeSet[EscapeSet() for _ in 1:nfields]
+                objinfo = EscapeLattice(objinfo, FieldEscapes)
                 add_escape_change!(obj, ir, objinfo, changes)
                 @goto add_field_escape
             end
@@ -896,11 +895,11 @@ function escape_builtin!(::typeof(setfield!), ir::IRCode, pc::Int, args::Vector{
         end
         if fidx !== nothing
             # the field is known precisely: propagate this escape information to the field
-            escape_field!(val, FieldSets[fidx], ir, state, changes)
+            escape_field!(val, FieldEscapes[fidx], ir, state, changes)
         else
             # the field isn't known precisely: propagate this escape information to all the fields
-            for FieldSet in FieldSets
-                escape_field!(val, FieldSet, ir, state, changes)
+            for FieldEscape in FieldEscapes
+                escape_field!(val, FieldEscape, ir, state, changes)
             end
         end
     end
