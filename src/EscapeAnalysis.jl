@@ -110,7 +110,7 @@ struct EscapeLattice
                            ReturnEscape::Bool,
                            ThrownEscape::Bool,
                            EscapeSites::BitSet,
-                           FieldEscapes,
+                           FieldEscapes::Union{EscapeSets,Bool},
                            )
         @nospecialize FieldEscapes
         return new(
@@ -124,7 +124,7 @@ struct EscapeLattice
     function EscapeLattice(x::EscapeLattice,
                            # non-concrete fields should be passed as default arguments
                            # in order to avoid allocating non-concrete `NamedTuple`s
-                           FieldEscapes = x.FieldEscapes;
+                           FieldEscapes::Union{EscapeSets,Bool} = x.FieldEscapes;
                            Analyzed::Bool = x.Analyzed,
                            ReturnEscape::Bool = x.ReturnEscape,
                            ThrownEscape::Bool = x.ThrownEscape,
@@ -494,7 +494,7 @@ function find_escapes(ir::IRCode, nargs::Int)
     end
 
     # if debug_itr_counter > 2
-    #     println("[EA]: excessive iteration count found ", debug_itr_counter, " (", singleton_type(ir.argtypes[1]), ")")
+    #     println("[EA] excessive iteration count found ", debug_itr_counter, " (", singleton_type(ir.argtypes[1]), ")")
     # end
 
     return state
