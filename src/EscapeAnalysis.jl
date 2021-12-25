@@ -52,10 +52,10 @@ else
     end
 end
 
-if !(_TOP_MOD === Core.Compiler)
-    include(@__MODULE__, "disjoint_set.jl") # TODO change this appropriately
+if _TOP_MOD !== Core.Compiler
+    include(@__MODULE__, "disjoint_set.jl")
 else
-    include("disjoint_set.jl")
+    include(@__MODULE__, "compiler/EscapeAnalysis/disjoint_set.jl")
 end
 
 const EscapeSet  = IdSet{Any}
@@ -687,8 +687,9 @@ function escape_new!(ir::IRCode, pc::Int, args::Vector{Any},
         end
     else
         # fields are known: propagate escape information imposed on recorded possibilities
-        @assert length(FieldEscapes) ≥ nargs-1
+        nf = length(FieldEscapes)
         for i in 2:nargs
+            i-1 > nf && break # may happen when e.g. ϕ-node merges values with different types
             escape_field!(args[i], FieldEscapes[i-1], ir, state, changes)
         end
     end
@@ -887,7 +888,7 @@ function escape_builtin!(::typeof(setfield!), ir::IRCode, pc::Int, args::Vector{
         add_escape_change!(val, ir, objinfo, changes)
     else
         # fields are known: propagate escape information imposed on recorded possibilities
-        typ = argextype(obj, ir)
+        typ = widenconst(argextype(obj, ir))
         @label add_field_escape
         if isa(typ, DataType)
             fldval = try_compute_field(ir, fld)
@@ -915,7 +916,7 @@ function escape_builtin!(::typeof(setfield!), ir::IRCode, pc::Int, args::Vector{
 end
 
 # NOTE define fancy package utilities when developing EA as an external package
-if !(_TOP_MOD === Core.Compiler)
+if _TOP_MOD !== Core.Compiler
     include(@__MODULE__, "utils.jl")
 end
 

@@ -713,6 +713,25 @@ end
             @test is_sroa_eligible(result.state.ssavalues[i])
         end
     end
+    # when ϕ-node merges values with different types
+    let result = analyze_escapes((Bool,String,String,String)) do cond, x, y, z
+            local out
+            if cond
+                ϕ = SafeRef(x)
+                out = ϕ[]
+            else
+                ϕ = SafeRefs(z, y)
+            end
+            return @isdefined(out) ? out : throw(ϕ)
+        end
+        r = only(findall(isreturn, result.ir.stmts.inst))
+        t = only(findall(iscall((result.ir, throw)), result.ir.stmts.inst))
+        ϕ = only(findall(isT(Union{SafeRef{String},SafeRefs{String,String}}), result.ir.stmts.type))
+        @test has_return_escape(result.state.arguments[3], r) # x
+        @test !has_return_escape(result.state.arguments[4], r) # y
+        @test has_return_escape(result.state.arguments[5], r) # z
+        @test has_thrown_escape(result.state.ssavalues[ϕ], t)
+    end
 
     # alias analysis
     # --------------
@@ -818,7 +837,7 @@ end
     # conservatively handle untyped objects
     let result = @eval analyze_escapes((Any,Any,Any,Any)) do T, x, y, z
             obj = $(Expr(:new, :T, :x, :y))
-            return getfield(obj, :field1)
+            return getfield(obj, :x)
         end
         i = findfirst(isnew, result.ir.stmts.inst)::Int
         r = findfirst(isreturn, result.ir.stmts.inst)::Int
@@ -828,8 +847,8 @@ end
     end
     let result = @eval analyze_escapes((Any,Any,Any,Any)) do T, x, y, z
             obj = $(Expr(:new, :T, :x))
-            setfield!(obj, :field1, y)
-            return getfield(obj, :field1)
+            setfield!(obj, :x, y)
+            return getfield(obj, :x)
         end
         i = findfirst(isnew, result.ir.stmts.inst)::Int
         r = findfirst(isreturn, result.ir.stmts.inst)::Int
