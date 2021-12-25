@@ -690,15 +690,21 @@ function escape_new!(ir::IRCode, pc::Int, args::Vector{Any},
         # fields are known: propagate escape information imposed on recorded possibilities
         @assert length(FieldSets) ≥ nargs-1
         for i in 2:nargs
-            val = args[i]
-            for x in FieldSets[i-1]
-                if isa(x, SSAValue)
-                    add_escape_change!(val, ir, state.ssavalues[x.id], changes)
-                elseif isa(x, Argument)
-                    add_escape_change!(val, ir, state.arguments[x.n], changes)
-                end
-            end
+            escape_field!(args[i], FieldSets[i-1], ir, state, changes)
         end
+    end
+end
+
+function escape_field!(@nospecialize(v), FieldSet::FieldInfo, ir::IRCode, state::EscapeState, changes::Changes)
+    for x in FieldSet
+        if isa(x, SSAValue)
+            add_escape_change!(v, ir, state.ssavalues[x.id], changes)
+        elseif isa(x, Argument)
+            add_escape_change!(v, ir, state.arguments[x.n], changes)
+        else
+            continue
+        end
+        add_alias_change!(v, x, ir, changes)
     end
 end
 
@@ -890,21 +896,11 @@ function escape_builtin!(::typeof(setfield!), ir::IRCode, pc::Int, args::Vector{
         end
         if fidx !== nothing
             # the field is known precisely: propagate this escape information to the field
-            for x in FieldSets[fidx]
-                if isa(x, SSAValue)
-                    add_escape_change!(val, ir, state.ssavalues[x.id], changes)
-                elseif isa(x, Argument)
-                    add_escape_change!(val, ir, state.arguments[x.n], changes)
-                end
-            end
+            escape_field!(val, FieldSets[fidx], ir, state, changes)
         else
             # the field isn't known precisely: propagate this escape information to all the fields
-            for FieldSet in FieldSets, x in FieldSet
-                if isa(x, SSAValue)
-                    add_escape_change!(val, ir, state.ssavalues[x.id], changes)
-                elseif isa(x, Argument)
-                    add_escape_change!(val, ir, state.arguments[x.n], changes)
-                end
+            for FieldSet in FieldSets
+                escape_field!(val, FieldSet, ir, state, changes)
             end
         end
     end

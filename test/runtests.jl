@@ -16,18 +16,27 @@ function iscall((ir, f), @nospecialize(x))
 end
 iscall(pred::Function, @nospecialize(x)) = Meta.isexpr(x, :call) && pred(x.args[1])
 
-mutable struct SafeRef{T}
-    x::T
-end
-Base.getindex(s::SafeRef) = getfield(s, 1)
-Base.setindex!(s::SafeRef, x) = setfield!(s, 1, x)
+let setup_ex = quote
+        mutable struct SafeRef{T}
+            x::T
+        end
+        Base.getindex(s::SafeRef) = getfield(s, 1)
+        Base.setindex!(s::SafeRef, x) = setfield!(s, 1, x)
 
-mutable struct SafeRefs{S,T}
-    x1::S
-    x2::T
+        mutable struct SafeRefs{S,T}
+            x1::S
+            x2::T
+        end
+        Base.getindex(s::SafeRefs, idx::Int) = getfield(s, idx)
+        Base.setindex!(s::SafeRefs, x, idx::Int) = setfield!(s, idx, x)
+    end
+    global function EATModule(setup_ex = setup_ex)
+        M = Module()
+        Core.eval(M, setup_ex)
+        return M
+    end
+    Core.eval(@__MODULE__, setup_ex)
 end
-Base.getindex(s::SafeRefs, idx::Int) = getfield(s, idx)
-Base.setindex!(s::SafeRefs, x, idx::Int) = setfield!(s, idx, x)
 
 @testset "EscapeAnalysis" begin
 
@@ -528,8 +537,8 @@ end
         @test has_all_escape(result.state.arguments[2]) # a
         @test has_all_escape(result.state.arguments[3]) # b
     end
-    let result = @eval Module() begin
-            const Rx = Ref{String}()
+    let result = @eval EATModule() begin
+            const Rx = SafeRef{String}("Rx")
             $analyze_escapes((String,)) do s
                 Rx[] = s
                 Core.sizeof(Rx[])
@@ -537,8 +546,8 @@ end
         end
         @test has_all_escape(result.state.arguments[2])
     end
-    let result = @eval Module() begin
-            const Rx = Ref{String}()
+    let result = @eval EATModule() begin
+            const Rx = SafeRef{String}("Rx")
             $analyze_escapes((String,)) do s
                 setfield!(Rx, :x, s)
                 Core.sizeof(Rx[])
@@ -550,7 +559,7 @@ end
     # field escape
     # ------------
 
-    # field escape doens't escape object
+    # field escape should propagate to :new arguments
     let result = analyze_escapes((String,)) do a
             o = SafeRef(a)
             f = o[]
@@ -581,6 +590,29 @@ end
         r = findfirst(isreturn, result.ir.stmts.inst)::Int
         @test has_return_escape(result.state.arguments[2], r) # a
         @test has_return_escape(result.state.arguments[3], r) # b
+        @test is_sroa_eligible(result.state.ssavalues[i])
+    end
+
+    # field escape should propagate to `setfield!` argument
+    let result = analyze_escapes((String,)) do a
+            o = SafeRef("foo")
+            o[] = a
+            f = o[]
+            return f
+        end
+        i = findfirst(isT(SafeRef{String}), result.ir.stmts.type)::Int
+        r = findfirst(isreturn, result.ir.stmts.inst)::Int
+        @test has_return_escape(result.state.arguments[2], r)
+        @test is_sroa_eligible(result.state.ssavalues[i])
+    end
+    # propagate escape information imposed on return value of `setfield!` call
+    let result = analyze_escapes((String,)) do a
+            obj = SafeRef("foo")
+            return (obj[] = a)
+        end
+        i = findfirst(isT(SafeRef{String}), result.ir.stmts.type)::Int
+        r = findfirst(isreturn, result.ir.stmts.inst)::Int
+        @test has_return_escape(result.state.arguments[2], r)
         @test is_sroa_eligible(result.state.ssavalues[i])
     end
 
@@ -671,26 +703,33 @@ end
     # alias analysis
     # --------------
 
-    # should propagate escapes through `setfield!`
-    let result = analyze_escapes((String,)) do a
-            o = SafeRef("init")
-            o[] = a
-            f = o[]
-            return f
+    # alias via getfield & Expr(:new)
+    let result = @eval EATModule() begin
+            const Rx = SafeRef("Rx")
+            $analyze_escapes((String,)) do s
+                r = SafeRef(Rx)
+                rx = r[] # rx aliased to Rx
+                rx[] = s
+                nothing
+            end
         end
-        i = findfirst(isT(SafeRef{String}), result.ir.stmts.type)::Int
-        r = findfirst(isreturn, result.ir.stmts.inst)::Int
-        @test has_return_escape(result.state.arguments[2], r)
+        i = findfirst(isnew, result.ir.stmts.inst)
+        @test has_all_escape(result.state.arguments[2])
         @test is_sroa_eligible(result.state.ssavalues[i])
     end
-    # propagate escape information imposed on return value of `setfield!` call
-    let result = analyze_escapes((String,)) do a
-            obj = SafeRef("foo")
-            return (obj[] = a)
+    # alias via getfield & setfield!
+    let result = @eval EATModule() begin
+            const Rx = SafeRef("Rx")
+            $analyze_escapes((SafeRef{String}, String,)) do _rx, s
+                r = SafeRef(_rx)
+                r[] = Rx
+                rx = r[] # rx aliased to Rx
+                rx[] = s
+                nothing
+            end
         end
-        i = findfirst(isT(SafeRef{String}), result.ir.stmts.type)::Int
-        r = findfirst(isreturn, result.ir.stmts.inst)::Int
-        @test has_return_escape(result.state.arguments[2], r)
+        i = findfirst(isnew, result.ir.stmts.inst)
+        @test has_all_escape(result.state.arguments[3])
         @test is_sroa_eligible(result.state.ssavalues[i])
     end
     # alias via typeassert
@@ -702,9 +741,9 @@ end
         @test has_all_escape(result.state.arguments[2])
     end
     # alias via ifelse
-    let result = @eval begin
-            const Lx, Rx = Ref{String}(), Ref{String}()
-            analyze_escapes((Bool,String,)) do c, a
+    let result = @eval EATModule() begin
+            const Lx, Rx = SafeRef("Lx"), SafeRef("Rx")
+            $analyze_escapes((Bool,String,)) do c, a
                 r = ifelse(c, Lx, Rx)
                 r[] = a
                 nothing
@@ -852,15 +891,15 @@ end
     # interprocedural
     # ---------------
 
-    let result = @eval Module() begin
+    let result = @eval EATModule() begin
             @noinline getx(obj) = obj[]
             $analyze_escapes((String,)) do a
-                obj = $SafeRef(a)
+                obj = SafeRef(a)
                 fld = getx(obj)
                 return fld
             end
         end
-        i = findfirst(isT(SafeRef{String}), result.ir.stmts.type)::Int
+        i = findfirst(isnew, result.ir.stmts.inst)::Int
         r = findfirst(isreturn, result.ir.stmts.inst)::Int
         @test has_return_escape(result.state.arguments[2], r)
         # NOTE we can't scalar replace `obj`, but still we may want to stack allocate it
