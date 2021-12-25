@@ -51,7 +51,7 @@ end
         result = analyze_escapes((Any,)) do a
             return a
         end
-        i = findfirst(isreturn, result.ir.stmts.inst)::Int
+        i = only(findall(isreturn, result.ir.stmts.inst))
         @test has_return_escape(result.state.arguments[1], 0) # self
         @test !has_return_escape(result.state.arguments[1], i) # self
         @test has_return_escape(result.state.arguments[2], 0) # a
@@ -69,7 +69,7 @@ end
             global gr
             return gr
         end
-        i = findfirst(has_return_escape, result.state.ssavalues)::Int
+        i = only(findall(has_return_escape, result.state.ssavalues))
         has_all_escape(result.state.ssavalues[i])
     end
     let # global store / load (https://github.com/aviatesk/EscapeAnalysis.jl/issues/56)
@@ -78,7 +78,7 @@ end
             v = s
             return v
         end
-        r = findfirst(isreturn, result.ir.stmts.inst)::Int
+        r = only(findall(isreturn, result.ir.stmts.inst))
         @test has_return_escape(result.state.arguments[2], r)
     end
     let # :gc_preserve_begin / :gc_preserve_end
@@ -115,7 +115,7 @@ end
             return c
         end
         @assert any(@nospecialize(x)->isa(x, Core.PhiNode), result.ir.stmts.inst)
-        i = findfirst(isreturn, result.ir.stmts.inst)::Int
+        i = only(findall(isreturn, result.ir.stmts.inst))
         @test has_return_escape(result.state.arguments[3], i) # a
         @test has_return_escape(result.state.arguments[4], i) # b
     end
@@ -127,8 +127,9 @@ end
             return nothing
         end
         @assert any(@nospecialize(x)->isa(x, Core.PiNode), result.ir.stmts.inst)
-        i = findfirst(isreturn, result.ir.stmts.inst)::Int
-        @test has_return_escape(result.state.arguments[2], i)
+        @test any(findall(isreturn, result.ir.stmts.inst)) do i
+            has_return_escape(result.state.arguments[2], i)
+        end
     end
     let # φᶜ-node / ϒ-node
         result = analyze_escapes((Any,String)) do a, b
@@ -142,7 +143,7 @@ end
         end
         @assert any(@nospecialize(x)->isa(x, Core.PhiCNode), result.ir.stmts.inst)
         @assert any(@nospecialize(x)->isa(x, Core.UpsilonNode), result.ir.stmts.inst)
-        i = findfirst(isreturn, result.ir.stmts.inst)::Int
+        i = only(findall(isreturn, result.ir.stmts.inst))
         @test has_return_escape(result.state.arguments[2], i)
         @test has_return_escape(result.state.arguments[3], i)
     end
@@ -164,7 +165,7 @@ end
             end
             nothing
         end
-        i = findfirst(isT(SafeRef{Bool}), result.ir.stmts.type)::Int
+        i = only(findall(isT(SafeRef{Bool}), result.ir.stmts.type))
         @test has_return_escape(result.state.ssavalues[i])
     end
     let # exception
@@ -179,31 +180,13 @@ end
     end
 end
 
-let # more complex
-    result = analyze_escapes((Bool,)) do c
-        x = Vector{SafeRef{Bool}}() # return escape
-        y = SafeRef{Bool}(c) # return escape
-        if c
-            push!(x, y)
-            return nothing
-        else
-            return x # return escape
-        end
-    end
-
-    i = findfirst(isT(Vector{SafeRef{Bool}}), result.ir.stmts.type)::Int
-    @test has_return_escape(result.state.ssavalues[i])
-    i = findfirst(isT(SafeRef{Bool}), result.ir.stmts.type)::Int
-    @test has_return_escape(result.state.ssavalues[i])
-end
-
 let # simple allocation
     result = analyze_escapes((Bool,)) do c
         mm = SafeRef{Bool}(c) # just allocated, never escapes
         return mm[] ? nothing : 1
     end
 
-    i = findfirst(isT(SafeRef{Bool}), result.ir.stmts.type)::Int
+    i = only(findall(isT(SafeRef{Bool}), result.ir.stmts.type))
     @test has_no_escape(result.state.ssavalues[i])
 end
 
@@ -217,7 +200,7 @@ end
                 broadcast_NoEscape(Ref("Hi"))
             end
         end
-        i = findfirst(isT(Base.RefValue{String}), result.ir.stmts.type)::Int
+        i = only(findall(isnew, result.ir.stmts.inst))
         @test_broken has_no_escape(result.state.ssavalues[i])
     end
     let result = @eval Module() begin
@@ -226,7 +209,7 @@ end
                 broadcast_NoEscape2(Ref("Hi"))
             end
         end
-        i = findfirst(isT(Base.RefValue{String}), result.ir.stmts.type)::Int
+        i = only(findall(isnew, result.ir.stmts.inst))
         @test_broken has_no_escape(result.state.ssavalues[i])
     end
     let result = @eval Module() begin
@@ -235,7 +218,7 @@ end
                 f_GlobalEscape_a(Ref("Hi"))
             end
         end
-        i = findfirst(isT(Base.RefValue{String}), result.ir.stmts.type)::Int
+        i = only(findall(isnew, result.ir.stmts.inst))
         @test has_return_escape(result.state.ssavalues[i]) && has_thrown_escape(result.state.ssavalues[i])
     end
     # if we can't determine the matching method statically, we should be conservative
@@ -281,7 +264,7 @@ end
             b = f_NoEscape_a(a)
             nothing
         end
-        i = findfirst(isT(Base.RefValue{String}), result.ir.stmts.type)::Int
+        i = only(findall(isT(Base.RefValue{String}), result.ir.stmts.type))
         @test has_no_escape(result.state.ssavalues[i])
 
         result = @eval M $analyze_escapes() do
@@ -289,8 +272,8 @@ end
             b = f_NoEscape_a(a)
             return a
         end
-        i = findfirst(isT(Base.RefValue{String}), result.ir.stmts.type)::Int
-        r = findfirst(isreturn, result.ir.stmts.inst)::Int
+        i = only(findall(isT(Base.RefValue{String}), result.ir.stmts.type))
+        r = only(findall(isreturn, result.ir.stmts.inst))
         @test has_return_escape(result.state.ssavalues[i], r)
     end
 
@@ -303,8 +286,8 @@ end
                 return ret                 # alias of `obj`
             end
         end
-        i = findfirst(isT(Base.RefValue{String}), result.ir.stmts.type)::Int
-        r = findfirst(isreturn, result.ir.stmts.inst)::Int
+        i = only(findall(isnew, result.ir.stmts.inst))
+        r = only(findall(isreturn, result.ir.stmts.inst))
         @test has_return_escape(result.state.ssavalues[i], r)
     end
     let result = @eval Module() begin
@@ -315,8 +298,8 @@ end
                 return ret                    # must not alias to `obj`
             end
         end
-        i = findfirst(isT(Base.RefValue{String}), result.ir.stmts.type)::Int
-        r = findfirst(isreturn, result.ir.stmts.inst)::Int
+        i = only(findall(isT(Base.RefValue{String}), result.ir.stmts.type))
+        r = only(findall(isreturn, result.ir.stmts.inst))
         @test !has_return_escape(result.state.ssavalues[i], r)
     end
 end
@@ -347,7 +330,7 @@ end
             c = m === nothing
             return c
         end
-        i = findfirst(isT(SafeRef{String}), result.ir.stmts.type)::Int
+        i = only(findall(isT(SafeRef{String}), result.ir.stmts.type))
         @test has_no_escape(result.state.ssavalues[i])
     end
 
@@ -357,7 +340,7 @@ end
             ary = $(QuoteNode(ary))
             sizeof(ary)
         end
-        i = findfirst(isT(Core.Const(ary)), result.ir.stmts.type)::Int
+        i = only(findall(isT(Core.Const(ary)), result.ir.stmts.type))
         @test has_no_escape(result.state.ssavalues[i])
     end
 
@@ -377,10 +360,13 @@ end
             r = ifelse(true, Ref("yes"), Ref(nothing))
             return r
         end
-        i = findfirst(isT(Base.RefValue{String}), result.ir.stmts.type)::Int
-        @test has_return_escape(result.state.ssavalues[i])
-        i = findfirst(isT(Base.RefValue{Nothing}), result.ir.stmts.type)::Int
-        @test has_no_escape(result.state.ssavalues[i])
+        for i in 1:length(result.ir.stmts)
+            if isnew(result.ir.stmts.inst[i]) && isT(Base.RefValue{String})(result.ir.stmts.type[i])
+                @test has_return_escape(result.state.ssavalues[i])
+            elseif isnew(result.ir.stmts.inst[i]) && isT(Base.RefValue{Nothing})(result.ir.stmts.type[i])
+                @test has_no_escape(result.state.ssavalues[i])
+            end
+        end
     end
 
     let # typeassert
@@ -388,7 +374,7 @@ end
             y = x::String
             return y
         end
-        r = findfirst(isreturn, result.ir.stmts.inst)::Int
+        r = only(findall(isreturn, result.ir.stmts.inst))
         @test has_return_escape(result.state.arguments[2], r)
         @test !has_all_escape(result.state.arguments[2])
     end
@@ -397,7 +383,7 @@ end
         result = analyze_escapes((Any,)) do x
             isdefined(x, :foo) ? x : throw("undefined")
         end
-        r = findfirst(isreturn, result.ir.stmts.inst)::Int
+        r = only(findall(isreturn, result.ir.stmts.inst))
         @test has_return_escape(result.state.arguments[2], r)
         @test !has_all_escape(result.state.arguments[2])
 
@@ -417,7 +403,7 @@ end
             end
             return r
         end
-        i = findfirst(isT(Base.RefValue{String}), result.ir.stmts.type)::Int
+        i = only(findall(isT(Base.RefValue{String}), result.ir.stmts.type))
         rts = findall(isreturn, result.ir.stmts.inst)
         @assert length(rts) == 2
         @test count(rt->has_return_escape(result.state.ssavalues[i], rt), rts) == 1
@@ -432,7 +418,7 @@ end
             rand(Bool) && return r
             return cnt
         end
-        i = findfirst(isT(Base.RefValue{String}), result.ir.stmts.type)::Int
+        i = only(findall(isT(Base.RefValue{String}), result.ir.stmts.type))
         rts = findall(isreturn, result.ir.stmts.inst) # return statement
         @assert length(rts) == 3
         @test count(rt->has_return_escape(result.state.ssavalues[i], rt), rts) == 2
@@ -447,8 +433,8 @@ end
             end
             throw(r)
         end
-        i = findfirst(isT(Base.RefValue{String}), result.ir.stmts.type)::Int
-        t = findfirst(isthrow, result.ir.stmts.inst)::Int
+        i = only(findall(isT(Base.RefValue{String}), result.ir.stmts.type))
+        t = only(findall(isthrow, result.ir.stmts.inst))
         @test length(result.state.ssavalues[i].EscapeSites) == 1
         @test has_thrown_escape(result.state.ssavalues[i], t)
     end
@@ -466,7 +452,7 @@ end
             end
             return
         end
-        i = findfirst(isT(Base.RefValue{String}), result.ir.stmts.type)::Int
+        i = only(findall(isT(Base.RefValue{String}), result.ir.stmts.type))
         ts = findall(isthrow, result.ir.stmts.inst)
         @assert length(ts) == 2
         @test all(t->has_thrown_escape(result.state.ssavalues[i], t), ts)
@@ -482,7 +468,7 @@ end
             global g = SafeRef{Any}(a)
             nothing
         end
-        i = findfirst(isT(SafeRef{Any}), result.ir.stmts.type)::Int
+        i = only(findall(isnew, result.ir.stmts.inst))
         @test has_all_escape(result.state.ssavalues[i])
         @test has_all_escape(result.state.arguments[2])
     end
@@ -490,7 +476,7 @@ end
             global g = (a,)
             nothing
         end
-        i = findfirst(issubT(Tuple), result.ir.stmts.type)::Int
+        i = only(findall(issubT(Tuple), result.ir.stmts.type))
         @test has_all_escape(result.state.ssavalues[i])
         @test has_all_escape(result.state.arguments[2])
     end
@@ -499,8 +485,8 @@ end
             global g = SafeRef(o0)
             nothing
         end
-        i0 = findfirst(isT(SafeRef{Any}), result.ir.stmts.type)::Int
-        i1 = findfirst(isT(SafeRef{SafeRef{Any}}), result.ir.stmts.type)::Int
+        i0 = only(findall(isT(SafeRef{Any}), result.ir.stmts.type))
+        i1 = only(findall(isT(SafeRef{SafeRef{Any}}), result.ir.stmts.type))
         @test has_all_escape(result.state.ssavalues[i0])
         @test has_all_escape(result.state.ssavalues[i1])
         @test has_all_escape(result.state.arguments[2])
@@ -522,7 +508,7 @@ end
             r[] = a
             nothing
         end
-        i = findfirst(isT(SafeRef{Any}), result.ir.stmts.type)::Int
+        i = only(findall(isnew, result.ir.stmts.inst))
         @test has_all_escape(result.state.ssavalues[i])
         @test has_all_escape(result.state.arguments[2])
     end
@@ -532,7 +518,7 @@ end
             r[] = b
             nothing
         end
-        i = findfirst(isT(SafeRef{Any}), result.ir.stmts.type)::Int
+        i = only(findall(isnew, result.ir.stmts.inst))
         @test has_all_escape(result.state.ssavalues[i])
         @test has_all_escape(result.state.arguments[2]) # a
         @test has_all_escape(result.state.arguments[3]) # b
@@ -579,8 +565,8 @@ end
             f = o[]
             return f
         end
-        i = findfirst(isT(SafeRef{String}), result.ir.stmts.type)::Int
-        r = findfirst(isreturn, result.ir.stmts.inst)::Int
+        i = only(findall(isT(SafeRef{String}), result.ir.stmts.type))
+        r = only(findall(isreturn, result.ir.stmts.inst))
         @test has_return_escape(result.state.arguments[2], r)
         @test is_sroa_eligible(result.state.ssavalues[i])
     end
@@ -589,8 +575,8 @@ end
             f = t[1]
             return f
         end
-        i = findfirst(t->t<:Tuple, result.ir.stmts.type)::Int
-        r = findfirst(isreturn, result.ir.stmts.inst)::Int
+        i = only(findall(t->t<:Tuple, result.ir.stmts.type))
+        r = only(findall(isreturn, result.ir.stmts.inst))
         @test has_return_escape(result.state.arguments[2], r)
         @test is_sroa_eligible(result.state.ssavalues[i])
     end
@@ -600,8 +586,8 @@ end
             fld2 = obj[2]
             return (fld1, fld2)
         end
-        i = findfirst(isT(SafeRefs{String,String}), result.ir.stmts.type)::Int
-        r = findfirst(isreturn, result.ir.stmts.inst)::Int
+        i = only(findall(isT(SafeRefs{String,String}), result.ir.stmts.type))
+        r = only(findall(isreturn, result.ir.stmts.inst))
         @test has_return_escape(result.state.arguments[2], r) # a
         @test has_return_escape(result.state.arguments[3], r) # b
         @test is_sroa_eligible(result.state.ssavalues[i])
@@ -614,8 +600,8 @@ end
             f = o[]
             return f
         end
-        i = findfirst(isT(SafeRef{String}), result.ir.stmts.type)::Int
-        r = findfirst(isreturn, result.ir.stmts.inst)::Int
+        i = only(findall(isT(SafeRef{String}), result.ir.stmts.type))
+        r = only(findall(isreturn, result.ir.stmts.inst))
         @test has_return_escape(result.state.arguments[2], r)
         @test is_sroa_eligible(result.state.ssavalues[i])
     end
@@ -624,8 +610,8 @@ end
             obj = SafeRef("foo")
             return (obj[] = a)
         end
-        i = findfirst(isT(SafeRef{String}), result.ir.stmts.type)::Int
-        r = findfirst(isreturn, result.ir.stmts.inst)::Int
+        i = only(findall(isT(SafeRef{String}), result.ir.stmts.type))
+        r = only(findall(isreturn, result.ir.stmts.inst))
         @test has_return_escape(result.state.arguments[2], r)
         @test is_sroa_eligible(result.state.ssavalues[i])
     end
@@ -636,24 +622,30 @@ end
             o2 = SafeRef(o1)
             return o2[]
         end
-        i1 = findfirst(isT(SafeRef{String}), result.ir.stmts.type)::Int
-        i2 = findfirst(isT(SafeRef{SafeRef{String}}), result.ir.stmts.type)::Int
-        r = findfirst(isreturn, result.ir.stmts.inst)::Int
+        r = only(findall(isreturn, result.ir.stmts.inst))
         @test has_return_escape(result.state.arguments[2], r)
-        @test has_return_escape(result.state.ssavalues[i1], r)
-        @test is_sroa_eligible(result.state.ssavalues[i2])
+        for i in 1:length(result.ir.stmts)
+            if isnew(result.ir.stmts.inst[i]) && isT(SafeRef{String})(result.ir.stmts.type[i])
+                @test has_return_escape(result.state.ssavalues[i], r)
+            elseif isnew(result.ir.stmts.inst[i]) && isT(SafeRef{SafeRef{String}})(result.ir.stmts.type[i])
+                @test is_sroa_eligible(result.state.ssavalues[i])
+            end
+        end
     end
     let result = analyze_escapes((String,)) do a
             o1 = (a,)
             o2 = (o1,)
             return o2[1]
         end
-        i1 = findfirst(isT(Tuple{String}), result.ir.stmts.type)::Int
-        i2 = findfirst(isT(Tuple{Tuple{String}}), result.ir.stmts.type)::Int
-        r = findfirst(isreturn, result.ir.stmts.inst)::Int
+        r = only(findall(isreturn, result.ir.stmts.inst))
         @test has_return_escape(result.state.arguments[2], r)
-        @test has_return_escape(result.state.ssavalues[i1], r)
-        @test is_sroa_eligible(result.state.ssavalues[i2])
+        for i in 1:length(result.ir.stmts)
+            if isnew(result.ir.stmts.inst[i]) && isT(Tuple{String})(result.ir.stmts.type[i])
+                @test has_return_escape(result.state.ssavalues[i], r)
+            elseif isnew(result.ir.stmts.inst[i]) && isT(Tuple{Tuple{String}})(result.ir.stmts.type[i])
+                @test is_sroa_eligible(result.state.ssavalues[i])
+            end
+        end
     end
     let result = analyze_escapes((String,)) do a
             o1  = SafeRef(a)
@@ -662,7 +654,7 @@ end
             a′  = o1′[]
             return a′
         end
-        r = findfirst(isreturn, result.ir.stmts.inst)::Int
+        r = only(findall(isreturn, result.ir.stmts.inst))
         @test has_return_escape(result.state.arguments[2], r)
         for i in findall(isnew, result.ir.stmts.inst)
             @test is_sroa_eligible(result.state.ssavalues[i])
@@ -671,8 +663,8 @@ end
     let result = analyze_escapes((String,)) do x
             broadcast(identity, Ref(x))
         end
-        i = findfirst(isT(Base.RefValue{String}), result.ir.stmts.type)::Int
-        r = findfirst(isreturn, result.ir.stmts.inst)::Int
+        i = only(findall(isnew, result.ir.stmts.inst))
+        r = only(findall(isreturn, result.ir.stmts.inst))
         @test has_return_escape(result.state.arguments[2], r)
         @test is_sroa_eligible(result.state.ssavalues[i])
     end
@@ -686,10 +678,10 @@ end
             end
             return ϕ[]
         end
-        r = findfirst(isreturn, result.ir.stmts.inst)::Int
+        r = only(findall(isreturn, result.ir.stmts.inst))
         @test has_return_escape(result.state.arguments[3], r) # x
         @test has_return_escape(result.state.arguments[4], r) # y
-        i = findfirst(isϕ, result.ir.stmts.inst)::Int
+        i = only(findall(isϕ, result.ir.stmts.inst))
         @test is_sroa_eligible(result.state.ssavalues[i])
         for i in findall(isnew, result.ir.stmts.inst)
             @test is_sroa_eligible(result.state.ssavalues[i])
@@ -703,7 +695,7 @@ end
             end
             return ϕ1[], ϕ2[]
         end
-        r = findfirst(isreturn, result.ir.stmts.inst)::Int
+        r = only(findall(isreturn, result.ir.stmts.inst))
         @test has_return_escape(result.state.arguments[3], r) # x
         @test has_return_escape(result.state.arguments[4], r) # y
         for i in findall(isϕ, result.ir.stmts.inst)
@@ -794,10 +786,11 @@ end
             ϕ2[] = x
             return ϕ1[]
         end
-        r = findfirst(isreturn, result.ir.stmts.inst)::Int
+        r = only(findall(isreturn, result.ir.stmts.inst))
         @test has_return_escape(result.state.arguments[3], r) # x
-        i = findfirst(isϕ, result.ir.stmts.inst)::Int
-        @test is_sroa_eligible(result.state.ssavalues[i])
+        for i in findall(isϕ, result.ir.stmts.inst)
+            @test is_sroa_eligible(result.state.ssavalues[i])
+        end
         for i in findall(isnew, result.ir.stmts.inst)
             @test is_sroa_eligible(result.state.ssavalues[i])
         end
@@ -811,10 +804,11 @@ end
             cond2 && (ϕ2[] = x)
             return ϕ1[]
         end
-        r = findfirst(isreturn, result.ir.stmts.inst)::Int
+        r = only(findall(isreturn, result.ir.stmts.inst))
         @test has_return_escape(result.state.arguments[4], r) # x
-        i = findfirst(isϕ, result.ir.stmts.inst)::Int
-        @test is_sroa_eligible(result.state.ssavalues[i])
+        for i in findall(isϕ, result.ir.stmts.inst)
+            @test is_sroa_eligible(result.state.ssavalues[i])
+        end
         for i in findall(isnew, result.ir.stmts.inst)
             @test is_sroa_eligible(result.state.ssavalues[i])
         end
@@ -839,8 +833,8 @@ end
             obj = $(Expr(:new, :T, :x, :y))
             return getfield(obj, :x)
         end
-        i = findfirst(isnew, result.ir.stmts.inst)::Int
-        r = findfirst(isreturn, result.ir.stmts.inst)::Int
+        i = only(findall(isnew, result.ir.stmts.inst))
+        r = only(findall(isreturn, result.ir.stmts.inst))
         @test #=x=# has_return_escape(result.state.arguments[3], r)
         @test #=y=# has_return_escape(result.state.arguments[4], r)
         @test #=z=# !has_return_escape(result.state.arguments[5], r)
@@ -850,8 +844,8 @@ end
             setfield!(obj, :x, y)
             return getfield(obj, :x)
         end
-        i = findfirst(isnew, result.ir.stmts.inst)::Int
-        r = findfirst(isreturn, result.ir.stmts.inst)::Int
+        i = only(findall(isnew, result.ir.stmts.inst))
+        r = only(findall(isreturn, result.ir.stmts.inst))
         @test #=x=# has_return_escape(result.state.arguments[3], r)
         @test #=y=# has_return_escape(result.state.arguments[4], r)
         @test #=z=# !has_return_escape(result.state.arguments[5], r)
@@ -863,8 +857,8 @@ end
             obj = SafeRef(a)
             return getfield(obj, fld)
         end
-        i = findfirst(isT(SafeRef{String}), result.ir.stmts.type)::Int
-        r = findfirst(isreturn, result.ir.stmts.inst)::Int
+        i = only(findall(isT(SafeRef{String}), result.ir.stmts.type))
+        r = only(findall(isreturn, result.ir.stmts.inst))
         @test has_return_escape(result.state.arguments[2], r) # a
         @test is_sroa_eligible(result.state.ssavalues[i]) # obj
     end
@@ -872,8 +866,8 @@ end
             obj = SafeRefs(a, b)
             return getfield(obj, fld) # should escape both `a` and `b`
         end
-        i = findfirst(isT(SafeRefs{String,String}), result.ir.stmts.type)::Int
-        r = findfirst(isreturn, result.ir.stmts.inst)::Int
+        i = only(findall(isT(SafeRefs{String,String}), result.ir.stmts.type))
+        r = only(findall(isreturn, result.ir.stmts.inst))
         @test has_return_escape(result.state.arguments[2], r) # a
         @test has_return_escape(result.state.arguments[3], r) # b
         @test is_sroa_eligible(result.state.ssavalues[i]) # obj
@@ -882,8 +876,8 @@ end
             obj = SafeRefs(a, b)
             return obj[idx] # should escape both `a` and `b`
         end
-        i = findfirst(isT(SafeRefs{String,String}), result.ir.stmts.type)::Int
-        r = findfirst(isreturn, result.ir.stmts.inst)::Int
+        i = only(findall(isT(SafeRefs{String,String}), result.ir.stmts.type))
+        r = only(findall(isreturn, result.ir.stmts.inst))
         @test has_return_escape(result.state.arguments[2], r) # a
         @test has_return_escape(result.state.arguments[3], r) # b
         @test is_sroa_eligible(result.state.ssavalues[i]) # obj
@@ -893,8 +887,8 @@ end
             setfield!(obj, fld, a)
             return obj[2] # should escape `a`
         end
-        i = findfirst(isT(SafeRefs{String,String}), result.ir.stmts.type)::Int
-        r = findfirst(isreturn, result.ir.stmts.inst)::Int
+        i = only(findall(isT(SafeRefs{String,String}), result.ir.stmts.type))
+        r = only(findall(isreturn, result.ir.stmts.inst))
         @test has_return_escape(result.state.arguments[2], r) # a
         @test !has_return_escape(result.state.arguments[3], r) # b
         @test is_sroa_eligible(result.state.ssavalues[i]) # obj
@@ -904,8 +898,8 @@ end
             setfield!(obj, fld, a)
             return obj[1] # this should escape `a`
         end
-        i = findfirst(isT(SafeRefs{String,String}), result.ir.stmts.type)::Int
-        r = findfirst(isreturn, result.ir.stmts.inst)::Int
+        i = only(findall(isT(SafeRefs{String,String}), result.ir.stmts.type))
+        r = only(findall(isreturn, result.ir.stmts.inst))
         @test has_return_escape(result.state.arguments[2], r) # a
         @test is_sroa_eligible(result.state.ssavalues[i]) # obj
     end
@@ -914,8 +908,8 @@ end
             obj[idx] = a
             return obj[2] # should escape `a`
         end
-        i = findfirst(isT(SafeRefs{String,String}), result.ir.stmts.type)::Int
-        r = findfirst(isreturn, result.ir.stmts.inst)::Int
+        i = only(findall(isT(SafeRefs{String,String}), result.ir.stmts.type))
+        r = only(findall(isreturn, result.ir.stmts.inst))
         @test has_return_escape(result.state.arguments[2], r) # a
         @test !has_return_escape(result.state.arguments[3], r) # b
         @test is_sroa_eligible(result.state.ssavalues[i]) # obj
@@ -932,8 +926,8 @@ end
                 return fld
             end
         end
-        i = findfirst(isnew, result.ir.stmts.inst)::Int
-        r = findfirst(isreturn, result.ir.stmts.inst)::Int
+        i = only(findall(isnew, result.ir.stmts.inst))
+        r = only(findall(isreturn, result.ir.stmts.inst))
         @test has_return_escape(result.state.arguments[2], r)
         # NOTE we can't scalar replace `obj`, but still we may want to stack allocate it
         @test_broken is_sroa_eligible(result.state.ssavalues[i])
@@ -956,8 +950,8 @@ end
             r[] = b
             return r[]
         end
-        i = findfirst(isT(SafeRef{Any}), result.ir.stmts.type)::Int
-        r = findfirst(isreturn, result.ir.stmts.inst)::Int
+        i = only(findall(isnew, result.ir.stmts.inst))
+        r = only(findall(isreturn, result.ir.stmts.inst))
         @test_broken !has_return_escape(result.state.arguments[2], r) # a
         @test has_return_escape(result.state.arguments[3], r) # b
         @test is_sroa_eligible(result.state.ssavalues[i])
@@ -968,8 +962,8 @@ end
             r[] = b
             return r[]
         end
-        i = findfirst(isT(SafeRef{Any}), result.ir.stmts.type)::Int
-        r = findfirst(isreturn, result.ir.stmts.inst)::Int
+        i = only(findall(isnew, result.ir.stmts.inst))
+        r = only(findall(isreturn, result.ir.stmts.inst))
         @test_broken !has_return_escape(result.state.arguments[2], r) # a
         @test has_return_escape(result.state.arguments[3], r) # b
         @test is_sroa_eligible(result.state.ssavalues[i])
@@ -984,11 +978,13 @@ end
                 return nothing
             end
         end
-        i = findfirst(isT(SafeRef{Any}), result.ir.stmts.type)::Int
-        r = findfirst(isreturn, result.ir.stmts.inst)::Int
+        i = only(findall(isnew, result.ir.stmts.inst))
+        @test is_sroa_eligible(result.state.ssavalues[i])
+        r = only(findall(result.ir.stmts.inst) do @nospecialize x
+            isreturn(x) && isa(x.val, Core.SSAValue)
+        end)
         @test has_return_escape(result.state.arguments[2], r) # a
         @test_broken !has_return_escape(result.state.arguments[3], r) # b
-        @test is_sroa_eligible(result.state.ssavalues[i])
     end
 end
 
@@ -1050,8 +1046,8 @@ end
             f = o[]
             return f
         end
-        i = findfirst(isT(SafeRef{Int}), result.ir.stmts.type)::Int
-        r = findfirst(isreturn, result.ir.stmts.inst)::Int
+        i = only(findall(isT(SafeRef{Int}), result.ir.stmts.type))
+        r = only(findall(isreturn, result.ir.stmts.inst))
         @test !has_return_escape(result.state.ssavalues[i], r)
     end
 
@@ -1060,8 +1056,8 @@ end
             t = tuple(a, b)
             return t
         end
-        i = findfirst(issubT(Tuple), result.ir.stmts.type)::Int
-        r = findfirst(isreturn, result.ir.stmts.inst)::Int
+        i = only(findall(issubT(Tuple), result.ir.stmts.type))
+        r = only(findall(isreturn, result.ir.stmts.inst))
         @test !has_return_escape(result.state.arguments[2], r)
         @test has_return_escape(result.state.arguments[3], r)
     end
