@@ -280,11 +280,22 @@ x::EscapeLattice ⊔ y::EscapeLattice = begin
             end
         end
     end
+    # try to avoid new allocations as minor optimizations
+    xe, ye = x.EscapeSites, y.EscapeSites
+    if xe === TOP_ESCAPE_SITES || ye === TOP_ESCAPE_SITES
+        EscapeSites = TOP_ESCAPE_SITES
+    elseif xe === BOT_ESCAPE_SITES
+        EscapeSites = ye
+    elseif ye === BOT_ESCAPE_SITES
+        EscapeSites = xe
+    else
+        EscapeSites = xe ∪ ye
+    end
     return EscapeLattice(
         x.Analyzed | y.Analyzed,
         x.ReturnEscape | y.ReturnEscape,
         x.ThrownEscape | y.ThrownEscape,
-        x.EscapeSites ∪ y.EscapeSites,
+        EscapeSites,
         FieldEscapes,
         )
 end
