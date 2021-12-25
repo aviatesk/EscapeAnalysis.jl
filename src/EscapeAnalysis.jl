@@ -18,18 +18,8 @@ const _TOP_MOD = ccall(:jl_base_relative_to, Any, (Any,), EscapeAnalysis)::Modul
 import ._TOP_MOD: ==
 # usings
 import Core:
-    MethodInstance,
-    Const,
-    Argument,
-    SSAValue,
-    PiNode,
-    PhiNode,
-    UpsilonNode,
-    PhiCNode,
-    ReturnNode,
-    GotoNode,
-    GotoIfNot,
-    SimpleVector
+    MethodInstance, Const, Argument, SSAValue, PiNode, PhiNode, UpsilonNode, PhiCNode,
+    ReturnNode, GotoNode, GotoIfNot, SimpleVector
 import ._TOP_MOD:     # Base definitions
     @eval, @assert, @nospecialize, @__MODULE__, Vector, BitSet, IdDict,
     !, !==, ≠, +, -, ≤, &, |, include, error, missing, println,
@@ -364,28 +354,6 @@ function escape_val!(ir::IRCode, pc::Int, x, state::EscapeState, changes::Change
     end
 end
 
-function escape_call!(ir::IRCode, pc::Int, args::Vector{Any},
-                      state::EscapeState, changes::Changes)
-    ft = argextype(first(args), ir, ir.sptypes, ir.argtypes)
-    f = singleton_type(ft)
-    if isa(f, Core.IntrinsicFunction)
-        return false # COMBAK we may break soundness here, e.g. `pointerref`
-    end
-    result = escape_builtin!(f, ir, pc, args, state, changes)
-    if result === false
-        return false # nothing to propagate
-    elseif result === missing
-        # if this call hasn't been handled by any of pre-defined handlers,
-        # we escape this call conservatively
-        for i in 2:length(args)
-            add_change!(args[i], ir, AllEscape(), changes)
-        end
-        return true
-    else
-        return true
-    end
-end
-
 function escape_invoke!(ir::IRCode, pc::Int, args::Vector{Any},
                         state::EscapeState, changes::Changes)
     linfo = first(args)::MethodInstance
@@ -471,6 +439,28 @@ end
 # NOTE error cases will be handled in `find_escapes` anyway, so we don't need to take care of them below
 # TODO implement more builtins, make them more accurate
 # TODO use `T_IFUNC`-like logic and don't not abuse dispatch ?
+
+function escape_call!(ir::IRCode, pc::Int, args::Vector{Any},
+                      state::EscapeState, changes::Changes)
+    ft = argextype(first(args), ir, ir.sptypes, ir.argtypes)
+    f = singleton_type(ft)
+    if isa(f, Core.IntrinsicFunction)
+        return false # COMBAK we may break soundness here, e.g. `pointerref`
+    end
+    result = escape_builtin!(f, ir, pc, args, state, changes)
+    if result === false
+        return false # nothing to propagate
+    elseif result === missing
+        # if this call hasn't been handled by any of pre-defined handlers,
+        # we escape this call conservatively
+        for i in 2:length(args)
+            add_change!(args[i], ir, AllEscape(), changes)
+        end
+        return true
+    else
+        return true
+    end
+end
 
 escape_builtin!(@nospecialize(f), _...) = return missing
 
