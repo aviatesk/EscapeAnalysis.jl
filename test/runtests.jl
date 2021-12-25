@@ -973,6 +973,50 @@ end
     end
 end
 
+# demonstrate the power of our field / alias analysis with a realistic end to end example
+abstract type AbstractPoint{T} end
+mutable struct MPoint{T} <: AbstractPoint{T}
+    x::T
+    y::T
+end
+add(a::P, b::P) where P<:AbstractPoint = P(a.x + b.x, a.y + b.y)
+function compute(T, ax, ay, bx, by)
+    a = T(ax, ay)
+    b = T(bx, by)
+    for i in 0:(100000000-1)
+        a = add(add(a, b), b)
+    end
+    a.x, a.y
+end
+function compute(a, b)
+    for i in 0:(100000000-1)
+        a = add(add(a, b), b)
+    end
+    a.x, a.y
+end
+function compute!(a, b)
+    for i in 0:(100000000-1)
+        a′ = add(add(a, b), b)
+        a.x = a′.x
+        a.y = a′.y
+    end
+end
+let result = @analyze_escapes compute(MPoint, 1+.5im, 2+.5im, 2+.25im, 4+.75im)
+    for i in findall(isnew, result.ir.stmts.inst)
+        @test is_sroa_eligible(result.state.ssavalues[i])
+    end
+end
+let result = @analyze_escapes compute(MPoint(1+.5im, 2+.5im), MPoint(2+.25im, 4+.75im))
+    for i in findall(isnew, result.ir.stmts.inst)
+        @test is_sroa_eligible(result.state.ssavalues[i])
+    end
+end
+let result = @analyze_escapes compute!(MPoint(1+.5im, 2+.5im), MPoint(2+.25im, 4+.75im))
+    for i in findall(isnew, result.ir.stmts.inst)
+        @test is_sroa_eligible(result.state.ssavalues[i])
+    end
+end
+
 # demonstrate a simple type level analysis can sometimes improve the analysis accuracy
 # by compensating the lack of yet unimplemented analyses
 @testset "special-casing bitstype" begin
