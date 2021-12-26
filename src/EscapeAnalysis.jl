@@ -2,6 +2,7 @@ baremodule EscapeAnalysis
 
 export
     find_escapes,
+    GLOBAL_ESCAPE_CACHE,
     has_not_analyzed,
     has_no_escape,
     has_return_escape,
