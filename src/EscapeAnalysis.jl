@@ -415,13 +415,13 @@ if _TOP_MOD !== Core.Compiler
         ir::IRCode # we preserve `IRCode` as well just for debugging purpose
     end
     const GLOBAL_ESCAPE_CACHE = IdDict{MethodInstance,EscapeCache}()
-    estate_from_ecache(ecache::EscapeCache) = ecache.state
-    __clear_escape_cache!() = empty!(GLOBAL_ESCAPE_CACHE)
+    argescapes_from_cache(cache::EscapeCache) =
+        cache.state.escapes[1:cache.state.nargs]
 else
-    const GLOBAL_ESCAPE_CACHE = IdDict{MethodInstance,EscapeState}()
-    estate_from_ecache(cache::EscapeState) = cache
-    __clear_escape_cache!() = empty!(GLOBAL_ESCAPE_CACHE)
+    const GLOBAL_ESCAPE_CACHE = IdDict{MethodInstance,Vector{EscapeLattice}}()
+    argescapes_from_cache(cache::Vector{EscapeLattice}) = cache
 end
+__clear_escape_cache!() = empty!(GLOBAL_ESCAPE_CACHE)
 
 const EscapeChange = Pair{Int,EscapeLattice}
 const AliasChange  = Pair{Int,Int}
@@ -665,7 +665,7 @@ function escape_invoke!(astate::AnalysisState, pc::Int, args::Vector{Any})
             add_escape_change!(astate, x, AllEscape())
         end
     else
-        linfo_estate = estate_from_ecache(cache)
+        argescapes = argescapes_from_cache(cache)
         retinfo = astate.estate[SSAValue(pc)] # escape information imposed on the call statement
         method = linfo.def::Method
         nargs = Int(method.nargs)
@@ -676,7 +676,7 @@ function escape_invoke!(astate::AnalysisState, pc::Int, args::Vector{Any})
             else # handle isva signature: COMBAK will this be invalid once we take alias information into account ?
                 argi = nargs
             end
-            arginfo = linfo_estate[Argument(argi)]
+            arginfo = argescapes[argi]
             isempty(arginfo.ReturnEscape) && invalid_escape_invoke!(astate, linfo, linfo_estate)
             info = from_interprocedural(arginfo, retinfo, pc)
             add_escape_change!(astate, arg, info)
