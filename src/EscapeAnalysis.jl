@@ -362,7 +362,7 @@ Tries to convert analyzable IR element `x::Union{Argument,SSAValue}` to
 its unique identifier number `xidx` that is valid in the analysis context of `estate`.
 Returns `nothing` if `x` isn't maintained by `estate` and thus unanalyzable (e.g. `x::GlobalRef`).
 
-`irval` can be used as an inverse function of `iridx`, i.e.
+`irval` is the inverse function of `iridx` (not formally), i.e.
 `irval(iridx(x::Union{Argument,SSAValue}, state), state) === x`.
 """
 function iridx(@nospecialize(x), estate::EscapeState)
@@ -383,7 +383,7 @@ end
 Converts its unique identifier number `xidx` to the original IR element `x::Union{Argument,SSAValue}`
 that is analyzable in the context of `estate`.
 
-`iridx` can be used as an inverse function of `irval`, i.e.
+`iridx` is the inverse function of `irval` (not formally), i.e.
 `iridx(irval(xidx, state), state) === xidx`.
 """
 function irval(xidx::Int, estate::EscapeState)
