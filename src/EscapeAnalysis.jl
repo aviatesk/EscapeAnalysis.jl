@@ -659,9 +659,9 @@ end
 function escape_invoke!(astate::AnalysisState, pc::Int, args::Vector{Any})
     linfo = first(args)::MethodInstance
     cache = get(GLOBAL_ESCAPE_CACHE, linfo, nothing)
-    args = args[2:end]
     if cache === nothing
-        for x in args
+        for i in 2:length(args)
+            x = args[i]
             add_escape_change!(astate, x, AllEscape())
         end
     else
@@ -669,10 +669,10 @@ function escape_invoke!(astate::AnalysisState, pc::Int, args::Vector{Any})
         retinfo = astate.estate[SSAValue(pc)] # escape information imposed on the call statement
         method = linfo.def::Method
         nargs = Int(method.nargs)
-        for i in 1:length(args)
+        for i in 2:length(args)
             arg = args[i]
-            if i ≤ nargs
-                argi = i
+            if i-1 ≤ nargs
+                argi = i-1
             else # handle isva signature: COMBAK will this be invalid once we take alias information into account ?
                 argi = nargs
             end
@@ -902,7 +902,8 @@ end
 function escape_builtin!(::typeof(setfield!), astate::AnalysisState, pc::Int, args::Vector{Any})
     length(args) ≥ 4 || return nothing
     ir, estate = astate.ir, astate.estate
-    obj, fld, val = args[2:4]
+    obj = args[2]
+    val = args[4]
     if isa(obj, SSAValue) || isa(obj, Argument)
         objinfo = estate[obj]
     else
@@ -935,6 +936,7 @@ function escape_builtin!(::typeof(setfield!), astate::AnalysisState, pc::Int, ar
         typ = widenconst(argextype(obj, ir))
         @label add_field_escape
         if isa(typ, DataType)
+            fld = args[3]
             fldval = try_compute_field(ir, fld)
             fidx = try_compute_fieldidx(typ, fldval)
         else
