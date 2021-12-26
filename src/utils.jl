@@ -178,11 +178,10 @@ end # register_init_hook!() do
 # printing
 # --------
 
-import .CC:
-    widenconst, singleton_type
+import Core: Argument, SSAValue
+import .CC: widenconst, singleton_type
 import .EA:
-    EscapeLattice, EscapeState, TOP_ESCAPE_SITES, BOT_FIELD_SETS,
-    ⊑, ⊏, __clear_escape_cache!
+    EscapeLattice, EscapeState, TOP_ESCAPE_SITES, BOT_FIELD_SETS, ⊑, ⊏, __clear_escape_cache!
 
 # in order to run a whole analysis from ground zero (e.g. for benchmarking, etc.)
 __clear_caches!() = (__clear_code_cache!(); __clear_escape_cache!())
@@ -243,7 +242,7 @@ Base.show(io::IO, result::EscapeResult) = print_with_info(io, result.ir, result.
 
 # adapted from https://github.com/JuliaDebug/LoweredCodeUtils.jl/blob/4612349432447e868cf9285f647108f43bd0a11c/src/codeedges.jl#L881-L897
 function print_with_info(io::IO,
-    ir::IRCode, (; arguments, ssavalues)::EscapeState, linfo::Union{Nothing,MethodInstance})
+    ir::IRCode, state::EscapeState, linfo::Union{Nothing,MethodInstance})
     # print escape information on SSA values
     function preprint(io::IO)
         ft = ir.argtypes[1]
@@ -252,11 +251,12 @@ function print_with_info(io::IO,
             f = widenconst(ft)
         end
         print(io, f, '(')
-        for (i, arg) in enumerate(arguments)
+        for i in 1:length(state.ir.argtypes)
+            arg = state[Argument(i)]
             i == 1 && continue
             c, color = get_name_color(arg, true)
             printstyled(io, '_', i, "::", ir.argtypes[i], ' ', c; color)
-            i ≠ length(arguments) && print(io, ", ")
+            i ≠ length(state.ir.argtypes) && print(io, ", ")
         end
         print(io, ')')
         if !isnothing(linfo)
@@ -269,7 +269,7 @@ function print_with_info(io::IO,
     # print escape information on SSA values
     # nd = ndigits(length(ssavalues))
     function preprint(io::IO, idx::Int)
-        c, color = get_name_color(ssavalues[idx], true)
+        c, color = get_name_color(state[SSAValue(idx)], true)
         # printstyled(io, lpad(idx, nd), ' ', c, ' '; color)
         printstyled(io, rpad(c, 2), ' '; color)
     end

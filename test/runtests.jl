@@ -1,4 +1,5 @@
 using EscapeAnalysis, Test, JET
+import Core: Argument, SSAValue
 
 isT(T) = (@nospecialize x) -> x === T
 issubT(T) = (@nospecialize x) -> x <: T
@@ -45,32 +46,32 @@ end
         result = analyze_escapes((Any,)) do a # return to caller
             return nothing
         end
-        @test has_return_escape(result.state.arguments[2])
+        @test has_return_escape(result.state[Argument(2)])
     end
     let # return
         result = analyze_escapes((Any,)) do a
             return a
         end
         i = only(findall(isreturn, result.ir.stmts.inst))
-        @test has_return_escape(result.state.arguments[1], 0) # self
-        @test !has_return_escape(result.state.arguments[1], i) # self
-        @test has_return_escape(result.state.arguments[2], 0) # a
-        @test has_return_escape(result.state.arguments[2], i) # a
+        @test has_return_escape(result.state[Argument(1)], 0) # self
+        @test !has_return_escape(result.state[Argument(1)], i) # self
+        @test has_return_escape(result.state[Argument(2)], 0) # a
+        @test has_return_escape(result.state[Argument(2)], i) # a
     end
     let # global store
         result = analyze_escapes((Any,)) do a
             global aa = a
             nothing
         end
-        @test has_all_escape(result.state.arguments[2])
+        @test has_all_escape(result.state[Argument(2)])
     end
     let # global load
         result = analyze_escapes() do
             global gr
             return gr
         end
-        i = only(findall(has_return_escape, result.state.ssavalues))
-        has_all_escape(result.state.ssavalues[i])
+        i = only(findall(has_return_escape, map(i->result.state[SSAValue(i)], 1:length(result.ir.stmts))))
+        @test has_all_escape(result.state[SSAValue(i)])
     end
     let # global store / load (https://github.com/aviatesk/EscapeAnalysis.jl/issues/56)
         result = analyze_escapes((Any,)) do s
@@ -79,7 +80,7 @@ end
             return v
         end
         r = only(findall(isreturn, result.ir.stmts.inst))
-        @test has_return_escape(result.state.arguments[2], r)
+        @test has_return_escape(result.state[Argument(2)], r)
     end
     let # :gc_preserve_begin / :gc_preserve_end
         result = analyze_escapes((String,)) do s
@@ -90,7 +91,7 @@ end
         end
         i = findfirst(isT(SafeRef{String}), result.ir.stmts.type) # find allocation statement
         @test !isnothing(i)
-        @test has_no_escape(result.state.ssavalues[i])
+        @test has_no_escape(result.state[SSAValue(i)])
     end
     let # :isdefined
         result = analyze_escapes((String, Bool, )) do a, b
@@ -101,13 +102,13 @@ end
         end
         i = findfirst(isT(Base.RefValue{String}), result.ir.stmts.type) # find allocation statement
         @test !isnothing(i)
-        @test has_no_escape(result.state.ssavalues[i])
+        @test has_no_escape(result.state[SSAValue(i)])
     end
     let # :foreigncall
         result = analyze_escapes((Vector{String}, Int, )) do a, b
             return isassigned(a, b) # TODO: specialize isassigned
         end
-        @test has_all_escape(result.state.arguments[2])
+        @test has_all_escape(result.state[Argument(2)])
     end
     let # ϕ-node
         result = analyze_escapes((Bool,Any,Any)) do cond, a, b
@@ -116,8 +117,8 @@ end
         end
         @assert any(@nospecialize(x)->isa(x, Core.PhiNode), result.ir.stmts.inst)
         i = only(findall(isreturn, result.ir.stmts.inst))
-        @test has_return_escape(result.state.arguments[3], i) # a
-        @test has_return_escape(result.state.arguments[4], i) # b
+        @test has_return_escape(result.state[Argument(3)], i) # a
+        @test has_return_escape(result.state[Argument(4)], i) # b
     end
     let # π-node
         result = analyze_escapes((Any,)) do a
@@ -128,7 +129,7 @@ end
         end
         @assert any(@nospecialize(x)->isa(x, Core.PiNode), result.ir.stmts.inst)
         @test any(findall(isreturn, result.ir.stmts.inst)) do i
-            has_return_escape(result.state.arguments[2], i)
+            has_return_escape(result.state[Argument(2)], i)
         end
     end
     let # φᶜ-node / ϒ-node
@@ -144,8 +145,8 @@ end
         @assert any(@nospecialize(x)->isa(x, Core.PhiCNode), result.ir.stmts.inst)
         @assert any(@nospecialize(x)->isa(x, Core.UpsilonNode), result.ir.stmts.inst)
         i = only(findall(isreturn, result.ir.stmts.inst))
-        @test has_return_escape(result.state.arguments[2], i)
-        @test has_return_escape(result.state.arguments[3], i)
+        @test has_return_escape(result.state[Argument(2)], i)
+        @test has_return_escape(result.state[Argument(3)], i)
     end
     let # branching
         result = analyze_escapes((Any,Bool,)) do a, c
@@ -155,7 +156,7 @@ end
                 return a # a escapes to a caller
             end
         end
-        @test has_return_escape(result.state.arguments[2])
+        @test has_return_escape(result.state[Argument(2)])
     end
     let # loop
         result = analyze_escapes((Int,)) do n
@@ -166,7 +167,7 @@ end
             nothing
         end
         i = only(findall(isT(SafeRef{Bool}), result.ir.stmts.type))
-        @test has_return_escape(result.state.ssavalues[i])
+        @test has_return_escape(result.state[SSAValue(i)])
     end
     let # exception
         result = analyze_escapes((Any,)) do a
@@ -176,7 +177,7 @@ end
                 return a # return escape
             end
         end
-        @test has_return_escape(result.state.arguments[2])
+        @test has_return_escape(result.state[Argument(2)])
     end
 end
 
@@ -187,7 +188,7 @@ let # simple allocation
     end
 
     i = only(findall(isT(SafeRef{Bool}), result.ir.stmts.type))
-    @test has_no_escape(result.state.ssavalues[i])
+    @test has_no_escape(result.state[SSAValue(i)])
 end
 
 @testset "inter-procedural" begin
@@ -201,7 +202,7 @@ end
             end
         end
         i = only(findall(isnew, result.ir.stmts.inst))
-        @test_broken has_no_escape(result.state.ssavalues[i])
+        @test_broken has_no_escape(result.state[SSAValue(i)])
     end
     let result = @eval Module() begin
             @noinline broadcast_NoEscape2(b) = broadcast(identity, b)
@@ -210,7 +211,7 @@ end
             end
         end
         i = only(findall(isnew, result.ir.stmts.inst))
-        @test_broken has_no_escape(result.state.ssavalues[i])
+        @test_broken has_no_escape(result.state[SSAValue(i)])
     end
     let result = @eval Module() begin
             @noinline f_GlobalEscape_a(a) = (global globala = a) # obvious escape
@@ -219,13 +220,13 @@ end
             end
         end
         i = only(findall(isnew, result.ir.stmts.inst))
-        @test has_return_escape(result.state.ssavalues[i]) && has_thrown_escape(result.state.ssavalues[i])
+        @test has_return_escape(result.state[SSAValue(i)]) && has_thrown_escape(result.state[SSAValue(i)])
     end
     # if we can't determine the matching method statically, we should be conservative
     let result = @eval Module() $analyze_escapes((Ref{Any},)) do a
             may_exist(a)
         end
-        @test has_all_escape(result.state.arguments[2])
+        @test has_all_escape(result.state[Argument(2)])
     end
     let result = @eval Module() begin
             @noinline broadcast_NoEscape(a) = (broadcast(identity, a); nothing)
@@ -233,7 +234,7 @@ end
                 Base.@invokelatest broadcast_NoEscape(a)
             end
         end
-        @test has_all_escape(result.state.arguments[2])
+        @test has_all_escape(result.state[Argument(2)])
     end
 
     # handling of simple union-split (just exploit the inliner's effort)
@@ -250,7 +251,7 @@ end
         inds = findall(isT(SafeRef{T}), result.ir.stmts.type) # find allocation statement
         @assert !isempty(inds)
         for i in inds
-            @test has_no_escape(result.state.ssavalues[i])
+            @test has_no_escape(result.state[SSAValue(i)])
         end
     end
 
@@ -265,7 +266,7 @@ end
             nothing
         end
         i = only(findall(isT(Base.RefValue{String}), result.ir.stmts.type))
-        @test has_no_escape(result.state.ssavalues[i])
+        @test has_no_escape(result.state[SSAValue(i)])
 
         result = @eval M $analyze_escapes() do
             a = Ref("foo") # still should be "return escape"
@@ -274,7 +275,7 @@ end
         end
         i = only(findall(isT(Base.RefValue{String}), result.ir.stmts.type))
         r = only(findall(isreturn, result.ir.stmts.inst))
-        @test has_return_escape(result.state.ssavalues[i], r)
+        @test has_return_escape(result.state[SSAValue(i)], r)
     end
 
     # should propagate escape information imposed on return value to the aliased call argument
@@ -288,7 +289,7 @@ end
         end
         i = only(findall(isnew, result.ir.stmts.inst))
         r = only(findall(isreturn, result.ir.stmts.inst))
-        @test has_return_escape(result.state.ssavalues[i], r)
+        @test has_return_escape(result.state[SSAValue(i)], r)
     end
     let result = @eval Module() begin
             @noinline f_NoReturnEscape_a(a) = (println("prevent inlining"); identity("hi"))
@@ -300,7 +301,7 @@ end
         end
         i = only(findall(isT(Base.RefValue{String}), result.ir.stmts.type))
         r = only(findall(isreturn, result.ir.stmts.inst))
-        @test !has_return_escape(result.state.ssavalues[i], r)
+        @test !has_return_escape(result.state[SSAValue(i)], r)
     end
 end
 
@@ -309,19 +310,19 @@ end
         r = analyze_escapes((Any,)) do a
             throw(a)
         end
-        @test has_thrown_escape(r.state.arguments[2])
+        @test has_thrown_escape(r.state[Argument(2)])
     end
 
     let # implicit throws
         r = analyze_escapes((Any,)) do a
             getfield(a, :may_not_field)
         end
-        @test has_thrown_escape(r.state.arguments[2])
+        @test has_thrown_escape(r.state[Argument(2)])
 
         r = analyze_escapes((Any,)) do a
             sizeof(a)
         end
-        @test has_thrown_escape(r.state.arguments[2])
+        @test has_thrown_escape(r.state[Argument(2)])
     end
 
     let # :===
@@ -331,7 +332,7 @@ end
             return c
         end
         i = only(findall(isT(SafeRef{String}), result.ir.stmts.type))
-        @test has_no_escape(result.state.ssavalues[i])
+        @test has_no_escape(result.state[SSAValue(i)])
     end
 
     let # sizeof
@@ -341,7 +342,7 @@ end
             sizeof(ary)
         end
         i = only(findall(isT(Core.Const(ary)), result.ir.stmts.type))
-        @test has_no_escape(result.state.ssavalues[i])
+        @test has_no_escape(result.state[SSAValue(i)])
     end
 
     let # ifelse
@@ -352,7 +353,7 @@ end
         inds = findall(isT(Base.RefValue{String}), result.ir.stmts.type)
         @assert !isempty(inds)
         for i in inds
-            @test has_return_escape(result.state.ssavalues[i])
+            @test has_return_escape(result.state[SSAValue(i)])
         end
     end
     let # ifelse (with constant condition)
@@ -362,9 +363,9 @@ end
         end
         for i in 1:length(result.ir.stmts)
             if isnew(result.ir.stmts.inst[i]) && isT(Base.RefValue{String})(result.ir.stmts.type[i])
-                @test has_return_escape(result.state.ssavalues[i])
+                @test has_return_escape(result.state[SSAValue(i)])
             elseif isnew(result.ir.stmts.inst[i]) && isT(Base.RefValue{Nothing})(result.ir.stmts.type[i])
-                @test has_no_escape(result.state.ssavalues[i])
+                @test has_no_escape(result.state[SSAValue(i)])
             end
         end
     end
@@ -375,8 +376,8 @@ end
             return y
         end
         r = only(findall(isreturn, result.ir.stmts.inst))
-        @test has_return_escape(result.state.arguments[2], r)
-        @test !has_all_escape(result.state.arguments[2])
+        @test has_return_escape(result.state[Argument(2)], r)
+        @test !has_all_escape(result.state[Argument(2)])
     end
 
     let # isdefined
@@ -384,13 +385,13 @@ end
             isdefined(x, :foo) ? x : throw("undefined")
         end
         r = only(findall(isreturn, result.ir.stmts.inst))
-        @test has_return_escape(result.state.arguments[2], r)
-        @test !has_all_escape(result.state.arguments[2])
+        @test has_return_escape(result.state[Argument(2)], r)
+        @test !has_all_escape(result.state[Argument(2)])
 
         result = analyze_escapes((Module,)) do m
             isdefined(m, 10) # throws
         end
-        @test has_thrown_escape(result.state.arguments[2])
+        @test has_thrown_escape(result.state[Argument(2)])
     end
 end
 
@@ -406,7 +407,7 @@ end
         i = only(findall(isT(Base.RefValue{String}), result.ir.stmts.type))
         rts = findall(isreturn, result.ir.stmts.inst)
         @assert length(rts) == 2
-        @test count(rt->has_return_escape(result.state.ssavalues[i], rt), rts) == 1
+        @test count(rt->has_return_escape(result.state[SSAValue(i)], rt), rts) == 1
     end
     let result = analyze_escapes((Bool,)) do cond
             r = Ref("foo")
@@ -421,7 +422,7 @@ end
         i = only(findall(isT(Base.RefValue{String}), result.ir.stmts.type))
         rts = findall(isreturn, result.ir.stmts.inst) # return statement
         @assert length(rts) == 3
-        @test count(rt->has_return_escape(result.state.ssavalues[i], rt), rts) == 2
+        @test count(rt->has_return_escape(result.state[SSAValue(i)], rt), rts) == 2
     end
 
     # ThrownEscape
@@ -435,8 +436,8 @@ end
         end
         i = only(findall(isT(Base.RefValue{String}), result.ir.stmts.type))
         t = only(findall(isthrow, result.ir.stmts.inst))
-        @test length(result.state.ssavalues[i].EscapeSites) == 1
-        @test has_thrown_escape(result.state.ssavalues[i], t)
+        @test length(result.state[SSAValue(i)].EscapeSites) == 1
+        @test has_thrown_escape(result.state[SSAValue(i)], t)
     end
     let result = analyze_escapes((Bool,)) do cond
             r = Ref("foo")
@@ -455,7 +456,7 @@ end
         i = only(findall(isT(Base.RefValue{String}), result.ir.stmts.type))
         ts = findall(isthrow, result.ir.stmts.inst)
         @assert length(ts) == 2
-        @test all(t->has_thrown_escape(result.state.ssavalues[i], t), ts)
+        @test all(t->has_thrown_escape(result.state[SSAValue(i)], t), ts)
     end
 end
 
@@ -469,16 +470,16 @@ end
             nothing
         end
         i = only(findall(isnew, result.ir.stmts.inst))
-        @test has_all_escape(result.state.ssavalues[i])
-        @test has_all_escape(result.state.arguments[2])
+        @test has_all_escape(result.state[SSAValue(i)])
+        @test has_all_escape(result.state[Argument(2)])
     end
     let result = analyze_escapes((Any,)) do a
             global g = (a,)
             nothing
         end
         i = only(findall(issubT(Tuple), result.ir.stmts.type))
-        @test has_all_escape(result.state.ssavalues[i])
-        @test has_all_escape(result.state.arguments[2])
+        @test has_all_escape(result.state[SSAValue(i)])
+        @test has_all_escape(result.state[Argument(2)])
     end
     let result = analyze_escapes((Any,)) do a
             o0 = SafeRef{Any}(a)
@@ -487,9 +488,9 @@ end
         end
         i0 = only(findall(isT(SafeRef{Any}), result.ir.stmts.type))
         i1 = only(findall(isT(SafeRef{SafeRef{Any}}), result.ir.stmts.type))
-        @test has_all_escape(result.state.ssavalues[i0])
-        @test has_all_escape(result.state.ssavalues[i1])
-        @test has_all_escape(result.state.arguments[2])
+        @test has_all_escape(result.state[SSAValue(i0)])
+        @test has_all_escape(result.state[SSAValue(i1)])
+        @test has_all_escape(result.state[Argument(2)])
     end
     let result = analyze_escapes((Any,)) do a
             t0 = (a,)
@@ -498,8 +499,8 @@ end
         end
         inds = findall(issubT(Tuple), result.ir.stmts.type)
         @assert length(inds) == 2
-        for i in inds; @test has_all_escape(result.state.ssavalues[i]); end
-        @test has_all_escape(result.state.arguments[2])
+        for i in inds; @test has_all_escape(result.state[SSAValue(i)]); end
+        @test has_all_escape(result.state[Argument(2)])
     end
     # global escape through `setfield!`
     let result = analyze_escapes((Any,)) do a
@@ -509,8 +510,8 @@ end
             nothing
         end
         i = only(findall(isnew, result.ir.stmts.inst))
-        @test has_all_escape(result.state.ssavalues[i])
-        @test has_all_escape(result.state.arguments[2])
+        @test has_all_escape(result.state[SSAValue(i)])
+        @test has_all_escape(result.state[Argument(2)])
     end
     let result = analyze_escapes((Any,Any)) do a, b
             r = SafeRef{Any}(a)
@@ -519,9 +520,9 @@ end
             nothing
         end
         i = only(findall(isnew, result.ir.stmts.inst))
-        @test has_all_escape(result.state.ssavalues[i])
-        @test has_all_escape(result.state.arguments[2]) # a
-        @test has_all_escape(result.state.arguments[3]) # b
+        @test has_all_escape(result.state[SSAValue(i)])
+        @test has_all_escape(result.state[Argument(2)]) # a
+        @test has_all_escape(result.state[Argument(3)]) # b
     end
     let result = @eval EATModule() begin
             const Rx = SafeRef{String}("Rx")
@@ -530,7 +531,7 @@ end
                 Core.sizeof(Rx[])
             end
         end
-        @test has_all_escape(result.state.arguments[2])
+        @test has_all_escape(result.state[Argument(2)])
     end
     let result = @eval EATModule() begin
             const Rx = SafeRef{String}("Rx")
@@ -539,7 +540,7 @@ end
                 Core.sizeof(Rx[])
             end
         end
-        @test has_all_escape(result.state.arguments[2])
+        @test has_all_escape(result.state[Argument(2)])
     end
     let M = EATModule()
         @eval M module ___xxx___
@@ -553,7 +554,7 @@ end
                 nothing
             end
         end
-        @test has_all_escape(result.state.arguments[2])
+        @test has_all_escape(result.state[Argument(2)])
     end
 
     # field escape
@@ -567,8 +568,8 @@ end
         end
         i = only(findall(isT(SafeRef{String}), result.ir.stmts.type))
         r = only(findall(isreturn, result.ir.stmts.inst))
-        @test has_return_escape(result.state.arguments[2], r)
-        @test is_sroa_eligible(result.state.ssavalues[i])
+        @test has_return_escape(result.state[Argument(2)], r)
+        @test is_sroa_eligible(result.state[SSAValue(i)])
     end
     let result = analyze_escapes((String,)) do a
             t = (a,)
@@ -577,8 +578,8 @@ end
         end
         i = only(findall(t->t<:Tuple, result.ir.stmts.type))
         r = only(findall(isreturn, result.ir.stmts.inst))
-        @test has_return_escape(result.state.arguments[2], r)
-        @test is_sroa_eligible(result.state.ssavalues[i])
+        @test has_return_escape(result.state[Argument(2)], r)
+        @test is_sroa_eligible(result.state[SSAValue(i)])
     end
     let result = analyze_escapes((String, String)) do a, b
             obj = SafeRefs(a, b)
@@ -588,9 +589,9 @@ end
         end
         i = only(findall(isT(SafeRefs{String,String}), result.ir.stmts.type))
         r = only(findall(isreturn, result.ir.stmts.inst))
-        @test has_return_escape(result.state.arguments[2], r) # a
-        @test has_return_escape(result.state.arguments[3], r) # b
-        @test is_sroa_eligible(result.state.ssavalues[i])
+        @test has_return_escape(result.state[Argument(2)], r) # a
+        @test has_return_escape(result.state[Argument(3)], r) # b
+        @test is_sroa_eligible(result.state[SSAValue(i)])
     end
 
     # field escape should propagate to `setfield!` argument
@@ -602,8 +603,8 @@ end
         end
         i = only(findall(isT(SafeRef{String}), result.ir.stmts.type))
         r = only(findall(isreturn, result.ir.stmts.inst))
-        @test has_return_escape(result.state.arguments[2], r)
-        @test is_sroa_eligible(result.state.ssavalues[i])
+        @test has_return_escape(result.state[Argument(2)], r)
+        @test is_sroa_eligible(result.state[SSAValue(i)])
     end
     # propagate escape information imposed on return value of `setfield!` call
     let result = analyze_escapes((String,)) do a
@@ -612,8 +613,8 @@ end
         end
         i = only(findall(isT(SafeRef{String}), result.ir.stmts.type))
         r = only(findall(isreturn, result.ir.stmts.inst))
-        @test has_return_escape(result.state.arguments[2], r)
-        @test is_sroa_eligible(result.state.ssavalues[i])
+        @test has_return_escape(result.state[Argument(2)], r)
+        @test is_sroa_eligible(result.state[SSAValue(i)])
     end
 
     # nested allocations
@@ -623,12 +624,12 @@ end
             return o2[]
         end
         r = only(findall(isreturn, result.ir.stmts.inst))
-        @test has_return_escape(result.state.arguments[2], r)
+        @test has_return_escape(result.state[Argument(2)], r)
         for i in 1:length(result.ir.stmts)
             if isnew(result.ir.stmts.inst[i]) && isT(SafeRef{String})(result.ir.stmts.type[i])
-                @test has_return_escape(result.state.ssavalues[i], r)
+                @test has_return_escape(result.state[SSAValue(i)], r)
             elseif isnew(result.ir.stmts.inst[i]) && isT(SafeRef{SafeRef{String}})(result.ir.stmts.type[i])
-                @test is_sroa_eligible(result.state.ssavalues[i])
+                @test is_sroa_eligible(result.state[SSAValue(i)])
             end
         end
     end
@@ -638,12 +639,12 @@ end
             return o2[1]
         end
         r = only(findall(isreturn, result.ir.stmts.inst))
-        @test has_return_escape(result.state.arguments[2], r)
+        @test has_return_escape(result.state[Argument(2)], r)
         for i in 1:length(result.ir.stmts)
             if isnew(result.ir.stmts.inst[i]) && isT(Tuple{String})(result.ir.stmts.type[i])
-                @test has_return_escape(result.state.ssavalues[i], r)
+                @test has_return_escape(result.state[SSAValue(i)], r)
             elseif isnew(result.ir.stmts.inst[i]) && isT(Tuple{Tuple{String}})(result.ir.stmts.type[i])
-                @test is_sroa_eligible(result.state.ssavalues[i])
+                @test is_sroa_eligible(result.state[SSAValue(i)])
             end
         end
     end
@@ -655,9 +656,9 @@ end
             return a′
         end
         r = only(findall(isreturn, result.ir.stmts.inst))
-        @test has_return_escape(result.state.arguments[2], r)
+        @test has_return_escape(result.state[Argument(2)], r)
         for i in findall(isnew, result.ir.stmts.inst)
-            @test is_sroa_eligible(result.state.ssavalues[i])
+            @test is_sroa_eligible(result.state[SSAValue(i)])
         end
     end
     let result = analyze_escapes((String,)) do x
@@ -665,8 +666,8 @@ end
         end
         i = only(findall(isnew, result.ir.stmts.inst))
         r = only(findall(isreturn, result.ir.stmts.inst))
-        @test has_return_escape(result.state.arguments[2], r)
-        @test is_sroa_eligible(result.state.ssavalues[i])
+        @test has_return_escape(result.state[Argument(2)], r)
+        @test is_sroa_eligible(result.state[SSAValue(i)])
     end
 
     # ϕ-node allocations
@@ -679,12 +680,12 @@ end
             return ϕ[]
         end
         r = only(findall(isreturn, result.ir.stmts.inst))
-        @test has_return_escape(result.state.arguments[3], r) # x
-        @test has_return_escape(result.state.arguments[4], r) # y
+        @test has_return_escape(result.state[Argument(3)], r) # x
+        @test has_return_escape(result.state[Argument(4)], r) # y
         i = only(findall(isϕ, result.ir.stmts.inst))
-        @test is_sroa_eligible(result.state.ssavalues[i])
+        @test is_sroa_eligible(result.state[SSAValue(i)])
         for i in findall(isnew, result.ir.stmts.inst)
-            @test is_sroa_eligible(result.state.ssavalues[i])
+            @test is_sroa_eligible(result.state[SSAValue(i)])
         end
     end
     let result = analyze_escapes((Bool,Any,Any)) do cond, x, y
@@ -696,13 +697,13 @@ end
             return ϕ1[], ϕ2[]
         end
         r = only(findall(isreturn, result.ir.stmts.inst))
-        @test has_return_escape(result.state.arguments[3], r) # x
-        @test has_return_escape(result.state.arguments[4], r) # y
+        @test has_return_escape(result.state[Argument(3)], r) # x
+        @test has_return_escape(result.state[Argument(4)], r) # y
         for i in findall(isϕ, result.ir.stmts.inst)
-            @test is_sroa_eligible(result.state.ssavalues[i])
+            @test is_sroa_eligible(result.state[SSAValue(i)])
         end
         for i in findall(isnew, result.ir.stmts.inst)
-            @test is_sroa_eligible(result.state.ssavalues[i])
+            @test is_sroa_eligible(result.state[SSAValue(i)])
         end
     end
     # when ϕ-node merges values with different types
@@ -719,10 +720,10 @@ end
         r = only(findall(isreturn, result.ir.stmts.inst))
         t = only(findall(iscall((result.ir, throw)), result.ir.stmts.inst))
         ϕ = only(findall(isT(Union{SafeRef{String},SafeRefs{String,String}}), result.ir.stmts.type))
-        @test has_return_escape(result.state.arguments[3], r) # x
-        @test !has_return_escape(result.state.arguments[4], r) # y
-        @test has_return_escape(result.state.arguments[5], r) # z
-        @test has_thrown_escape(result.state.ssavalues[ϕ], t)
+        @test has_return_escape(result.state[Argument(3)], r) # x
+        @test !has_return_escape(result.state[Argument(4)], r) # y
+        @test has_return_escape(result.state[Argument(5)], r) # z
+        @test has_thrown_escape(result.state[SSAValue(ϕ)], t)
     end
 
     # alias analysis
@@ -739,8 +740,8 @@ end
             end
         end
         i = findfirst(isnew, result.ir.stmts.inst)
-        @test has_all_escape(result.state.arguments[2])
-        @test is_sroa_eligible(result.state.ssavalues[i])
+        @test has_all_escape(result.state[Argument(2)])
+        @test is_sroa_eligible(result.state[SSAValue(i)])
     end
     # alias via getfield & setfield!
     let result = @eval EATModule() begin
@@ -754,8 +755,8 @@ end
             end
         end
         i = findfirst(isnew, result.ir.stmts.inst)
-        @test has_all_escape(result.state.arguments[3])
-        @test is_sroa_eligible(result.state.ssavalues[i])
+        @test has_all_escape(result.state[Argument(3)])
+        @test is_sroa_eligible(result.state[SSAValue(i)])
     end
     # alias via typeassert
     let result = analyze_escapes((Any,)) do a
@@ -763,7 +764,7 @@ end
             (g::SafeRef{Any})[] = a
             nothing
         end
-        @test has_all_escape(result.state.arguments[2])
+        @test has_all_escape(result.state[Argument(2)])
     end
     # alias via ifelse
     let result = @eval EATModule() begin
@@ -774,7 +775,7 @@ end
                 nothing
             end
         end
-        @test has_all_escape(result.state.arguments[3]) # a
+        @test has_all_escape(result.state[Argument(3)]) # a
     end
     # alias via ϕ-node
     let result = analyze_escapes((Bool,String)) do cond, x
@@ -787,12 +788,12 @@ end
             return ϕ1[]
         end
         r = only(findall(isreturn, result.ir.stmts.inst))
-        @test has_return_escape(result.state.arguments[3], r) # x
+        @test has_return_escape(result.state[Argument(3)], r) # x
         for i in findall(isϕ, result.ir.stmts.inst)
-            @test is_sroa_eligible(result.state.ssavalues[i])
+            @test is_sroa_eligible(result.state[SSAValue(i)])
         end
         for i in findall(isnew, result.ir.stmts.inst)
-            @test is_sroa_eligible(result.state.ssavalues[i])
+            @test is_sroa_eligible(result.state[SSAValue(i)])
         end
     end
     let result = analyze_escapes((Bool,Bool,String)) do cond1, cond2, x
@@ -805,12 +806,12 @@ end
             return ϕ1[]
         end
         r = only(findall(isreturn, result.ir.stmts.inst))
-        @test has_return_escape(result.state.arguments[4], r) # x
+        @test has_return_escape(result.state[Argument(4)], r) # x
         for i in findall(isϕ, result.ir.stmts.inst)
-            @test is_sroa_eligible(result.state.ssavalues[i])
+            @test is_sroa_eligible(result.state[SSAValue(i)])
         end
         for i in findall(isnew, result.ir.stmts.inst)
-            @test is_sroa_eligible(result.state.ssavalues[i])
+            @test is_sroa_eligible(result.state[SSAValue(i)])
         end
     end
     # alias via π-node
@@ -822,7 +823,7 @@ end
             end
             nothing
         end
-        @test has_all_escape(result.state.arguments[2]) # x
+        @test has_all_escape(result.state[Argument(2)]) # x
     end
 
     # dynamic semantics
@@ -835,9 +836,9 @@ end
         end
         i = only(findall(isnew, result.ir.stmts.inst))
         r = only(findall(isreturn, result.ir.stmts.inst))
-        @test #=x=# has_return_escape(result.state.arguments[3], r)
-        @test #=y=# has_return_escape(result.state.arguments[4], r)
-        @test #=z=# !has_return_escape(result.state.arguments[5], r)
+        @test #=x=# has_return_escape(result.state[Argument(3)], r)
+        @test #=y=# has_return_escape(result.state[Argument(4)], r)
+        @test #=z=# !has_return_escape(result.state[Argument(5)], r)
     end
     let result = @eval analyze_escapes((Any,Any,Any,Any)) do T, x, y, z
             obj = $(Expr(:new, :T, :x))
@@ -846,9 +847,9 @@ end
         end
         i = only(findall(isnew, result.ir.stmts.inst))
         r = only(findall(isreturn, result.ir.stmts.inst))
-        @test #=x=# has_return_escape(result.state.arguments[3], r)
-        @test #=y=# has_return_escape(result.state.arguments[4], r)
-        @test #=z=# !has_return_escape(result.state.arguments[5], r)
+        @test #=x=# has_return_escape(result.state[Argument(3)], r)
+        @test #=y=# has_return_escape(result.state[Argument(4)], r)
+        @test #=z=# !has_return_escape(result.state[Argument(5)], r)
     end
 
     # conservatively handle unknown field:
@@ -859,8 +860,8 @@ end
         end
         i = only(findall(isT(SafeRef{String}), result.ir.stmts.type))
         r = only(findall(isreturn, result.ir.stmts.inst))
-        @test has_return_escape(result.state.arguments[2], r) # a
-        @test is_sroa_eligible(result.state.ssavalues[i]) # obj
+        @test has_return_escape(result.state[Argument(2)], r) # a
+        @test is_sroa_eligible(result.state[SSAValue(i)]) # obj
     end
     let result = analyze_escapes((String, String, Symbol)) do a, b, fld
             obj = SafeRefs(a, b)
@@ -868,9 +869,9 @@ end
         end
         i = only(findall(isT(SafeRefs{String,String}), result.ir.stmts.type))
         r = only(findall(isreturn, result.ir.stmts.inst))
-        @test has_return_escape(result.state.arguments[2], r) # a
-        @test has_return_escape(result.state.arguments[3], r) # b
-        @test is_sroa_eligible(result.state.ssavalues[i]) # obj
+        @test has_return_escape(result.state[Argument(2)], r) # a
+        @test has_return_escape(result.state[Argument(3)], r) # b
+        @test is_sroa_eligible(result.state[SSAValue(i)]) # obj
     end
     let result = analyze_escapes((String, String, Int)) do a, b, idx
             obj = SafeRefs(a, b)
@@ -878,9 +879,9 @@ end
         end
         i = only(findall(isT(SafeRefs{String,String}), result.ir.stmts.type))
         r = only(findall(isreturn, result.ir.stmts.inst))
-        @test has_return_escape(result.state.arguments[2], r) # a
-        @test has_return_escape(result.state.arguments[3], r) # b
-        @test is_sroa_eligible(result.state.ssavalues[i]) # obj
+        @test has_return_escape(result.state[Argument(2)], r) # a
+        @test has_return_escape(result.state[Argument(3)], r) # b
+        @test is_sroa_eligible(result.state[SSAValue(i)]) # obj
     end
     let result = analyze_escapes((String, String, Symbol)) do a, b, fld
             obj = SafeRefs("a", "b")
@@ -889,9 +890,9 @@ end
         end
         i = only(findall(isT(SafeRefs{String,String}), result.ir.stmts.type))
         r = only(findall(isreturn, result.ir.stmts.inst))
-        @test has_return_escape(result.state.arguments[2], r) # a
-        @test !has_return_escape(result.state.arguments[3], r) # b
-        @test is_sroa_eligible(result.state.ssavalues[i]) # obj
+        @test has_return_escape(result.state[Argument(2)], r) # a
+        @test !has_return_escape(result.state[Argument(3)], r) # b
+        @test is_sroa_eligible(result.state[SSAValue(i)]) # obj
     end
     let result = analyze_escapes((String, Symbol)) do a, fld
             obj = SafeRefs("a", "b")
@@ -900,8 +901,8 @@ end
         end
         i = only(findall(isT(SafeRefs{String,String}), result.ir.stmts.type))
         r = only(findall(isreturn, result.ir.stmts.inst))
-        @test has_return_escape(result.state.arguments[2], r) # a
-        @test is_sroa_eligible(result.state.ssavalues[i]) # obj
+        @test has_return_escape(result.state[Argument(2)], r) # a
+        @test is_sroa_eligible(result.state[SSAValue(i)]) # obj
     end
     let result = analyze_escapes((String, String, Int)) do a, b, idx
             obj = SafeRefs("a", "b")
@@ -910,9 +911,9 @@ end
         end
         i = only(findall(isT(SafeRefs{String,String}), result.ir.stmts.type))
         r = only(findall(isreturn, result.ir.stmts.inst))
-        @test has_return_escape(result.state.arguments[2], r) # a
-        @test !has_return_escape(result.state.arguments[3], r) # b
-        @test is_sroa_eligible(result.state.ssavalues[i]) # obj
+        @test has_return_escape(result.state[Argument(2)], r) # a
+        @test !has_return_escape(result.state[Argument(3)], r) # b
+        @test is_sroa_eligible(result.state[SSAValue(i)]) # obj
     end
 
     # interprocedural
@@ -928,9 +929,9 @@ end
         end
         i = only(findall(isnew, result.ir.stmts.inst))
         r = only(findall(isreturn, result.ir.stmts.inst))
-        @test has_return_escape(result.state.arguments[2], r)
+        @test has_return_escape(result.state[Argument(2)], r)
         # NOTE we can't scalar replace `obj`, but still we may want to stack allocate it
-        @test_broken is_sroa_eligible(result.state.ssavalues[i])
+        @test_broken is_sroa_eligible(result.state[SSAValue(i)])
     end
 
     # TODO interprocedural field analysis
@@ -939,7 +940,7 @@ end
             global g = s[]
             nothing
         end
-        @test_broken !has_all_escape(result.state.arguments[2])
+        @test_broken !has_all_escape(result.state[Argument(2)])
     end
 
     # TODO flow-sensitivity?
@@ -952,9 +953,9 @@ end
         end
         i = only(findall(isnew, result.ir.stmts.inst))
         r = only(findall(isreturn, result.ir.stmts.inst))
-        @test_broken !has_return_escape(result.state.arguments[2], r) # a
-        @test has_return_escape(result.state.arguments[3], r) # b
-        @test is_sroa_eligible(result.state.ssavalues[i])
+        @test_broken !has_return_escape(result.state[Argument(2)], r) # a
+        @test has_return_escape(result.state[Argument(3)], r) # b
+        @test is_sroa_eligible(result.state[SSAValue(i)])
     end
     let result = analyze_escapes((Any,Any)) do a, b
             r = SafeRef{Any}(:init)
@@ -964,9 +965,9 @@ end
         end
         i = only(findall(isnew, result.ir.stmts.inst))
         r = only(findall(isreturn, result.ir.stmts.inst))
-        @test_broken !has_return_escape(result.state.arguments[2], r) # a
-        @test has_return_escape(result.state.arguments[3], r) # b
-        @test is_sroa_eligible(result.state.ssavalues[i])
+        @test_broken !has_return_escape(result.state[Argument(2)], r) # a
+        @test has_return_escape(result.state[Argument(3)], r) # b
+        @test is_sroa_eligible(result.state[SSAValue(i)])
     end
     let result = analyze_escapes((Any,Any,Bool)) do a, b, cond
             r = SafeRef{Any}(:init)
@@ -979,12 +980,12 @@ end
             end
         end
         i = only(findall(isnew, result.ir.stmts.inst))
-        @test is_sroa_eligible(result.state.ssavalues[i])
+        @test is_sroa_eligible(result.state[SSAValue(i)])
         r = only(findall(result.ir.stmts.inst) do @nospecialize x
             isreturn(x) && isa(x.val, Core.SSAValue)
         end)
-        @test has_return_escape(result.state.arguments[2], r) # a
-        @test_broken !has_return_escape(result.state.arguments[3], r) # b
+        @test has_return_escape(result.state[Argument(2)], r) # a
+        @test_broken !has_return_escape(result.state[Argument(3)], r) # b
     end
 end
 
@@ -1018,17 +1019,17 @@ function compute!(a, b)
 end
 let result = @analyze_escapes compute(MPoint, 1+.5im, 2+.5im, 2+.25im, 4+.75im)
     for i in findall(isnew, result.ir.stmts.inst)
-        @test is_sroa_eligible(result.state.ssavalues[i])
+        @test is_sroa_eligible(result.state[SSAValue(i)])
     end
 end
 let result = @analyze_escapes compute(MPoint(1+.5im, 2+.5im), MPoint(2+.25im, 4+.75im))
     for i in findall(isnew, result.ir.stmts.inst)
-        @test is_sroa_eligible(result.state.ssavalues[i])
+        @test is_sroa_eligible(result.state[SSAValue(i)])
     end
 end
 let result = @analyze_escapes compute!(MPoint(1+.5im, 2+.5im), MPoint(2+.25im, 4+.75im))
     for i in findall(isnew, result.ir.stmts.inst)
-        @test is_sroa_eligible(result.state.ssavalues[i])
+        @test is_sroa_eligible(result.state[SSAValue(i)])
     end
 end
 
@@ -1038,7 +1039,7 @@ end
     let result = analyze_escapes((Nothing,)) do a
             global bb = a
         end
-        @test !(has_all_escape(result.state.arguments[2]))
+        @test !(has_all_escape(result.state[Argument(2)]))
     end
 
     let result = analyze_escapes((Int,)) do a
@@ -1048,7 +1049,7 @@ end
         end
         i = only(findall(isT(SafeRef{Int}), result.ir.stmts.type))
         r = only(findall(isreturn, result.ir.stmts.inst))
-        @test !has_return_escape(result.state.ssavalues[i], r)
+        @test !has_return_escape(result.state[SSAValue(i)], r)
     end
 
     # an escaped tuple stmt will not propagate to its Int argument (since `Int` is of bitstype)
@@ -1058,8 +1059,8 @@ end
         end
         i = only(findall(issubT(Tuple), result.ir.stmts.type))
         r = only(findall(isreturn, result.ir.stmts.inst))
-        @test !has_return_escape(result.state.arguments[2], r)
-        @test has_return_escape(result.state.arguments[3], r)
+        @test !has_return_escape(result.state[Argument(2)], r)
+        @test has_return_escape(result.state[Argument(3)], r)
     end
 end
 
