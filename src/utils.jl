@@ -251,12 +251,12 @@ function print_with_info(io::IO,
             f = widenconst(ft)
         end
         print(io, f, '(')
-        for i in 1:length(state.ir.argtypes)
+        for i in 1:state.nargs
             arg = state[Argument(i)]
             i == 1 && continue
             c, color = get_name_color(arg, true)
             printstyled(io, '_', i, "::", ir.argtypes[i], ' ', c; color)
-            i ≠ length(state.ir.argtypes) && print(io, ", ")
+            i ≠ state.nargs && print(io, ", ")
         end
         print(io, ')')
         if !isnothing(linfo)

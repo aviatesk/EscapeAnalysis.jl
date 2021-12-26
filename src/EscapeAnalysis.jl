@@ -332,15 +332,13 @@ Extended lattice that maps arguments and SSA values to escape information repres
 struct EscapeState
     escapes::Vector{EscapeLattice}
     aliasset::AliasSet
-    nslots::Int
+    nargs::Int
 end
-function EscapeState(ir::IRCode, nargs::Int)
-    nslots = length(ir.argtypes)
-    nstmts = length(ir.stmts)
+function EscapeState(nargs::Int, nstmts::Int)
     escapes = EscapeLattice[
-        1 ≤ i ≤ nargs ? ArgumentReturnEscape() : NotAnalyzed() for i in 1:(nslots+nstmts)]
-    aliaset = AliasSet(nslots+nstmts)
-    return EscapeState(escapes, aliaset, nslots)
+        1 ≤ i ≤ nargs ? ArgumentReturnEscape() : NotAnalyzed() for i in 1:(nargs+nstmts)]
+    aliaset = AliasSet(nargs+nstmts)
+    return EscapeState(escapes, aliaset, nargs)
 end
 function getindex(state::EscapeState, @nospecialize(x))
     if isa(x, Argument) || isa(x, SSAValue)
@@ -369,9 +367,9 @@ Returns `nothing` if `x` isn't maintained by `state` and thus unanalyzable (e.g.
 function iridx(@nospecialize(x), state::EscapeState)
     if isa(x, Argument)
         xidx = x.n
-        @assert 1 ≤ xidx ≤ state.nslots "invalid Argument"
+        @assert 1 ≤ xidx ≤ state.nargs "invalid Argument"
     elseif isa(x, SSAValue)
-        xidx = x.id + state.nslots
+        xidx = x.id + state.nargs
     else
         return nothing
     end
@@ -388,7 +386,7 @@ that is analyzable in the context of `state`.
 `iridx(irval(xidx, state), state) === xidx`.
 """
 function irval(xidx::Int, state::EscapeState)
-    x = xidx > state.nslots ? SSAValue(xidx-state.nslots) : Argument(xidx)
+    x = xidx > state.nargs ? SSAValue(xidx-state.nargs) : Argument(xidx)
     return x
 end
 
@@ -429,7 +427,7 @@ function find_escapes(ir::IRCode, nargs::Int)
     nstmts = length(stmts)
 
     # only manage a single state, some flow-sensitivity is encoded as `EscapeLattice` properties
-    state = EscapeState(ir, nargs)
+    state = EscapeState(nargs, nstmts)
     changes = Changes() # stashes changes that happen at current statement
 
     local debug_itr_counter = 0
