@@ -61,7 +61,7 @@ import Core:
 import .CC:
     OptimizationState, IRCode
 import .EA:
-    find_escapes, GLOBAL_ESCAPE_CACHE
+    find_escapes, GLOBAL_ESCAPE_CACHE, EscapeCache
 
 mutable struct EscapeAnalyzer{State} <: AbstractInterpreter
     native::NativeInterpreter
@@ -158,7 +158,7 @@ register_init_hook!() do
         @timeit "collect escape information" state = $find_escapes(ir, nargs)
         cacheir = copy(ir)
         # cache this result
-        $setindex!($GLOBAL_ESCAPE_CACHE, (state, cacheir), sv.linfo)
+        $setindex!($GLOBAL_ESCAPE_CACHE, $EscapeCache(state, cacheir), sv.linfo)
         # return back the result
         interp.ir = cacheir
         interp.state = state

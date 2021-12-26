@@ -408,9 +408,19 @@ function getaliases(xidx::Int, state::EscapeState)
     end
 end
 
-# we preserve `IRCode` as well just for debugging purpose
-const GLOBAL_ESCAPE_CACHE = IdDict{MethodInstance,Tuple{EscapeState,IRCode}}()
-__clear_escape_cache!() = empty!(GLOBAL_ESCAPE_CACHE)
+if _TOP_MOD !== Core.Compiler
+    struct EscapeCache
+        state::EscapeState
+        ir::IRCode # we preserve `IRCode` as well just for debugging purpose
+    end
+    const GLOBAL_ESCAPE_CACHE = IdDict{MethodInstance,EscapeCache}()
+    estate_from_ecache(ecache::EscapeCache) = ecache.state
+    __clear_escape_cache!() = empty!(GLOBAL_ESCAPE_CACHE)
+else
+    const GLOBAL_ESCAPE_CACHE = IdDict{MethodInstance,EscapeState}()
+    estate_from_ecache(cache::EscapeState) = cache
+    __clear_escape_cache!() = empty!(GLOBAL_ESCAPE_CACHE)
+end
 
 const EscapeChange = Pair{Int,EscapeLattice}
 const AliasChange  = Pair{Int,Int}
@@ -650,7 +660,7 @@ function escape_invoke!(ir::IRCode, pc::Int, args::Vector{Any},
             add_escape_change!(x, AllEscape(), ir, state, changes)
         end
     else
-        (linfostate, #=, ir::IRCode=#) = cache
+        linfostate = estate_from_ecache(cache)
         retinfo = state[SSAValue(pc)] # escape information imposed on the call statement
         method = linfo.def::Method
         nargs = Int(method.nargs)
