@@ -455,22 +455,21 @@ function find_escapes(ir::IRCode, nargs::Int)
         for pc in nstmts:-1:1
             stmt = stmts.inst[pc]
 
-            # we escape statements with the `ThrownEscape` property using the effect-freeness
-            # information computed by the inliner
-            is_effect_free = stmts.flag[pc] & IR_FLAG_EFFECT_FREE ≠ 0
-
             # collect escape information
             if isa(stmt, Expr)
                 head = stmt.head
                 if head === :call
-                    has_changes = escape_call!(astate, pc, stmt.args)
+                    throwness_checked = escape_call!(astate, pc, stmt.args)
                     # TODO throwness ≠ "effect-free-ness"
-                    if !is_effect_free
-                        for x in stmt.args
-                            add_escape_change!(astate, x, ThrownEscape(pc))
+                    if !throwness_checked
+                        # we escape statements with the `ThrownEscape` property
+                        # using the effect-freeness computed by `stmt_effect_free`
+                        # invoked within inlining
+                        if !(stmts.flag[pc] & IR_FLAG_EFFECT_FREE ≠ 0)
+                            for x in stmt.args
+                                add_escape_change!(astate, x, ThrownEscape(pc))
+                            end
                         end
-                    else
-                        has_changes || continue
                     end
                 elseif head === :invoke
                     escape_invoke!(astate, pc, stmt.args)
@@ -777,21 +776,20 @@ function escape_call!(astate::AnalysisState, pc::Int, args::Vector{Any})
     ft = argextype(first(args), ir, ir.sptypes, ir.argtypes)
     f = singleton_type(ft)
     if isa(f, Core.IntrinsicFunction)
-        return false # COMBAK we may break soundness here, e.g. `pointerref`
+        # COMBAK we may break soundness here, e.g. `pointerref`
+        return false
     end
     result = escape_builtin!(f, astate, pc, args)
-    if result === false
-        return false # nothing to propagate
-    elseif result === missing
+    if result === missing
         # if this call hasn't been handled by any of pre-defined handlers,
         # we escape this call conservatively
         for i in 2:length(args)
             add_escape_change!(astate, args[i], AllEscape())
         end
-        return true
-    else
-        return true
+    elseif result === true
+        return true # ThrownEscape is already checked
     end
+    return false # will impose ThrownEscape based on `stmt_effect_free`
 end
 
 escape_builtin!(@nospecialize(f), _...) = return missing
@@ -806,7 +804,7 @@ escape_builtin!(::typeof(isdefined), _...) = return false
 escape_builtin!(::typeof(throw), _...) = return false
 
 function escape_builtin!(::typeof(Core.ifelse), astate::AnalysisState, pc::Int, args::Vector{Any})
-    length(args) == 4 || return nothing
+    length(args) == 4 || return false
     f, cond, th, el = args
     ret = SSAValue(pc)
     info = astate.estate[ret]
@@ -825,26 +823,26 @@ function escape_builtin!(::typeof(Core.ifelse), astate::AnalysisState, pc::Int, 
         add_escape_change!(astate, el, info)
         add_alias_change!(astate, el, ret)
     end
-    return nothing
+    return false
 end
 
 function escape_builtin!(::typeof(typeassert), astate::AnalysisState, pc::Int, args::Vector{Any})
-    length(args) == 3 || return nothing
+    length(args) == 3 || return false
     f, obj, typ = args
     ret = SSAValue(pc)
     info = astate.estate[ret]
     add_escape_change!(astate, obj, info)
     add_alias_change!(astate, ret, obj)
-    return nothing
+    return false
 end
 
 function escape_builtin!(::typeof(tuple), astate::AnalysisState, pc::Int, args::Vector{Any})
     escape_new!(astate, pc, args)
-    return nothing
+    return false
 end
 
 function escape_builtin!(::typeof(getfield), astate::AnalysisState, pc::Int, args::Vector{Any})
-    length(args) ≥ 3 || return nothing
+    length(args) ≥ 3 || return false
     ir, estate = astate.ir, astate.estate
     obj = args[2]
     typ = widenconst(argextype(obj, ir))
@@ -854,9 +852,10 @@ function escape_builtin!(::typeof(getfield), astate::AnalysisState, pc::Int, arg
     if isa(obj, SSAValue) || isa(obj, Argument)
         objinfo = estate[obj]
     else
-        return
+        return false
     end
     FieldEscapes = objinfo.FieldEscapes
+    throwness = true
     if isa(FieldEscapes, Bool)
         if !FieldEscapes
             # the fields of this object aren't analyzed yet: analyze them now
@@ -896,11 +895,11 @@ function escape_builtin!(::typeof(getfield), astate::AnalysisState, pc::Int, arg
         end
         add_escape_change!(astate, obj, EscapeLattice(objinfo, FieldEscapes))
     end
-    return nothing
+    return false
 end
 
 function escape_builtin!(::typeof(setfield!), astate::AnalysisState, pc::Int, args::Vector{Any})
-    length(args) ≥ 4 || return nothing
+    length(args) ≥ 4 || return false
     ir, estate = astate.ir, astate.estate
     obj = args[2]
     val = args[4]
@@ -909,7 +908,7 @@ function escape_builtin!(::typeof(setfield!), astate::AnalysisState, pc::Int, ar
     else
         # unanalyzable object (e.g. obj::GlobalRef): escape field value conservatively
         add_escape_change!(astate, val, AllEscape())
-        return
+        return false
     end
     FieldEscapes = objinfo.FieldEscapes
     if isa(FieldEscapes, Bool)
@@ -958,7 +957,7 @@ function escape_builtin!(::typeof(setfield!), astate::AnalysisState, pc::Int, ar
         ssainfo = NoEscape()
     end
     add_escape_change!(astate, val, ssainfo)
-    return nothing
+    return false
 end
 
 # NOTE define fancy package utilities when developing EA as an external package
