@@ -21,16 +21,16 @@ import ._TOP_MOD: ==, getindex, setindex!
 # usings
 import Core:
     MethodInstance, Const, Argument, SSAValue, PiNode, PhiNode, UpsilonNode, PhiCNode,
-    ReturnNode, GotoNode, GotoIfNot, SimpleVector
+    ReturnNode, GotoNode, GotoIfNot, SimpleVector, sizeof, ifelse, arrayset, arrayref
 import ._TOP_MOD:     # Base definitions
     @__MODULE__, @eval, @assert, @nospecialize, @inbounds, @inline, @noinline, @label, @goto,
-    !, !==, !=, ≠, +, -, ≤, <, ≥, >, &, |, include, error, missing,
+    !, !==, !=, ≠, +, -, ≤, <, ≥, >, &, |, include, error, missing, copy,
     Vector, BitSet, IdDict, IdSet, ∪, ⊆, ∩, :, length, get, first, last, in, isempty,
     isassigned, push!, empty!, max, min
 import Core.Compiler: # Core.Compiler specific definitions
-    isbitstype, isexpr, is_meta_expr_head, copy, println,
+    isbitstype, isexpr, is_meta_expr_head, println,
     IRCode, IR_FLAG_EFFECT_FREE, widenconst, argextype, singleton_type, fieldcount_noerror,
-    try_compute_fieldidx, hasintersect
+    try_compute_fieldidx, hasintersect, ⊑ as ⊑ₜ
 
 if isdefined(Core.Compiler, :try_compute_field)
     import Core.Compiler: try_compute_field
@@ -53,6 +53,31 @@ else
     end
 end
 
+if isdefined(Core.Compiler, :array_builtin_common_typecheck) &&
+   isdefined(Core.Compiler, :arrayset_typecheck)
+    import Core.Compiler: array_builtin_common_typecheck, arrayset_typecheck
+else
+    function array_builtin_common_typecheck(
+        @nospecialize(boundcheck), @nospecialize(ary),
+        argtypes::Vector{Any}, first_idx_idx::Int)
+        (boundcheck ⊑ₜ Bool && ary ⊑ₜ Array) || return false
+        for i = first_idx_idx:length(argtypes)
+            argtypes[i] ⊑ₜ Int || return false
+        end
+        return true
+    end
+    function arrayset_typecheck(@nospecialize(atype), @nospecialize(elm))
+        # Check that we can determine the element type
+        atype = widenconst(atype)
+        isa(atype, DataType) || return false
+        ap1 = atype.parameters[1]
+        isa(ap1, Type) || return false
+        # Check that the element type is compatible with the element we're assigning
+        elm ⊑ₜ ap1 || return false
+        return true
+    end
+end
+
 if _TOP_MOD !== Core.Compiler
     include(@__MODULE__, "disjoint_set.jl")
 else
@@ -61,6 +86,8 @@ end
 
 # XXX better to be IdSet{Int}?
 const FieldEscape = BitSet
+const FieldEscapes = Vector{BitSet}
+const ElementEscapes = BitSet
 
 """
     x::EscapeLattice
@@ -73,12 +100,12 @@ A lattice for escape information, which holds the following properties:
 - `x.ThrownEscape::Bool`: indicates `x` may escape to somewhere through an exception
 - `x.EscapeSites::BitSet`: records SSA statements where `x` can escape via any of
   `ReturnEscape` or `ThrownEscape`
-- `x.FieldEscapes::Union{Vector{BitSet},Bool}`: maintains all possible values that impose
+- `x.AliasEscapes::Union{Vector{BitSet},Bool}`: maintains all possible values that impose
   escape information on fields of `x`:
-  * `x.FieldEscapes === false` indicates the fields of `x` isn't analyzed yet
-  * `x.FieldEscapes === true` indicates the fields of `x` can't be analyzed, e.g. the type of `x`
+  * `x.AliasEscapes === false` indicates the fields of `x` isn't analyzed yet
+  * `x.AliasEscapes === true` indicates the fields of `x` can't be analyzed, e.g. the type of `x`
     is not known or is not concrete and thus its fields can't be known precisely
-  * otherwise `x.FieldEscapes::Vector{BitSet}` holds all the possible values that can escape
+  * otherwise `x.AliasEscapes::Vector{BitSet}` holds all the possible values that can escape
     fields of `x`, which allows EA to propagate propagate escape information imposed on a field
     of `x` to its values (by analyzing `Expr(:new, ...)` and `setfield!(x, ...)`).
 - `x.ArgEscape::Int` (not implemented yet): indicates it will escape to the caller through
@@ -104,40 +131,42 @@ struct EscapeLattice
     ReturnEscape::Bool
     ThrownEscape::Bool
     EscapeSites::BitSet
-    FieldEscapes::Union{Vector{FieldEscape},Bool}
+    AliasEscapes #::Union{FieldEscapes,ElementEscapes,Bool}
     # TODO: ArgEscape::Int
 
-    function EscapeLattice(Analyzed::Bool,
-                           ReturnEscape::Bool,
-                           ThrownEscape::Bool,
-                           EscapeSites::BitSet,
-                           FieldEscapes::Union{Vector{FieldEscape},Bool},
-                           )
-        @nospecialize FieldEscapes
+    function EscapeLattice(
+        Analyzed::Bool,
+        ReturnEscape::Bool,
+        ThrownEscape::Bool,
+        EscapeSites::BitSet,
+        AliasEscapes#=::Union{FieldEscapes,ElementEscapes,Bool}=#,
+        )
+        @nospecialize AliasEscapes
         return new(
             Analyzed,
             ReturnEscape,
             ThrownEscape,
             EscapeSites,
-            FieldEscapes,
+            AliasEscapes,
             )
     end
-    function EscapeLattice(x::EscapeLattice,
-                           # non-concrete fields should be passed as default arguments
-                           # in order to avoid allocating non-concrete `NamedTuple`s
-                           FieldEscapes::Union{Vector{FieldEscape},Bool} = x.FieldEscapes;
-                           Analyzed::Bool = x.Analyzed,
-                           ReturnEscape::Bool = x.ReturnEscape,
-                           ThrownEscape::Bool = x.ThrownEscape,
-                           EscapeSites::BitSet = x.EscapeSites,
-                           )
-        @nospecialize FieldEscapes
+    function EscapeLattice(
+        x::EscapeLattice,
+        # non-concrete fields should be passed as default arguments
+        # in order to avoid allocating non-concrete `NamedTuple`s
+        AliasEscapes#=::Union{FieldEscapes,ElementEscapes,Bool}=# = x.AliasEscapes;
+        Analyzed::Bool = x.Analyzed,
+        ReturnEscape::Bool = x.ReturnEscape,
+        ThrownEscape::Bool = x.ThrownEscape,
+        EscapeSites::BitSet = x.EscapeSites,
+        )
+        @nospecialize AliasEscapes
         return new(
             Analyzed,
             ReturnEscape,
             ThrownEscape,
             EscapeSites,
-            FieldEscapes,
+            AliasEscapes,
             )
     end
 end
@@ -168,7 +197,7 @@ has_thrown_escape(x::EscapeLattice, pc::Int) = has_thrown_escape(x) && pc in x.E
 has_all_escape(x::EscapeLattice) = AllEscape() ⊑ x
 
 ignore_fieldsets(x::EscapeLattice) = EscapeLattice(x, BOT_FIELD_SETS)
-has_fieldsets(x::EscapeLattice) = !isa(x.FieldEscapes, Bool)
+has_fieldsets(x::EscapeLattice) = !isa(x.AliasEscapes, Bool)
 
 # TODO is_sroa_eligible: consider throwness?
 
@@ -177,7 +206,13 @@ has_fieldsets(x::EscapeLattice) = !isa(x.FieldEscapes, Bool)
 
 Queries allocation eliminability by SROA.
 """
-is_sroa_eligible(x::EscapeLattice) = x.FieldEscapes !== TOP_FIELD_SETS && !has_return_escape(x)
+function is_sroa_eligible(x::EscapeLattice)
+    if x.AliasEscapes === false || # allows this query to work for immutables since we don't impose escape on them
+       isa(x.AliasEscapes, FieldEscapes)
+        return !has_return_escape(x) # TODO technically we also need to check !has_thrown_escape(x) as well
+    end
+    return false
+end
 
 """
     can_elide_finalizer(x::EscapeLattice, pc::Int) -> Bool
@@ -193,12 +228,15 @@ can_elide_finalizer(x::EscapeLattice, pc::Int) =
 # we need to make sure this `==` operator corresponds to lattice equality rather than object equality,
 # otherwise `propagate_changes` can't detect the convergence
 x::EscapeLattice == y::EscapeLattice = begin
-    xf, yf = x.FieldEscapes, y.FieldEscapes
+    xf, yf = x.AliasEscapes, y.AliasEscapes
     if isa(xf, Bool)
-        isa(yf, Bool) || return false
         xf === yf || return false
+    elseif isa(xf, FieldEscapes)
+        isa(yf, FieldEscapes) || return false
+        xf == yf || return false
     else
-        isa(yf, Bool) && return false
+        xf = xf::ElementEscapes
+        isa(yf, ElementEscapes) || return false
         xf == yf || return false
     end
     return x.Analyzed === y.Analyzed &&
@@ -214,19 +252,25 @@ end
 The non-strict partial order over `EscapeLattice`.
 """
 x::EscapeLattice ⊑ y::EscapeLattice = begin
-    xf, yf = x.FieldEscapes, y.FieldEscapes
+    xf, yf = x.AliasEscapes, y.AliasEscapes
     if isa(xf, Bool)
         xf && yf !== true && return false
-    else
-        if isa(yf, Bool)
-            yf === false && return false
-        else
-            xf, yf = xf::Vector{FieldEscape}, yf::Vector{FieldEscape}
+    elseif isa(xf, FieldEscapes)
+        if isa(yf, FieldEscapes)
             xn, yn = length(xf), length(yf)
             xn > yn && return false
             for i in 1:xn
                 xf[i] ⊆ yf[i] || return false
             end
+        else
+            yf === true || return false
+        end
+    else
+        xf = xf::ElementEscapes
+        if isa(yf, ElementEscapes)
+            xf ⊆ yf || return false
+        else
+            yf === true || return false
         end
     end
     if x.Analyzed ≤ y.Analyzed &&
@@ -261,24 +305,34 @@ x::EscapeLattice ⋤ y::EscapeLattice = !(y ⊑ x)
 Computes the join of `x` and `y` in the partial order defined by `EscapeLattice`.
 """
 x::EscapeLattice ⊔ y::EscapeLattice = begin
-    xf, yf = x.FieldEscapes, y.FieldEscapes
+    xf, yf = x.AliasEscapes, y.AliasEscapes
     if xf === true || yf === true
-        FieldEscapes = true
+        AliasEscapes = true
     elseif xf === false
-        FieldEscapes = yf
+        AliasEscapes = yf
     elseif yf === false
-        FieldEscapes = xf
-    else
-        xf, yf = xf::Vector{FieldEscape}, yf::Vector{FieldEscape}
-        xn, yn = length(xf), length(yf)
-        nmax, nmin = max(xn, yn), min(xn, yn)
-        FieldEscapes = Vector{FieldEscape}(undef, nmax)
-        for i in 1:nmax
-            if i > nmin
-                FieldEscapes[i] = (xn > yn ? xf : yf)[i]
-            else
-                FieldEscapes[i] = xf[i] ∪ yf[i]
+        AliasEscapes = xf
+    elseif isa(xf, FieldEscapes)
+        if isa(yf, FieldEscapes)
+            xn, yn = length(xf), length(yf)
+            nmax, nmin = max(xn, yn), min(xn, yn)
+            AliasEscapes = Vector{FieldEscape}(undef, nmax)
+            for i in 1:nmax
+                if i > nmin
+                    AliasEscapes[i] = (xn > yn ? xf : yf)[i]
+                else
+                    AliasEscapes[i] = xf[i] ∪ yf[i]
+                end
             end
+        else
+            AliasEscapes = true # handle conflicting case conservatively
+        end
+    else
+        xf = xf::ElementEscapes
+        if isa(yf, ElementEscapes)
+            AliasEscapes = xf ∪ yf
+        else
+            AliasEscapes = true # handle conflicting case conservatively
         end
     end
     # try to avoid new allocations as minor optimizations
@@ -297,7 +351,7 @@ x::EscapeLattice ⊔ y::EscapeLattice = begin
         x.ReturnEscape | y.ReturnEscape,
         x.ThrownEscape | y.ThrownEscape,
         EscapeSites,
-        FieldEscapes,
+        AliasEscapes,
         )
 end
 
@@ -312,7 +366,7 @@ x::EscapeLattice ⊓ y::EscapeLattice = begin
         x.ReturnEscape & y.ReturnEscape,
         x.ThrownEscape & y.ThrownEscape,
         x.EscapeSites ∩ y.EscapeSites,
-        x.FieldEscapes, # FIXME
+        x.AliasEscapes, # FIXME
         )
 end
 
@@ -453,7 +507,7 @@ function find_escapes(ir::IRCode, nargs::Int)
         local anyupdate = false
 
         for pc in nstmts:-1:1
-            stmt = stmts.inst[pc]
+            stmt = stmts[pc][:inst]
 
             # collect escape information
             if isa(stmt, Expr)
@@ -717,22 +771,29 @@ function escape_new!(astate::AnalysisState, pc::Int, args::Vector{Any})
     if objinfo == NotAnalyzed()
         objinfo = NoEscape()
     end
-    FieldEscapes = objinfo.FieldEscapes
+    AliasEscapes = objinfo.AliasEscapes
     nargs = length(args)
-    if isa(FieldEscapes, Bool)
+    if isa(AliasEscapes, Bool)
         # the fields couldn't be analyzed precisely: propagate the entire escape information
         # of this object to all its fields as the most conservative propagation
         for i in 2:nargs
             add_escape_change!(astate, args[i], objinfo)
         end
-    else
-        nf = length(FieldEscapes)
+    elseif isa(AliasEscapes, FieldEscapes)
+        # fields are known: propagate escape information imposed on recorded possibilities
+        nf = length(AliasEscapes)
         for i in 2:nargs
             # fields are known: propagate the escape information of this object ignoring field information
             add_escape_change!(astate, args[i], ignore_fieldsets(objinfo))
             # fields are known: propagate escape information imposed on recorded possibilities
             i-1 > nf && break # may happen when e.g. ϕ-node merges values with different types
-            escape_field!(astate, args[i], FieldEscapes[i-1])
+            escape_field!(astate, args[i], AliasEscapes[i-1])
+        end
+    else
+        # this object has been used as array, but it is allocated as struct here (i.e. should throw)
+        @assert isa(AliasEscapes, ElementEscapes)
+        for i in 2:nargs
+            add_escape_change!(astate, args[i], ThrownEscape(pc))
         end
     end
     if !(astate.ir.stmts.flag[pc] & IR_FLAG_EFFECT_FREE ≠ 0)
@@ -754,16 +815,32 @@ end
 # escape every argument `(args[6:length(args[3])])` and the name `args[1]`
 # TODO: we can apply a similar strategy like builtin calls to specialize some foreigncalls
 function escape_foreigncall!(astate::AnalysisState, pc::Int, args::Vector{Any})
+    nargs = length(args)
+    if nargs ≤ 6
+        # invalid foreigncall, just escape everything
+        for i in 1:nargs
+            add_escape_change!(astate, args[i], ThrownEscape(pc))
+        end
+        return
+    end
     foreigncall_nargs = length((args[3])::SimpleVector)
     name = args[1]
-    # if normalize(name) === :jl_gc_add_finalizer_th
-    #     # add `FinalizerEscape` ?
+    # nn = normalize(name)
+    # if isa(nn, Symbol)
+    #     if nn === :jl_gc_add_finalizer_th
+    #         # TODO add `FinalizerEscape` ?
+    #     end
     # end
-    add_escape_change!(astate, name, ThrownEscape(pc))
-    for i in 6:5+foreigncall_nargs
-        add_escape_change!(astate, args[i], ThrownEscape(pc))
+    # NOTE array allocations might have been proven as nothrow (https://github.com/JuliaLang/julia/pull/43565)
+    if !(astate.ir.stmts[pc][:flag] & IR_FLAG_EFFECT_FREE ≠ 0)
+        add_escape_change!(astate, name, ThrownEscape(pc))
+        for i in 6:5+foreigncall_nargs
+            add_escape_change!(astate, args[i], ThrownEscape(pc))
+        end
     end
 end
+
+normalize(@nospecialize x) = isa(x, QuoteNode) ? x.value : x
 
 # NOTE error cases will be handled in `find_escapes` anyway, so we don't need to take care of them below
 # TODO implement more builtins, make them more accurate
@@ -804,13 +881,13 @@ escape_builtin!(@nospecialize(f), _...) = return missing
 # safe builtins
 escape_builtin!(::typeof(isa), _...) = return false
 escape_builtin!(::typeof(typeof), _...) = return false
-escape_builtin!(::typeof(Core.sizeof), _...) = return false
+escape_builtin!(::typeof(sizeof), _...) = return false
 escape_builtin!(::typeof(===), _...) = return false
 # not really safe, but `ThrownEscape` will be imposed later
 escape_builtin!(::typeof(isdefined), _...) = return false
 escape_builtin!(::typeof(throw), _...) = return false
 
-function escape_builtin!(::typeof(Core.ifelse), astate::AnalysisState, pc::Int, args::Vector{Any})
+function escape_builtin!(::typeof(ifelse), astate::AnalysisState, pc::Int, args::Vector{Any})
     length(args) == 4 || return false
     f, cond, th, el = args
     ret = SSAValue(pc)
@@ -861,14 +938,14 @@ function escape_builtin!(::typeof(getfield), astate::AnalysisState, pc::Int, arg
     else
         return false
     end
-    FieldEscapes = objinfo.FieldEscapes
-    if isa(FieldEscapes, Bool)
-        if !FieldEscapes
+    AliasEscapes = objinfo.AliasEscapes
+    if isa(AliasEscapes, Bool)
+        if !AliasEscapes
             # the fields of this object aren't analyzed yet: analyze them now
             nfields = fieldcount_noerror(typ)
             if nfields !== nothing
-                FieldEscapes = FieldEscape[FieldEscape() for _ in 1:nfields]
-                @goto add_field_escape
+                AliasEscapes = FieldEscape[FieldEscape() for _ in 1:nfields]
+                @goto record_field_escape
             end
             # unsuccessful field analysis: update obj's field information
             objinfo = EscapeLattice(objinfo, TOP_FIELD_SETS)
@@ -876,16 +953,17 @@ function escape_builtin!(::typeof(getfield), astate::AnalysisState, pc::Int, arg
         end
         # the field couldn't be analyzed precisely: propagate the escape information
         # imposed on the return value of this `getfield` call to the object itself
-        # as the most conservative option
+        # as the most conservative propagation
         ssainfo = estate[SSAValue(pc)]
         if ssainfo == NotAnalyzed()
             ssainfo = NoEscape()
         end
         add_escape_change!(astate, obj, ssainfo)
-    else
-        # fields are known: record the return value of this `getfield` call as a possibility that imposes escape
-        FieldEscapes = copy(FieldEscapes)
-        @label add_field_escape
+    elseif isa(AliasEscapes, FieldEscapes)
+        # fields are known: record the return value of this `getfield` call as a possibility
+        # that imposes escape on field(s) being referenced
+        AliasEscapes = copy(AliasEscapes)
+        @label record_field_escape
         if isa(typ, DataType)
             fld = args[3]
             fldval = try_compute_field(ir, fld)
@@ -895,14 +973,21 @@ function escape_builtin!(::typeof(getfield), astate::AnalysisState, pc::Int, arg
         end
         if fidx !== nothing
             # the field is known precisely: propagate this escape information to the field
-            push!(FieldEscapes[fidx], iridx(SSAValue(pc), estate))
+            push!(AliasEscapes[fidx], iridx(SSAValue(pc), estate))
         else
             # the field isn't known precisely: propagate this escape information to all the fields
-            for FieldEscape in FieldEscapes
+            for FieldEscape in AliasEscapes
                 push!(FieldEscape, iridx(SSAValue(pc), estate))
             end
         end
-        add_escape_change!(astate, obj, EscapeLattice(objinfo, FieldEscapes))
+        add_escape_change!(astate, obj, EscapeLattice(objinfo, AliasEscapes))
+    else
+        # this object has been used as array, but it is used as struct here (i.e. should throw)
+        @assert isa(AliasEscapes, ElementEscapes)
+        for i in 2:length(args)
+            add_escape_change!(astate, args[i], ThrownEscape(pc))
+        end
+        return true
     end
     return false
 end
@@ -919,16 +1004,16 @@ function escape_builtin!(::typeof(setfield!), astate::AnalysisState, pc::Int, ar
         add_escape_change!(astate, val, AllEscape())
         return false
     end
-    FieldEscapes = objinfo.FieldEscapes
-    if isa(FieldEscapes, Bool)
-        if !FieldEscapes
+    AliasEscapes = objinfo.AliasEscapes
+    if isa(AliasEscapes, Bool)
+        if !AliasEscapes
             # the fields of this object aren't analyzed yet: analyze them now
             typ = widenconst(argextype(obj, ir))
             nfields = fieldcount_noerror(typ)
             if nfields !== nothing
                 # successful field analysis: update obj's field information
-                FieldEscapes = FieldEscape[FieldEscape() for _ in 1:nfields]
-                objinfo = EscapeLattice(objinfo, FieldEscapes)
+                AliasEscapes = FieldEscape[FieldEscape() for _ in 1:nfields]
+                objinfo = EscapeLattice(objinfo, AliasEscapes)
                 add_escape_change!(astate, obj, objinfo)
                 @goto add_field_escape
             end
@@ -936,10 +1021,10 @@ function escape_builtin!(::typeof(setfield!), astate::AnalysisState, pc::Int, ar
             objinfo = EscapeLattice(objinfo, TOP_FIELD_SETS)
             add_escape_change!(astate, obj, objinfo)
         end
-        # the field couldn't be analyzed precisely: propagate the escape information
-        # of this object to the field (as the most conservative option)
+        # the field couldn't be analyzed precisely: propagate the entire escape information
+        # of this object to the value being assigned as the most conservative propagation
         add_escape_change!(astate, val, objinfo)
-    else
+    elseif isa(AliasEscapes, FieldEscapes)
         # fields are known: propagate escape information imposed on recorded possibilities
         typ = widenconst(argextype(obj, ir))
         @label add_field_escape
@@ -952,15 +1037,22 @@ function escape_builtin!(::typeof(setfield!), astate::AnalysisState, pc::Int, ar
         end
         if fidx !== nothing
             # the field is known precisely: propagate this escape information to the field
-            escape_field!(astate, val, FieldEscapes[fidx])
+            escape_field!(astate, val, AliasEscapes[fidx])
         else
             # the field isn't known precisely: propagate this escape information to all the fields
-            for FieldEscape in FieldEscapes
+            for FieldEscape in AliasEscapes
                 escape_field!(astate, val, FieldEscape)
             end
         end
         # fields are known: propagate the escape information of this object ignoring field information
         add_escape_change!(astate, val, ignore_fieldsets(objinfo))
+    else
+        # this object has been used as array, but it is "used" as struct here (i.e. should throw)
+        @assert isa(AliasEscapes, ElementEscapes)
+        for i in 2:length(args)
+            add_escape_change!(astate, args[i], ThrownEscape(pc))
+        end
+        return true
     end
     # also propagate escape information imposed on the return value of this `setfield!`
     ssainfo = estate[SSAValue(pc)]
@@ -970,6 +1062,139 @@ function escape_builtin!(::typeof(setfield!), astate::AnalysisState, pc::Int, ar
     add_escape_change!(astate, val, ssainfo)
     return false
 end
+
+function escape_builtin!(::typeof(arrayref), astate::AnalysisState, pc::Int, args::Vector{Any})
+    length(args) ≥ 4 || return false
+    # check potential escapes from this arrayref call
+    # NOTE here we essentially only need to account for TypeError, assuming that
+    # UndefRefError or BoundsError don't capture any of the arguments here
+    argtypes = Any[argextype(args[i], astate.ir) for i in 2:length(args)]
+    boundcheckt = argtypes[1]
+    aryt = argtypes[2]
+    if !array_builtin_common_typecheck(boundcheckt, aryt, argtypes, 3)
+        for i in 2:length(args)
+            add_escape_change!(astate, args[i], ThrownEscape(pc))
+        end
+    end
+    # we don't track precise index information about this array and thus don't know what values
+    # can be referenced here: directly propagate the escape information imposed on the return
+    # value of this `arrayref` call to the array itself as the most conservative propagation
+    # but also with updated index information
+    # TODO enable index analysis when constant values are available?
+    estate = astate.estate
+    ary = args[3]
+    if isa(ary, SSAValue) || isa(ary, Argument)
+        aryinfo = estate[ary]
+    else
+        return true
+    end
+    AliasEscapes = aryinfo.AliasEscapes
+    ret = SSAValue(pc)
+    if isa(AliasEscapes, Bool)
+        if !AliasEscapes
+            # the elements of this array aren't analyzed yet: analyze them now
+            AliasEscapes = ElementEscapes()
+            @goto record_element_escape
+        end
+        ssainfo = estate[ret]
+        if ssainfo == NotAnalyzed()
+            ssainfo = NoEscape()
+        end
+        add_escape_change!(astate, ary, ssainfo)
+        if isa(boundcheckt, Const)
+            if boundcheckt.val::Bool
+                add_escape_change!(astate, ary, ThrownEscape(pc))
+            end
+        end
+    elseif isa(AliasEscapes, ElementEscapes)
+        # record the return value of this `arrayref` call as a possibility that imposes escape
+        AliasEscapes = copy(AliasEscapes)
+        @label record_element_escape
+        push!(AliasEscapes, iridx(ret, estate))
+        add_escape_change!(astate, ary, EscapeLattice(aryinfo, AliasEscapes))
+        if isa(boundcheckt, Const)
+            if boundcheckt.val::Bool
+                add_escape_change!(astate, ret, ThrownEscape(pc))
+            end
+        end
+    else
+        # this object has been used as struct, but it is used as here (i.e. should throw)
+        @assert isa(AliasEscapes, FieldEscapes)
+        for i in 2:length(args)
+            add_escape_change!(astate, args[i], ThrownEscape(pc))
+        end
+        return true
+    end
+    return true
+end
+
+function escape_builtin!(::typeof(arrayset), astate::AnalysisState, pc::Int, args::Vector{Any})
+    length(args) ≥ 5 || return false
+    # check potential escapes from this arrayset call
+    # NOTE here we essentially only need to account for TypeError, assuming that
+    # UndefRefError or BoundsError don't capture any of the arguments here
+    argtypes = Any[argextype(args[i], astate.ir) for i in 2:length(args)]
+    boundcheckt = argtypes[1]
+    aryt = argtypes[2]
+    valt = argtypes[3]
+    if !(array_builtin_common_typecheck(boundcheckt, aryt, argtypes, 4) &&
+         arrayset_typecheck(aryt, valt))
+        for i in 2:length(args)
+            add_escape_change!(astate, args[i], ThrownEscape(pc))
+        end
+    end
+    # we don't track precise index information about this array and won't record what value
+    # is being assigned here: directly propagate the escape information of this array to
+    # the value being assigned as the most conservative propagation
+    # TODO enable index analysis when constant values are available?
+    estate = astate.estate
+    ary = args[3]
+    val = args[4]
+    if isa(ary, SSAValue) || isa(ary, Argument)
+        aryinfo = estate[ary]
+    else
+        # unanalyzable object (e.g. obj::GlobalRef): escape field value conservatively
+        add_escape_change!(astate, val, AllEscape())
+        return true
+    end
+    AliasEscapes = aryinfo.AliasEscapes
+    if isa(AliasEscapes, Bool)
+        if !AliasEscapes
+            # the elements of this array aren't analyzed yet: analyze them now
+            AliasEscapes = ElementEscapes()
+            @goto add_element_escape
+        end
+        add_escape_change!(astate, val, aryinfo)
+    elseif isa(AliasEscapes, ElementEscapes)
+        @label add_element_escape
+        for xidx in AliasEscapes
+            x = irval(xidx, estate)::SSAValue # TODO remove me once we implement ArgEscape
+            add_escape_change!(astate, val, estate[x])
+            add_alias_change!(astate, val, x)
+        end
+        add_escape_change!(astate, val, ignore_fieldsets(aryinfo))
+    else
+        # this object has been used as struct, but it is used as here (i.e. should throw)
+        @assert isa(AliasEscapes, FieldEscapes)
+        for i in 2:length(args)
+            add_escape_change!(astate, args[i], ThrownEscape(pc))
+        end
+        return true
+    end
+    # also propagate escape information imposed on the return value of this `arrayset`
+    ssainfo = estate[SSAValue(pc)]
+    if ssainfo == NotAnalyzed()
+        ssainfo = NoEscape()
+    end
+    add_escape_change!(astate, ary, ssainfo)
+    return true
+end
+
+# if isdefined(Core, :arrayfreeze)
+# function escape_builtin!(::typeof(Core.arrayfreeze), astate::AnalysisState, pc::Int, args::Vector{Any})
+#     return true # TODO needs to account for `TypeError` etc.
+# end
+# end # if isdefined(Core, :arrayfreeze)
 
 # NOTE define fancy package utilities when developing EA as an external package
 if _TOP_MOD !== Core.Compiler

@@ -9,7 +9,7 @@ This analysis works on a lattice called `x::EscapeLattice`, which holds the foll
 - `x.ThrownEscape::Bool`: indicates `x` may escape to somewhere through an exception
 - `x.EscapeSites::BitSet`: records SSA statements where `x` can escape via any of
   `ReturnEscape` or `ThrownEscape`
-- `x.FieldEscapes::Union{Vector{BitSet},Bool}`: maintains all possible values that impose
+- `x.AliasEscapes::Union{Vector{BitSet},Bool}`: maintains all possible values that impose
   escape information on fields of `x`
 - `x.ArgEscape::Int` (not implemented yet): indicates it will escape to the caller through
   `setfield!` on argument(s)
@@ -41,7 +41,7 @@ forward analysis otherwise. As a result, this scheme enables a very simple imple
 escape analysis, e.g. `PhiNode` for example can be handled relatively easily by propagating
 escape information imposed on it to its predecessors.
 
-It would be also worth noting that the `FieldEscapes` property enables a backward field
+It would be also worth noting that the `AliasEscapes` property enables a backward field
 analysis. It records _all possibilities that can escape fields of object_ at "usage" sites,
 and then escape information imposed on those escape possibilities are propagated to the
 actual field values later at "definition" site. More specifically, the analysis records a
@@ -54,7 +54,7 @@ v = getfield(obj, :val)
 return v
 ```
 In the example above, `ReturnEscape` imposed on `v` is _not_ directly propagated to `obj`.
-Rather the identity of `v` is recorded in `obj`'s `FieldEscapes[1]` and then `v`'s escape
+Rather the identity of `v` is recorded in `obj`'s `AliasEscapes[1]` and then `v`'s escape
 information is propagated to `val` when `obj = Expr(:new, Obj, val)` is analyzed.
 
 Finally, the analysis also needs to track which values can be aliased to each other. This is

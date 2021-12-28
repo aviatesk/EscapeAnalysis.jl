@@ -1,12 +1,37 @@
 using EscapeAnalysis, Test, JET
 import Core: Argument, SSAValue
 
+@static if isdefined(Core.Compiler, :alloc_array_ndims)
+    import Core.Compiler: alloc_array_ndims
+else
+    function alloc_array_ndims(name::Symbol)
+        if name === :jl_alloc_array_1d
+            return 1
+        elseif name === :jl_alloc_array_2d
+            return 2
+        elseif name === :jl_alloc_array_3d
+            return 3
+        elseif name === :jl_new_array
+            return 0
+        end
+        return nothing
+    end
+end
+
 isT(T) = (@nospecialize x) -> x === T
 issubT(T) = (@nospecialize x) -> x <: T
 isreturn(@nospecialize x) = isa(x, Core.ReturnNode) && isdefined(x, :val)
 isthrow(@nospecialize x) = Meta.isexpr(x, :call) && Core.Compiler.is_throw_call(x)
 isnew(@nospecialize x) = Meta.isexpr(x, :new)
 isϕ(@nospecialize x) = isa(x, Core.PhiNode)
+function isarrayalloc(@nospecialize x)
+    if Meta.isexpr(x, :foreigncall)
+        name = x.args[1]
+        nn = EscapeAnalysis.normalize(name)
+        return alloc_array_ndims(nn) !== nothing
+    end
+    return false
+end
 import Core.Compiler: argextype, singleton_type
 const EMPTY_SPTYPES = Any[]
 iscall(y) = @nospecialize(x) -> iscall(y, x)
