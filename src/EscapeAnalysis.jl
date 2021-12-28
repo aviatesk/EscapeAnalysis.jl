@@ -30,7 +30,7 @@ import ._TOP_MOD:     # Base definitions
 import Core.Compiler: # Core.Compiler specific definitions
     isbitstype, isexpr, is_meta_expr_head, copy, println,
     IRCode, IR_FLAG_EFFECT_FREE, widenconst, argextype, singleton_type, fieldcount_noerror,
-    try_compute_fieldidx, hasintersect
+    try_compute_fieldidx, hasintersect, ⊑ as ⊑ₜ
 
 if isdefined(Core.Compiler, :try_compute_field)
     import Core.Compiler: try_compute_field
@@ -50,6 +50,31 @@ else
             end
         end
         return isa(field, Union{Int, Symbol}) ? field : nothing
+    end
+end
+
+if isdefined(Core.Compiler, :array_builtin_common_typecheck) &&
+   isdefined(Core.Compiler, :arrayset_typecheck)
+    import Core.Compiler: array_builtin_common_typecheck, arrayset_typecheck
+else
+    function array_builtin_common_typecheck(
+        @nospecialize(boundcheck), @nospecialize(ary),
+        argtypes::Vector{Any}, first_idx_idx::Int)
+        (boundcheck ⊑ₜ Bool && ary ⊑ₜ Array) || return false
+        for i = first_idx_idx:length(argtypes)
+            argtypes[i] ⊑ₜ Int || return false
+        end
+        return true
+    end
+    function arrayset_typecheck(@nospecialize(atype), @nospecialize(elm))
+        # Check that we can determine the element type
+        atype = widenconst(atype)
+        isa(atype, DataType) || return false
+        ap1 = atype.parameters[1]
+        isa(ap1, Type) || return false
+        # Check that the element type is compatible with the element we're assigning
+        elm ⊑ₜ ap1 || return false
+        return true
     end
 end
 
@@ -453,7 +478,7 @@ function find_escapes(ir::IRCode, nargs::Int)
         local anyupdate = false
 
         for pc in nstmts:-1:1
-            stmt = stmts.inst[pc]
+            stmt = stmts[pc][:inst]
 
             # collect escape information
             if isa(stmt, Expr)
@@ -465,7 +490,7 @@ function find_escapes(ir::IRCode, nargs::Int)
                         # we escape statements with the `ThrownEscape` property
                         # using the effect-freeness computed by `stmt_effect_free`
                         # invoked within inlining
-                        if !(stmts.flag[pc] & IR_FLAG_EFFECT_FREE ≠ 0)
+                        if !(stmts[pc][:flag] & IR_FLAG_EFFECT_FREE ≠ 0)
                             for x in stmt.args
                                 add_escape_change!(astate, x, ThrownEscape(pc))
                             end
@@ -756,16 +781,39 @@ end
 # escape every argument `(args[6:length(args[3])])` and the name `args[1]`
 # TODO: we can apply a similar strategy like builtin calls to specialize some foreigncalls
 function escape_foreigncall!(astate::AnalysisState, pc::Int, args::Vector{Any})
+    nargs = length(args)
+    if nargs ≥ 6
+        # invalid foreigncall, just escape everything
+        for i in 1:nargs
+            add_escape_change!(astate, args[i], ThrownEscape(pc))
+        end
+        return
+    end
     foreigncall_nargs = length((args[3])::SimpleVector)
     name = args[1]
-    # if normalize(name) === :jl_gc_add_finalizer_th
-    #     # add `FinalizerEscape` ?
-    # end
+    nn = normalize(name)
+    if isa(nn, Symbol)
+        if is_array_alloc(nn)
+            if !(astate.ir.stmts[pc][:flag] & IR_FLAG_EFFECT_FREE ≠ 0)
+                # we only need to account for possible escape from:
+                # ERROR: TypeError: in Array, in element type, expected Type, got a value of type args[6]
+                add_escape_change!(astate, args[6], ThrownEscape(pc))
+            end
+            return
+        # elseif nn === :jl_gc_add_finalizer_th
+        #     # TODO add `FinalizerEscape` ?
+        end
+    end
     add_escape_change!(astate, name, ThrownEscape(pc))
     for i in 6:5+foreigncall_nargs
         add_escape_change!(astate, args[i], ThrownEscape(pc))
     end
 end
+
+normalize(@nospecialize x) = isa(x, QuoteNode) ? x.value : x
+is_array_alloc(name::Symbol) =
+    name === :jl_alloc_array_1d || name === :jl_alloc_array_2d || name === :jl_alloc_array_3d ||
+    name === :jl_new_array
 
 # NOTE error cases will be handled in `find_escapes` anyway, so we don't need to take care of them below
 # TODO implement more builtins, make them more accurate
@@ -866,8 +914,8 @@ function escape_builtin!(::typeof(getfield), astate::AnalysisState, pc::Int, arg
             end
         end
         # the field couldn't be analyzed precisely: directly propagate the escape information
-        # imposed on the return value of this `getfield` call to the object (which is the most conservative option)
-        # but also with updated field information
+        # imposed on the return value of this `getfield` call to the object itself
+        # as the most conservative propagation but also with updated field information
         ssainfo = estate[SSAValue(pc)]
         if ssainfo == NotAnalyzed()
             ssainfo = NoEscape()
@@ -928,7 +976,7 @@ function escape_builtin!(::typeof(setfield!), astate::AnalysisState, pc::Int, ar
             add_escape_change!(astate, obj, objinfo)
         end
         # the field couldn't be analyzed precisely: directly propagate the escape information
-        # of this object to the field (which is the most conservative option)
+        # of this object to the field as the most conservative propagation
         add_escape_change!(astate, val, objinfo)
     else
         # fields are known: propagate escape information imposed on recorded possibilities
@@ -959,6 +1007,81 @@ function escape_builtin!(::typeof(setfield!), astate::AnalysisState, pc::Int, ar
     add_escape_change!(astate, val, ssainfo)
     return false
 end
+
+function escape_builtin!(::typeof(Core.arrayref), astate::AnalysisState, pc::Int, args::Vector{Any})
+    length(args) ≥ 4 || return false
+    # check potential escapes from this arrayref call
+    # NOTE here we essentially only need to account for TypeError, assuming that
+    # UndefRefError or BoundsError don't capture any of the arguments here
+    argtypes = Any[argextype(args[i], astate.ir) for i in 2:length(args)]
+    boundcheckt = argtypes[1]
+    aryt = argtypes[2]
+    if !array_builtin_common_typecheck(boundcheckt, aryt, argtypes, 3)
+        for i in 2:length(args)
+            add_escape_change!(astate, args[i], ThrownEscape(pc))
+        end
+    end
+    # we don't track precise index information about this array and thus don't know what values
+    # can be referenced here: directly propagate the escape information imposed on the return
+    # value of this `arrayref` call to the array itself as the most conservative propagation
+    # but also with updated index information
+    # TODO enable index analysis when constant values are available?
+    ary = args[3]
+    estate = astate.estate
+    ssainfo = estate[SSAValue(pc)]
+    if ssainfo == NotAnalyzed()
+        ssainfo = NoEscape()
+    end
+    add_escape_change!(astate, ary, EscapeLattice(ssainfo, TOP_FIELD_SETS))
+    return true
+end
+
+function escape_builtin!(::typeof(Core.arrayset), astate::AnalysisState, pc::Int, args::Vector{Any})
+    length(args) ≥ 5 || return false
+    # check potential escapes from this arrayset call
+    # NOTE here we essentially only need to account for TypeError, assuming that
+    # UndefRefError or BoundsError don't capture any of the arguments here
+    argtypes = Any[argextype(args[i], astate.ir) for i in 2:length(args)]
+    boundcheckt = argtypes[1]
+    aryt = argtypes[2]
+    valt = argtypes[3]
+    if !(array_builtin_common_typecheck(boundcheckt, aryt, argtypes, 4) &&
+         arrayset_typecheck(aryt, valt))
+        for i in 2:length(args)
+            add_escape_change!(astate, args[i], ThrownEscape(pc))
+        end
+    end
+    # we don't track precise index information about this array and won't record what value
+    # is being assigned here: directly propagate the escape information of this array to
+    # the value being assigned as the most conservative propagation
+    # TODO enable index analysis when constant values are available?
+    estate = astate.estate
+    ary = args[3]
+    if isa(ary, SSAValue) || isa(ary, Argument)
+        aryinfo = estate[ary]
+    else
+        # unanalyzable object (e.g. obj::GlobalRef): escape field value conservatively
+        add_escape_change!(astate, val, AllEscape())
+        return true
+    end
+    val = args[4]
+    aryinfo = EscapeLattice(aryinfo, TOP_FIELD_SETS)
+    add_escape_change!(astate, ary, aryinfo)
+    add_escape_change!(astate, val, aryinfo)
+    # also propagate escape information imposed on the return value of this `arrayset`
+    ssainfo = estate[SSAValue(pc)]
+    if ssainfo == NotAnalyzed()
+        ssainfo = NoEscape()
+    end
+    add_escape_change!(astate, ary, ssainfo)
+    return true
+end
+
+# if isdefined(Core, :arrayfreeze)
+# function escape_builtin!(::typeof(Core.arrayfreeze), astate::AnalysisState, pc::Int, args::Vector{Any})
+#     return true # TODO needs to account for `TypeError` etc.
+# end
+# end # if isdefined(Core, :arrayfreeze)
 
 # NOTE define fancy package utilities when developing EA as an external package
 if _TOP_MOD !== Core.Compiler
