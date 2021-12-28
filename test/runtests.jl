@@ -1,43 +1,4 @@
-using EscapeAnalysis, Test, JET
-import Core: Argument, SSAValue
-
-isT(T) = (@nospecialize x) -> x === T
-issubT(T) = (@nospecialize x) -> x <: T
-isreturn(@nospecialize x) = isa(x, Core.ReturnNode) && isdefined(x, :val)
-isthrow(@nospecialize x) = Meta.isexpr(x, :call) && Core.Compiler.is_throw_call(x)
-isnew(@nospecialize x) = Meta.isexpr(x, :new)
-isϕ(@nospecialize x) = isa(x, Core.PhiNode)
-import Core.Compiler: argextype, singleton_type
-const EMPTY_SPTYPES = Any[]
-iscall(y) = @nospecialize(x) -> iscall(y, x)
-function iscall((ir, f), @nospecialize(x))
-    return iscall(x) do @nospecialize x
-        Core.Compiler.singleton_type(Core.Compiler.argextype(x, ir, EMPTY_SPTYPES)) === f
-    end
-end
-iscall(pred::Function, @nospecialize(x)) = Meta.isexpr(x, :call) && pred(x.args[1])
-
-let setup_ex = quote
-        mutable struct SafeRef{T}
-            x::T
-        end
-        Base.getindex(s::SafeRef) = getfield(s, 1)
-        Base.setindex!(s::SafeRef, x) = setfield!(s, 1, x)
-
-        mutable struct SafeRefs{S,T}
-            x1::S
-            x2::T
-        end
-        Base.getindex(s::SafeRefs, idx::Int) = getfield(s, idx)
-        Base.setindex!(s::SafeRefs, x, idx::Int) = setfield!(s, idx, x)
-    end
-    global function EATModule(setup_ex = setup_ex)
-        M = Module()
-        Core.eval(M, setup_ex)
-        return M
-    end
-    Core.eval(@__MODULE__, setup_ex)
-end
+include("setup.jl")
 
 @testset "EscapeAnalysis" begin
 
@@ -659,6 +620,35 @@ end
         @test has_return_escape(result.state[Argument(2)], r)
         for i in findall(isnew, result.ir.stmts.inst)
             @test is_sroa_eligible(result.state[SSAValue(i)])
+        end
+    end
+    let result = analyze_escapes() do
+            o1 = SafeRef("foo")
+            o2 = SafeRef(o1)
+            return o2
+        end
+        r = only(findall(isreturn, result.ir.stmts.inst))
+        for i in findall(isnew, result.ir.stmts.inst)
+            @test has_return_escape(result.state[SSAValue(i)], r)
+        end
+    end
+    let result = analyze_escapes() do
+            o1   = SafeRef("foo")
+            o2′  = SafeRef(nothing)
+            o2   = SafeRef{SafeRef}(o2′)
+            o2[] = o1
+            return o2
+        end
+        r = only(findall(isreturn, result.ir.stmts.inst))
+        findall(1:length(result.ir.stmts)) do i
+            if isnew(result.ir.stmts[i][:inst])
+                t = result.ir.stmts[i][:type]
+                return t === SafeRef{String}  || # o1
+                       t === SafeRef{SafeRef}    # o2
+            end
+            return false
+        end |> x->foreach(x) do i
+            @test has_return_escape(result.state[SSAValue(i)], r)
         end
     end
     let result = analyze_escapes((String,)) do x
