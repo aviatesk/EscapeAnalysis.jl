@@ -59,8 +59,8 @@ else
     include(@__MODULE__, "compiler/EscapeAnalysis/disjoint_set.jl")
 end
 
-const EscapeSet  = BitSet # XXX better to be IdSet{Int}?
-const EscapeSets = Vector{EscapeSet}
+# XXX better to be IdSet{Int}?
+const FieldEscape = BitSet
 
 """
     x::EscapeLattice
@@ -73,12 +73,12 @@ A lattice for escape information, which holds the following properties:
 - `x.ThrownEscape::Bool`: indicates `x` may escape to somewhere through an exception
 - `x.EscapeSites::BitSet`: records SSA statements where `x` can escape via any of
   `ReturnEscape` or `ThrownEscape`
-- `x.FieldEscapes::Union{Vector{IdSet{Any}},Bool}`: maintains all possible values that impose
+- `x.FieldEscapes::Union{Vector{BitSet},Bool}`: maintains all possible values that impose
   escape information on fields of `x`:
   * `x.FieldEscapes === false` indicates the fields of `x` isn't analyzed yet
   * `x.FieldEscapes === true` indicates the fields of `x` can't be analyzed, e.g. the type of `x`
     is not known or is not concrete and thus its fields can't be known precisely
-  * otherwise `x.FieldEscapes::Vector{IdSet{Any}}` holds all the possible values that can escape
+  * otherwise `x.FieldEscapes::Vector{BitSet}` holds all the possible values that can escape
     fields of `x`, which allows EA to propagate propagate escape information imposed on a field
     of `x` to its values (by analyzing `Expr(:new, ...)` and `setfield!(x, ...)`).
 - `x.ArgEscape::Int` (not implemented yet): indicates it will escape to the caller through
@@ -104,14 +104,14 @@ struct EscapeLattice
     ReturnEscape::Bool
     ThrownEscape::Bool
     EscapeSites::BitSet
-    FieldEscapes::Union{EscapeSets,Bool}
+    FieldEscapes::Union{Vector{FieldEscape},Bool}
     # TODO: ArgEscape::Int
 
     function EscapeLattice(Analyzed::Bool,
                            ReturnEscape::Bool,
                            ThrownEscape::Bool,
                            EscapeSites::BitSet,
-                           FieldEscapes::Union{EscapeSets,Bool},
+                           FieldEscapes::Union{Vector{FieldEscape},Bool},
                            )
         @nospecialize FieldEscapes
         return new(
@@ -125,7 +125,7 @@ struct EscapeLattice
     function EscapeLattice(x::EscapeLattice,
                            # non-concrete fields should be passed as default arguments
                            # in order to avoid allocating non-concrete `NamedTuple`s
-                           FieldEscapes::Union{EscapeSets,Bool} = x.FieldEscapes;
+                           FieldEscapes::Union{Vector{FieldEscape},Bool} = x.FieldEscapes;
                            Analyzed::Bool = x.Analyzed,
                            ReturnEscape::Bool = x.ReturnEscape,
                            ThrownEscape::Bool = x.ThrownEscape,
@@ -221,7 +221,7 @@ x::EscapeLattice ⊑ y::EscapeLattice = begin
         if isa(yf, Bool)
             yf === false && return false
         else
-            xf, yf = xf::EscapeSets, yf::EscapeSets
+            xf, yf = xf::Vector{FieldEscape}, yf::Vector{FieldEscape}
             xn, yn = length(xf), length(yf)
             xn > yn && return false
             for i in 1:xn
@@ -269,10 +269,10 @@ x::EscapeLattice ⊔ y::EscapeLattice = begin
     elseif yf === false
         FieldEscapes = xf
     else
-        xf, yf = xf::EscapeSets, yf::EscapeSets
+        xf, yf = xf::Vector{FieldEscape}, yf::Vector{FieldEscape}
         xn, yn = length(xf), length(yf)
         nmax, nmin = max(xn, yn), min(xn, yn)
-        FieldEscapes = EscapeSets(undef, nmax)
+        FieldEscapes = Vector{FieldEscape}(undef, nmax)
         for i in 1:nmax
             if i > nmin
                 FieldEscapes[i] = (xn > yn ? xf : yf)[i]
@@ -744,9 +744,9 @@ function escape_new!(astate::AnalysisState, pc::Int, args::Vector{Any})
     end
 end
 
-function escape_field!(astate::AnalysisState, @nospecialize(v), FieldEscape::EscapeSet)
+function escape_field!(astate::AnalysisState, @nospecialize(v), xf::FieldEscape)
     estate = astate.estate
-    for xidx in FieldEscape
+    for xidx in xf
         x = irval(xidx, estate)::SSAValue # TODO remove me once we implement ArgEscape
         add_escape_change!(astate, v, estate[x])
         add_alias_change!(astate, v, x)
@@ -861,7 +861,7 @@ function escape_builtin!(::typeof(getfield), astate::AnalysisState, pc::Int, arg
             # the fields of this object aren't analyzed yet: analyze them now
             nfields = fieldcount_noerror(typ)
             if nfields !== nothing
-                FieldEscapes = EscapeSet[EscapeSet() for _ in 1:nfields]
+                FieldEscapes = FieldEscape[FieldEscape() for _ in 1:nfields]
                 @goto add_field_escape
             end
         end
@@ -918,7 +918,7 @@ function escape_builtin!(::typeof(setfield!), astate::AnalysisState, pc::Int, ar
             nfields = fieldcount_noerror(typ)
             if nfields !== nothing
                 # unsuccessful field analysis: update obj's escape information with new field information
-                FieldEscapes = EscapeSet[EscapeSet() for _ in 1:nfields]
+                FieldEscapes = FieldEscape[FieldEscape() for _ in 1:nfields]
                 objinfo = EscapeLattice(objinfo, FieldEscapes)
                 add_escape_change!(astate, obj, objinfo)
                 @goto add_field_escape
