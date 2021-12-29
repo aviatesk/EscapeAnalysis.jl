@@ -88,7 +88,10 @@ end
 # XXX better to be IdSet{Int}?
 const FieldEscape = BitSet
 const FieldEscapes = Vector{BitSet}
-const ElementEscapes = BitSet
+# for x in ArrayEscapes:
+# - x::Int: `irval(x, estate)` imposes escapes on the array elements
+# - x::SSAValue: SSA statement (x.id) can potentially escape array elements via BoundsError
+const ArrayEscapes = IdSet{Union{Int,SSAValue}}
 
 """
     x::EscapeLattice
@@ -132,7 +135,7 @@ struct EscapeLattice
     ReturnEscape::Bool
     ThrownEscape::Bool
     EscapeSites::BitSet
-    AliasEscapes #::Union{FieldEscapes,ElementEscapes,Bool}
+    AliasEscapes #::Union{FieldEscapes,ArrayEscapes,Bool}
     # TODO: ArgEscape::Int
 
     function EscapeLattice(
@@ -140,7 +143,7 @@ struct EscapeLattice
         ReturnEscape::Bool,
         ThrownEscape::Bool,
         EscapeSites::BitSet,
-        AliasEscapes#=::Union{FieldEscapes,ElementEscapes,Bool}=#,
+        AliasEscapes#=::Union{FieldEscapes,ArrayEscapes,Bool}=#,
         )
         @nospecialize AliasEscapes
         return new(
@@ -155,7 +158,7 @@ struct EscapeLattice
         x::EscapeLattice,
         # non-concrete fields should be passed as default arguments
         # in order to avoid allocating non-concrete `NamedTuple`s
-        AliasEscapes#=::Union{FieldEscapes,ElementEscapes,Bool}=# = x.AliasEscapes;
+        AliasEscapes#=::Union{FieldEscapes,ArrayEscapes,Bool}=# = x.AliasEscapes;
         Analyzed::Bool = x.Analyzed,
         ReturnEscape::Bool = x.ReturnEscape,
         ThrownEscape::Bool = x.ThrownEscape,
@@ -236,8 +239,8 @@ x::EscapeLattice == y::EscapeLattice = begin
         isa(yf, FieldEscapes) || return false
         xf == yf || return false
     else
-        xf = xf::ElementEscapes
-        isa(yf, ElementEscapes) || return false
+        xf = xf::ArrayEscapes
+        isa(yf, ArrayEscapes) || return false
         xf == yf || return false
     end
     return x.Analyzed === y.Analyzed &&
@@ -267,8 +270,8 @@ x::EscapeLattice ⊑ y::EscapeLattice = begin
             yf === true || return false
         end
     else
-        xf = xf::ElementEscapes
-        if isa(yf, ElementEscapes)
+        xf = xf::ArrayEscapes
+        if isa(yf, ArrayEscapes)
             xf ⊆ yf || return false
         else
             yf === true || return false
@@ -329,8 +332,8 @@ x::EscapeLattice ⊔ y::EscapeLattice = begin
             AliasEscapes = true # handle conflicting case conservatively
         end
     else
-        xf = xf::ElementEscapes
-        if isa(yf, ElementEscapes)
+        xf = xf::ArrayEscapes
+        if isa(yf, ArrayEscapes)
             AliasEscapes = xf ∪ yf
         else
             AliasEscapes = true # handle conflicting case conservatively
@@ -792,7 +795,7 @@ function escape_new!(astate::AnalysisState, pc::Int, args::Vector{Any})
         end
     else
         # this object has been used as array, but it is allocated as struct here (i.e. should throw)
-        @assert isa(AliasEscapes, ElementEscapes)
+        @assert isa(AliasEscapes, ArrayEscapes)
         for i in 2:nargs
             add_escape_change!(astate, args[i], ThrownEscape(pc))
         end
@@ -984,7 +987,7 @@ function escape_builtin!(::typeof(getfield), astate::AnalysisState, pc::Int, arg
         add_escape_change!(astate, obj, EscapeLattice(objinfo, AliasEscapes))
     else
         # this object has been used as array, but it is used as struct here (i.e. should throw)
-        @assert isa(AliasEscapes, ElementEscapes)
+        @assert isa(AliasEscapes, ArrayEscapes)
         for i in 2:length(args)
             add_escape_change!(astate, args[i], ThrownEscape(pc))
         end
@@ -1049,7 +1052,7 @@ function escape_builtin!(::typeof(setfield!), astate::AnalysisState, pc::Int, ar
         add_escape_change!(astate, val, ignore_fieldsets(objinfo))
     else
         # this object has been used as array, but it is "used" as struct here (i.e. should throw)
-        @assert isa(AliasEscapes, ElementEscapes)
+        @assert isa(AliasEscapes, ArrayEscapes)
         for i in 2:length(args)
             add_escape_change!(astate, args[i], ThrownEscape(pc))
         end
@@ -1093,8 +1096,8 @@ function escape_builtin!(::typeof(arrayref), astate::AnalysisState, pc::Int, arg
     ret = SSAValue(pc)
     if isa(AliasEscapes, Bool)
         if !AliasEscapes
-            # the elements of this array aren't analyzed yet: analyze them now
-            AliasEscapes = ElementEscapes()
+            # the elements of this array aren't analyzed yet: set AliasEscapes now
+            AliasEscapes = ArrayEscapes()
             @goto record_element_escape
         end
         ssainfo = estate[ret]
@@ -1107,17 +1110,17 @@ function escape_builtin!(::typeof(arrayref), astate::AnalysisState, pc::Int, arg
                 add_escape_change!(astate, ary, ThrownEscape(pc))
             end
         end
-    elseif isa(AliasEscapes, ElementEscapes)
+    elseif isa(AliasEscapes, ArrayEscapes)
         # record the return value of this `arrayref` call as a possibility that imposes escape
         AliasEscapes = copy(AliasEscapes)
         @label record_element_escape
         push!(AliasEscapes, iridx(ret, estate))
-        add_escape_change!(astate, ary, EscapeLattice(aryinfo, AliasEscapes))
-        if isa(boundcheckt, Const)
+        if isa(boundcheckt, Const) # record possible BoundsError at this arrayref
             if boundcheckt.val::Bool
-                add_escape_change!(astate, ret, ThrownEscape(pc))
+                push!(AliasEscapes, SSAValue(pc))
             end
         end
+        add_escape_change!(astate, ary, EscapeLattice(aryinfo, AliasEscapes))
     else
         # this object has been used as struct, but it is used as here (i.e. should throw)
         @assert isa(AliasEscapes, FieldEscapes)
@@ -1161,17 +1164,21 @@ function escape_builtin!(::typeof(arrayset), astate::AnalysisState, pc::Int, arg
     AliasEscapes = aryinfo.AliasEscapes
     if isa(AliasEscapes, Bool)
         if !AliasEscapes
-            # the elements of this array aren't analyzed yet: analyze them now
-            AliasEscapes = ElementEscapes()
+            # the elements of this array aren't analyzed yet: set AliasEscapes now
+            AliasEscapes = ArrayEscapes()
             @goto add_element_escape
         end
         add_escape_change!(astate, val, aryinfo)
-    elseif isa(AliasEscapes, ElementEscapes)
+    elseif isa(AliasEscapes, ArrayEscapes)
         @label add_element_escape
         for xidx in AliasEscapes
-            x = irval(xidx, estate)::SSAValue # TODO remove me once we implement ArgEscape
-            add_escape_change!(astate, val, estate[x])
-            add_alias_change!(astate, val, x)
+            if isa(xidx, Int)
+                x = irval(xidx, estate)::SSAValue # TODO remove me once we implement ArgEscape
+                add_escape_change!(astate, val, estate[x])
+                add_alias_change!(astate, val, x)
+            else
+                add_escape_change!(astate, val, ThrownEscape(xidx.id))
+            end
         end
         add_escape_change!(astate, val, ignore_fieldsets(aryinfo))
     else
