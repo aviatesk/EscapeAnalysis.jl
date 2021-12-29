@@ -31,7 +31,7 @@ import ._TOP_MOD:     # Base definitions
 import Core.Compiler: # Core.Compiler specific definitions
     isbitstype, isexpr, is_meta_expr_head, println,
     IRCode, IR_FLAG_EFFECT_FREE, widenconst, argextype, singleton_type, fieldcount_noerror,
-    try_compute_fieldidx, hasintersect, ⊑ as ⊑ₜ
+    try_compute_fieldidx, hasintersect, ⊑ as ⊑ₜ, intrinsic_nothrow
 
 if isdefined(Core.Compiler, :try_compute_field)
     import Core.Compiler: try_compute_field
@@ -104,14 +104,17 @@ A lattice for escape information, which holds the following properties:
 - `x.ThrownEscape::Bool`: indicates `x` may escape to somewhere through an exception
 - `x.EscapeSites::BitSet`: records SSA statements where `x` can escape via any of
   `ReturnEscape` or `ThrownEscape`
-- `x.AliasEscapes::Union{Vector{BitSet},Bool}`: maintains all possible values that impose
-  escape information on fields of `x`:
-  * `x.AliasEscapes === false` indicates the fields of `x` isn't analyzed yet
-  * `x.AliasEscapes === true` indicates the fields of `x` can't be analyzed, e.g. the type of `x`
-    is not known or is not concrete and thus its fields can't be known precisely
-  * otherwise `x.AliasEscapes::Vector{BitSet}` holds all the possible values that can escape
-    fields of `x`, which allows EA to propagate propagate escape information imposed on a field
+- `x.AliasEscapes::Union{FieldEscapes,ArrayEscapes,Bool}`: maintains all possible values
+  that may escape objects that can be referenced from `x`:
+  * `x.AliasEscapes === false` indicates the fields/elements of `x` isn't analyzed yet
+  * `x.AliasEscapes === true` indicates the fields/elements of `x` can't be analyzed,
+    e.g. the type of `x` is not known or is not concrete and thus its fields/elements
+    can't be known precisely
+  * `x.AliasEscapes::FieldEscapes` records all the possible values that can escape fields of `x`,
+    which allows EA to propagate propagate escape information imposed on a field
     of `x` to its values (by analyzing `Expr(:new, ...)` and `setfield!(x, ...)`).
+  * `x.AliasEscapes::ArrayEscapes` records all the possible values that can escape elements of `x`,
+    or all SSA staements that can potentially escape elements of `x` via `BoundsError`.
 - `x.ArgEscape::Int` (not implemented yet): indicates it will escape to the caller through
   `setfield!` on argument(s)
   * `-1` : no escape
@@ -829,12 +832,18 @@ function escape_foreigncall!(astate::AnalysisState, pc::Int, args::Vector{Any})
     end
     foreigncall_nargs = length((args[3])::SimpleVector)
     name = args[1]
-    # nn = normalize(name)
-    # if isa(nn, Symbol)
-    #     if nn === :jl_gc_add_finalizer_th
-    #         # TODO add `FinalizerEscape` ?
-    #     end
-    # end
+    nn = normalize(name)
+    if isa(nn, Symbol)
+        bounderror_ninds = is_array_resize(nn)
+        if bounderror_ninds !== nothing
+            bounderror, ninds = bounderror_ninds
+            escape_array_resize!(bounderror, ninds, astate, pc, args)
+            return
+        end
+        # if nn === :jl_gc_add_finalizer_th
+        #     # TODO add `FinalizerEscape` ?
+        # end
+    end
     # NOTE array allocations might have been proven as nothrow (https://github.com/JuliaLang/julia/pull/43565)
     if !(astate.ir.stmts[pc][:flag] & IR_FLAG_EFFECT_FREE ≠ 0)
         add_escape_change!(astate, name, ThrownEscape(pc))
@@ -855,8 +864,10 @@ function escape_call!(astate::AnalysisState, pc::Int, args::Vector{Any})
     ft = argextype(first(args), ir, ir.sptypes, ir.argtypes)
     f = singleton_type(ft)
     if isa(f, Core.IntrinsicFunction)
-        # COMBAK we may break soundness here, e.g. `pointerref`
-        @goto add_thrown_escapes
+        # COMBAK we may break soundness and need to account for some aliasing here, e.g. `pointerref`
+        argtypes = Any[argextype(args[i], astate.ir) for i = 2:length(args)]
+        intrinsic_nothrow(f, argtypes) || @goto add_thrown_escapes
+        return
     end
     result = escape_builtin!(f, astate, pc, args)
     if result === missing
@@ -945,7 +956,7 @@ function escape_builtin!(::typeof(getfield), astate::AnalysisState, pc::Int, arg
     AliasEscapes = objinfo.AliasEscapes
     if isa(AliasEscapes, Bool)
         if !AliasEscapes
-            # the fields of this object aren't analyzed yet: analyze them now
+            # the fields of this object haven't been analyzed yet: analyze them now
             nfields = fieldcount_noerror(typ)
             if nfields !== nothing
                 AliasEscapes = FieldEscape[FieldEscape() for _ in 1:nfields]
@@ -1011,7 +1022,7 @@ function escape_builtin!(::typeof(setfield!), astate::AnalysisState, pc::Int, ar
     AliasEscapes = objinfo.AliasEscapes
     if isa(AliasEscapes, Bool)
         if !AliasEscapes
-            # the fields of this object aren't analyzed yet: analyze them now
+            # the fields of this object haven't been analyzed yet: analyze them now
             typ = widenconst(argextype(obj, ir))
             nfields = fieldcount_noerror(typ)
             if nfields !== nothing
@@ -1096,7 +1107,7 @@ function escape_builtin!(::typeof(arrayref), astate::AnalysisState, pc::Int, arg
     ret = SSAValue(pc)
     if isa(AliasEscapes, Bool)
         if !AliasEscapes
-            # the elements of this array aren't analyzed yet: set AliasEscapes now
+            # the elements of this array haven't been analyzed yet: set ArrayEscapes now
             AliasEscapes = ArrayEscapes()
             @goto record_element_escape
         end
@@ -1122,7 +1133,7 @@ function escape_builtin!(::typeof(arrayref), astate::AnalysisState, pc::Int, arg
         end
         add_escape_change!(astate, ary, EscapeLattice(aryinfo, AliasEscapes))
     else
-        # this object has been used as struct, but it is used as here (i.e. should throw)
+        # this object has been used as struct, but it is used as array here (thus should throw)
         @assert isa(AliasEscapes, FieldEscapes)
         for i in 2:length(args)
             add_escape_change!(astate, args[i], ThrownEscape(pc))
@@ -1164,7 +1175,7 @@ function escape_builtin!(::typeof(arrayset), astate::AnalysisState, pc::Int, arg
     AliasEscapes = aryinfo.AliasEscapes
     if isa(AliasEscapes, Bool)
         if !AliasEscapes
-            # the elements of this array aren't analyzed yet: set AliasEscapes now
+            # the elements of this array haven't been analyzed yet: set ArrayEscapes now
             AliasEscapes = ArrayEscapes()
             @goto add_element_escape
         end
@@ -1182,7 +1193,7 @@ function escape_builtin!(::typeof(arrayset), astate::AnalysisState, pc::Int, arg
         end
         add_escape_change!(astate, val, ignore_fieldsets(aryinfo))
     else
-        # this object has been used as struct, but it is used as here (i.e. should throw)
+        # this object has been used as struct, but it is used as array here (thus should throw)
         @assert isa(AliasEscapes, FieldEscapes)
         for i in 2:length(args)
             add_escape_change!(astate, args[i], ThrownEscape(pc))
@@ -1223,6 +1234,66 @@ end
 #     return true # TODO needs to account for `TypeError` etc.
 # end
 # end # if isdefined(Core, :arrayfreeze)
+
+# returns nothing if this isn't array resizing operation,
+# otherwise returns true if it can throw BoundsError and false if not
+function is_array_resize(name::Symbol)
+    if name === :jl_array_grow_beg || name === :jl_array_grow_end
+        return false, 1
+    elseif name === :jl_array_del_beg || name === :jl_array_del_end
+        return true, 1
+    elseif name === :jl_array_grow_at || name === :jl_array_del_at
+        return true, 2
+    else
+        return nothing
+    end
+end
+
+# NOTE may potentially throw "cannot resize array with shared data" error,
+# but just ignore it since it doesn't capture anything
+function escape_array_resize!(bounderror::Bool, ninds::Int,
+    astate::AnalysisState, pc::Int, args::Vector{Any})
+    if length(args) ≥ 6+ninds
+        ary = args[6]
+        aryt = argextype(ary, astate.ir)
+        aryt ⊑ₜ Array || @goto invalid_array_resizing
+        for i in 1:ninds
+            ind = args[i+6]
+            indt = argextype(ind, astate.ir)
+            indt ⊑ₜ Integer || @goto invalid_array_resizing
+        end
+        if bounderror
+            if isa(ary, SSAValue) || isa(ary, Argument)
+                estate = astate.estate
+                aryinfo = estate[ary]
+                AliasEscapes = aryinfo.AliasEscapes
+                if isa(AliasEscapes, Bool)
+                    if !AliasEscapes
+                        # the elements of this array haven't been analyzed yet: set ArrayEscapes now
+                        AliasEscapes = ArrayEscapes()
+                        @goto record_element_escape
+                    end
+                    # array resizing can potentially throw `BoundsError`, impose it now
+                    add_escape_change!(astate, ary, ThrownEscape(pc))
+                elseif isa(AliasEscapes, ArrayEscapes)
+                    AliasEscapes = copy(AliasEscapes)
+                    @label record_element_escape
+                    # array resizing can potentially throw `BoundsError`, record it now
+                    push!(AliasEscapes, SSAValue(pc))
+                    add_escape_change!(astate, ary, EscapeLattice(aryinfo, AliasEscapes))
+                else
+                    # this object has been used as struct, but it is used as array here (thus should throw)
+                    @goto invalid_array_resizing
+                end
+            end
+        end
+        return
+    end
+    @label invalid_array_resizing
+    for i in 1:length(args)
+        add_escape_change!(astate, args[i], ThrownEscape(pc))
+    end
+end
 
 # NOTE define fancy package utilities when developing EA as an external package
 if _TOP_MOD !== Core.Compiler

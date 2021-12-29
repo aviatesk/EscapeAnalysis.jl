@@ -9,8 +9,8 @@ This analysis works on a lattice called `x::EscapeLattice`, which holds the foll
 - `x.ThrownEscape::Bool`: indicates `x` may escape to somewhere through an exception
 - `x.EscapeSites::BitSet`: records SSA statements where `x` can escape via any of
   `ReturnEscape` or `ThrownEscape`
-- `x.AliasEscapes::Union{Vector{BitSet},Bool}`: maintains all possible values that impose
-  escape information on fields of `x`
+- `x.AliasEscapes::Union{FieldEscapes,ArrayEscapes,Bool}`: maintains all possible values
+  that may escape objects that can be referenced from `x`:
 - `x.ArgEscape::Int` (not implemented yet): indicates it will escape to the caller through
   `setfield!` on argument(s)
 

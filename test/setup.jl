@@ -32,6 +32,14 @@ function isarrayalloc(@nospecialize x)
     end
     return false
 end
+function isarrayresize(@nospecialize x)
+    if Meta.isexpr(x, :foreigncall)
+        name = x.args[1]
+        nn = EscapeAnalysis.normalize(name)
+        return EscapeAnalysis.is_array_resize(nn) !== nothing
+    end
+    return false
+end
 import Core.Compiler: argextype, singleton_type
 const EMPTY_SPTYPES = Any[]
 iscall(y) = @nospecialize(x) -> iscall(y, x)

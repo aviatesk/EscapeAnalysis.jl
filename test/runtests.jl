@@ -65,12 +65,6 @@ include("setup.jl")
         @test !isnothing(i)
         @test has_no_escape(result.state[SSAValue(i)])
     end
-    let # :foreigncall
-        result = analyze_escapes((Vector{String}, Int, )) do a, b
-            return isassigned(a, b) # TODO: specialize isassigned
-        end
-        @test has_all_escape(result.state[Argument(2)])
-    end
     let # ϕ-node
         result = analyze_escapes((Bool,Any,Any)) do cond, a, b
             c = cond ? a : b # ϕ(a, b)
@@ -1197,20 +1191,134 @@ end
         t = only(findall(iscall((result.ir, Core.arraysize)), result.ir.stmts.inst))
         @test has_thrown_escape(result.state[Argument(2)], t)
     end
+
+    # arraylen
+    let result = analyze_escapes((Vector{Any},)) do xs
+            Base.arraylen(xs)
+        end
+        t = only(findall(iscall((result.ir, Base.arraylen)), result.ir.stmts.inst))
+        @test !has_thrown_escape(result.state[Argument(2)], t) # xs
+    end
+    let result = analyze_escapes((String,)) do xs
+            Base.arraylen(xs)
+        end
+        t = only(findall(iscall((result.ir, Base.arraylen)), result.ir.stmts.inst))
+        @test has_thrown_escape(result.state[Argument(2)], t) # xs
+    end
+    let result = analyze_escapes((Vector{Any},)) do xs
+            Base.arraylen(xs, 1)
+        end
+        t = only(findall(iscall((result.ir, Base.arraylen)), result.ir.stmts.inst))
+        @test has_thrown_escape(result.state[Argument(2)], t) # xs
+    end
+
+    # array resizing
+    # without BoundsErrors
+    let result = analyze_escapes((Vector{Any},String)) do xs, x
+            @ccall jl_array_grow_beg(xs::Any, 2::UInt)::Cvoid
+            xs[1] = x
+            xs
+        end
+        t = only(findall(isarrayresize, result.ir.stmts.inst))
+        @test !has_thrown_escape(result.state[Argument(2)], t) # xs
+        @test !has_thrown_escape(result.state[Argument(3)], t) # x
+    end
+    let result = analyze_escapes((Vector{Any},String)) do xs, x
+            @ccall jl_array_grow_end(xs::Any, 2::UInt)::Cvoid
+            xs[1] = x
+            xs
+        end
+        t = only(findall(isarrayresize, result.ir.stmts.inst))
+        @test !has_thrown_escape(result.state[Argument(2)], t) # xs
+        @test !has_thrown_escape(result.state[Argument(3)], t) # x
+    end
+    # with possible BoundsErrors
+    let result = analyze_escapes((String,)) do x
+            xs = Any[1,2,3]
+            xs[3] = x
+            @ccall jl_array_del_beg(xs::Any, 2::UInt)::Cvoid # can potentially throw
+            xs
+        end
+        i = only(findall(isarrayalloc, result.ir.stmts.inst))
+        t = only(findall(isarrayresize, result.ir.stmts.inst))
+        @test !has_thrown_escape(result.state[SSAValue(i)], t) # xs
+        @test has_thrown_escape(result.state[Argument(2)], t) # x
+    end
+    let result = analyze_escapes((String,)) do x
+            xs = Any[1,2,3]
+            xs[1] = x
+            @ccall jl_array_del_end(xs::Any, 2::UInt)::Cvoid # can potentially throw
+            xs
+        end
+        i = only(findall(isarrayalloc, result.ir.stmts.inst))
+        t = only(findall(isarrayresize, result.ir.stmts.inst))
+        @test !has_thrown_escape(result.state[SSAValue(i)], t) # xs
+        @test has_thrown_escape(result.state[Argument(2)], t) # x
+    end
+    let result = analyze_escapes((String,)) do x
+            xs = Any[x]
+            @ccall jl_array_grow_at(xs::Any, 1::UInt, 2::UInt)::Cvoid # can potentially throw
+        end
+        i = only(findall(isarrayalloc, result.ir.stmts.inst))
+        t = only(findall(isarrayresize, result.ir.stmts.inst))
+        @test !has_thrown_escape(result.state[SSAValue(i)], t) # xs
+        @test has_thrown_escape(result.state[Argument(2)], t) # x
+    end
+    let result = analyze_escapes((String,)) do x
+            xs = Any[x]
+            @ccall jl_array_del_at(xs::Any, 1::UInt, 2::UInt)::Cvoid # can potentially throw
+        end
+        i = only(findall(isarrayalloc, result.ir.stmts.inst))
+        t = only(findall(isarrayresize, result.ir.stmts.inst))
+        @test !has_thrown_escape(result.state[SSAValue(i)], t) # xs
+        @test has_thrown_escape(result.state[Argument(2)], t) # x
+    end
 end
 
 # demonstrate array primitive support with a realistic end to end example
-let result = analyze_escapes((Int,)) do n
-        xs = Int[]
+let result = analyze_escapes((Int,String,)) do n,s
+        xs = String[]
         for i in 1:n
-            push!(xs, i)
+            push!(xs, s)
         end
         xs
     end
     i = only(findall(isarrayalloc, result.ir.stmts.inst))
     r = only(findall(isreturn, result.ir.stmts.inst))
     @test has_return_escape(result.state[SSAValue(i)], r)
-    @test_broken !has_thrown_escape(result.state[SSAValue(i)])
+    @test !has_thrown_escape(result.state[SSAValue(i)])
+    @test has_return_escape(result.state[Argument(3)], r) # s
+    @test !has_thrown_escape(result.state[Argument(3)]) # s
+end
+let result = analyze_escapes((Int,String,)) do n,s
+        xs = String[]
+        for i in 1:n
+            pushfirst!(xs, s)
+        end
+        xs
+    end
+    i = only(findall(isarrayalloc, result.ir.stmts.inst))
+    r = only(findall(isreturn, result.ir.stmts.inst))
+    @test has_return_escape(result.state[SSAValue(i)], r)
+    @test !has_thrown_escape(result.state[SSAValue(i)])
+    @test has_return_escape(result.state[Argument(3)], r) # s
+    @test !has_thrown_escape(result.state[Argument(3)]) # s
+end
+let result = analyze_escapes((String,String,String)) do s, t, u
+        xs = String[]
+        resize!(xs, 3)
+        xs[1] = s
+        xs[1] = t
+        xs[1] = u
+        xs
+    end
+    i = only(findall(isarrayalloc, result.ir.stmts.inst))
+    r = only(findall(isreturn, result.ir.stmts.inst))
+    @test has_return_escape(result.state[SSAValue(i)], r)
+    @test !has_thrown_escape(result.state[SSAValue(i)])
+    @test has_return_escape(result.state[Argument(2)], r) # s
+    @test has_return_escape(result.state[Argument(3)], r) # t
+    @test has_return_escape(result.state[Argument(4)], r) # u
 end
 
 # demonstrate a simple type level analysis can sometimes improve the analysis accuracy
@@ -1279,14 +1387,17 @@ end
         ft === typeof(EscapeAnalysis.escape_builtin!) && return false # `escape_builtin!` is very untyped, ignore
         return true
     end
+    target_modules = (EscapeAnalysis,)
     test_opt(only(methods(EscapeAnalysis.find_escapes)).sig;
         function_filter,
+        target_modules,
         # skip_nonconcrete_calls=false,
         )
     for m in methods(EscapeAnalysis.escape_builtin!)
         Base._methods_by_ftype(m.sig, 1, Base.get_world_counter()) === false && continue
         test_opt(m.sig;
             function_filter,
+            target_modules,
             # skip_nonconcrete_calls=false,
             )
     end
