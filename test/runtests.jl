@@ -1170,6 +1170,26 @@ end
         @test has_thrown_escape(result.state[Argument(3)], t) # s
         @test has_thrown_escape(result.state[SSAValue(i)], t) # x
     end
+
+    # arraysize
+    let result = analyze_escapes((Vector{Any},)) do xs
+            Core.arraysize(xs, 1)
+        end
+        t = only(findall(iscall((result.ir, Core.arraysize)), result.ir.stmts.inst))
+        @test !has_thrown_escape(result.state[Argument(2)], t)
+    end
+    let result = analyze_escapes((Vector{Any},Int,)) do xs, dim
+            Core.arraysize(xs, dim)
+        end
+        t = only(findall(iscall((result.ir, Core.arraysize)), result.ir.stmts.inst))
+        @test !has_thrown_escape(result.state[Argument(2)], t)
+    end
+    let result = analyze_escapes((Any,)) do xs
+            Core.arraysize(xs, 1)
+        end
+        t = only(findall(iscall((result.ir, Core.arraysize)), result.ir.stmts.inst))
+        @test has_thrown_escape(result.state[Argument(2)], t)
+    end
 end
 
 # demonstrate array primitive support with a realistic end to end example

@@ -21,7 +21,8 @@ import ._TOP_MOD: ==, getindex, setindex!
 # usings
 import Core:
     MethodInstance, Const, Argument, SSAValue, PiNode, PhiNode, UpsilonNode, PhiCNode,
-    ReturnNode, GotoNode, GotoIfNot, SimpleVector, sizeof, ifelse, arrayset, arrayref
+    ReturnNode, GotoNode, GotoIfNot, SimpleVector, sizeof, ifelse, arrayset, arrayref,
+    arraysize
 import ._TOP_MOD:     # Base definitions
     @__MODULE__, @eval, @assert, @nospecialize, @inbounds, @inline, @noinline, @label, @goto,
     !, !==, !=, ≠, +, -, ≤, <, ≥, >, &, |, include, error, missing, copy,
@@ -55,7 +56,8 @@ end
 
 if isdefined(Core.Compiler, :array_builtin_common_typecheck) &&
    isdefined(Core.Compiler, :arrayset_typecheck)
-    import Core.Compiler: alloc_array_ndims, array_builtin_common_typecheck, arrayset_typecheck
+    import Core.Compiler:
+        alloc_array_ndims, array_builtin_common_typecheck, arrayset_typecheck
 else
     function alloc_array_ndims(name::Symbol)
         if name === :jl_alloc_array_1d
@@ -1192,6 +1194,26 @@ function escape_builtin!(::typeof(arrayset), astate::AnalysisState, pc::Int, arg
         ssainfo = NoEscape()
     end
     add_escape_change!(astate, ary, ssainfo)
+    return true
+end
+
+function escape_builtin!(::typeof(arraysize), astate::AnalysisState, pc::Int, args::Vector{Any})
+    length(args) == 3 || return false
+    ary = args[2]
+    dim = args[3]
+    if !arraysize_typecheck(ary, dim, astate.ir)
+        add_escape_change!(astate, ary, ThrownEscape(pc))
+        add_escape_change!(astate, dim, ThrownEscape(pc))
+    end
+    # NOTE we may still see "arraysize: dimension out of range", but it doesn't capture anything
+    return true
+end
+
+function arraysize_typecheck(@nospecialize(ary), @nospecialize(dim), ir::IRCode)
+    aryt = argextype(ary, ir)
+    aryt ⊑ₜ Array || return false
+    dimt = argextype(dim, ir)
+    dimt ⊑ₜ Int || return false
     return true
 end
 
