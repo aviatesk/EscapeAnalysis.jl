@@ -729,15 +729,17 @@ function escape_new!(astate::AnalysisState, pc::Int, args::Vector{Any})
     FieldEscapes = objinfo.FieldEscapes
     nargs = length(args)
     if isa(FieldEscapes, Bool)
-        # the fields couldn't be analyzed precisely: directly propagate the escape information
-        # of this object to all its fields (which is the most conservative option)
+        # the fields couldn't be analyzed precisely: propagate the entire escape information
+        # of this object to all its fields as the most conservative propagation
         for i in 2:nargs
             add_escape_change!(astate, args[i], objinfo)
         end
     else
-        # fields are known: propagate escape information imposed on recorded possibilities
         nf = length(FieldEscapes)
         for i in 2:nargs
+            # fields are known: propagate the escape information of this object ignoring field information
+            add_escape_change!(astate, args[i], ignore_fieldsets(objinfo))
+            # fields are known: propagate escape information imposed on recorded possibilities
             i-1 > nf && break # may happen when e.g. ϕ-node merges values with different types
             escape_field!(astate, args[i], FieldEscapes[i-1])
         end
@@ -855,7 +857,6 @@ function escape_builtin!(::typeof(getfield), astate::AnalysisState, pc::Int, arg
         return false
     end
     FieldEscapes = objinfo.FieldEscapes
-    throwness = true
     if isa(FieldEscapes, Bool)
         if !FieldEscapes
             # the fields of this object aren't analyzed yet: analyze them now
@@ -865,13 +866,14 @@ function escape_builtin!(::typeof(getfield), astate::AnalysisState, pc::Int, arg
                 @goto add_field_escape
             end
         end
-        # the field couldn't be analyzed precisely: directly propagate the escape information
-        # imposed on the return value of this `getfield` call to the object (which is the most conservative option)
-        # but also with updated field information
+        # the field couldn't be analyzed precisely: propagate the escape information
+        # imposed on the return value of this `getfield` call to the object itself
+        # as the most conservative option
         ssainfo = estate[SSAValue(pc)]
         if ssainfo == NotAnalyzed()
             ssainfo = NoEscape()
         end
+        # also update field information
         add_escape_change!(astate, obj, EscapeLattice(ssainfo, TOP_FIELD_SETS))
     else
         # fields are known: record the return value of this `getfield` call as a possibility that imposes escape
@@ -927,8 +929,8 @@ function escape_builtin!(::typeof(setfield!), astate::AnalysisState, pc::Int, ar
             objinfo = EscapeLattice(objinfo, TOP_FIELD_SETS)
             add_escape_change!(astate, obj, objinfo)
         end
-        # the field couldn't be analyzed precisely: directly propagate the escape information
-        # of this object to the field (which is the most conservative option)
+        # the field couldn't be analyzed precisely: propagate the escape information
+        # of this object to the field (as the most conservative option)
         add_escape_change!(astate, val, objinfo)
     else
         # fields are known: propagate escape information imposed on recorded possibilities
@@ -950,6 +952,8 @@ function escape_builtin!(::typeof(setfield!), astate::AnalysisState, pc::Int, ar
                 escape_field!(astate, val, FieldEscape)
             end
         end
+        # fields are known: propagate the escape information of this object ignoring field information
+        add_escape_change!(astate, val, ignore_fieldsets(objinfo))
     end
     # also propagate escape information imposed on the return value of this `setfield!`
     ssainfo = estate[SSAValue(pc)]
