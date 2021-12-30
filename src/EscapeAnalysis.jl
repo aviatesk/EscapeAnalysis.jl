@@ -870,6 +870,9 @@ function escape_builtin!(::typeof(getfield), astate::AnalysisState, pc::Int, arg
                 FieldEscapes = FieldEscape[FieldEscape() for _ in 1:nfields]
                 @goto add_field_escape
             end
+            # unsuccessful field analysis: update obj's field information
+            objinfo = EscapeLattice(objinfo, TOP_FIELD_SETS)
+            add_escape_change!(astate, obj, objinfo)
         end
         # the field couldn't be analyzed precisely: propagate the escape information
         # imposed on the return value of this `getfield` call to the object itself
@@ -878,8 +881,7 @@ function escape_builtin!(::typeof(getfield), astate::AnalysisState, pc::Int, arg
         if ssainfo == NotAnalyzed()
             ssainfo = NoEscape()
         end
-        # also update field information
-        add_escape_change!(astate, obj, EscapeLattice(ssainfo, TOP_FIELD_SETS))
+        add_escape_change!(astate, obj, ssainfo)
     else
         # fields are known: record the return value of this `getfield` call as a possibility that imposes escape
         FieldEscapes = copy(FieldEscapes)
@@ -924,13 +926,13 @@ function escape_builtin!(::typeof(setfield!), astate::AnalysisState, pc::Int, ar
             typ = widenconst(argextype(obj, ir))
             nfields = fieldcount_noerror(typ)
             if nfields !== nothing
-                # unsuccessful field analysis: update obj's escape information with new field information
+                # successful field analysis: update obj's field information
                 FieldEscapes = FieldEscape[FieldEscape() for _ in 1:nfields]
                 objinfo = EscapeLattice(objinfo, FieldEscapes)
                 add_escape_change!(astate, obj, objinfo)
                 @goto add_field_escape
             end
-            # unsuccessful field analysis: update obj's escape information with new field information
+            # unsuccessful field analysis: update obj's field information
             objinfo = EscapeLattice(objinfo, TOP_FIELD_SETS)
             add_escape_change!(astate, obj, objinfo)
         end
