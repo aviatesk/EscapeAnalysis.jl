@@ -733,6 +733,11 @@ function escape_new!(astate::AnalysisState, pc::Int, args::Vector{Any})
             escape_field!(astate, args[i], FieldEscapes[i-1])
         end
     end
+    if !(astate.ir.stmts.flag[pc] & IR_FLAG_EFFECT_FREE ≠ 0)
+        for i in 1:length(args)
+            add_escape_change!(astate, args[i], ThrownEscape(pc))
+        end
+    end
 end
 
 function escape_field!(astate::AnalysisState, @nospecialize(v), xf::FieldEscape)

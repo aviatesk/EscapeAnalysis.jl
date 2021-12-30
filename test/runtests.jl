@@ -820,6 +820,13 @@ end
     # -----------------
 
     # conservatively handle untyped objects
+    let result = @eval analyze_escapes((Any,Any,)) do T, x
+            obj = $(Expr(:new, :T, :x))
+        end
+        t = only(findall(isnew, result.ir.stmts.inst))
+        @test #=T=# has_thrown_escape(result.state[Argument(2)], t) # T
+        @test #=x=# has_thrown_escape(result.state[Argument(3)], t) # x
+    end
     let result = @eval analyze_escapes((Any,Any,Any,Any)) do T, x, y, z
             obj = $(Expr(:new, :T, :x, :y))
             return getfield(obj, :x)
