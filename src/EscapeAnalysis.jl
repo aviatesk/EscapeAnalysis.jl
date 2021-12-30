@@ -523,11 +523,8 @@ function find_escapes(ir::IRCode, nargs::Int)
                 escape_val!(astate, pc, stmt)
             elseif isa(stmt, GlobalRef) # global load
                 add_escape_change!(astate, SSAValue(pc), AllEscape())
-            elseif isa(stmt, SSAValue)
-                # NOTE after SROA, we may see SSA value as statement
-                info = estate[SSAValue(pc)]
-                add_escape_change!(astate, stmt, info)
-                add_alias_change!(astate, stmt, SSAValue(pc))
+            elseif isa(stmt, SSAValue) # after SROA, we may see SSA value as statement
+                escape_ssa!(astate, pc, stmt)
             else
                 @assert stmt isa GotoNode || stmt isa GotoIfNot || stmt === nothing # TODO remove me
                 continue
@@ -623,13 +620,18 @@ function escape_edges!(astate::AnalysisState, pc::Int, edges::Vector{Any})
     end
 end
 
-function escape_val!(astate::AnalysisState, pc::Int, x)
-    if isdefined(x, :val)
-        info = astate.estate[SSAValue(pc)]
-        add_escape_change!(astate, x.val, info)
-        add_alias_change!(astate, SSAValue(pc), x.val)
-    end
+escape_val!(astate::AnalysisState, pc::Int, x) =
+    isdefined(x, :val) && _escape_val!(astate, pc, x.val)
+
+function _escape_val!(astate::AnalysisState, pc::Int, @nospecialize(val))
+    ret = SSAValue(pc)
+    info = astate.estate[ret]
+    add_escape_change!(astate, val, info)
+    add_alias_change!(astate, ret, val)
 end
+
+escape_ssa!(astate::AnalysisState, pc::Int, ssa::SSAValue) =
+    _escape_val!(astate, pc, ssa)
 
 # NOTE if we don't maintain the alias set that is separated from the lattice state, we can do
 # soemthing like below: it essentially incorporates forward escape propagation in our default
