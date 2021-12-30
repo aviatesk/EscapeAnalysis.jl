@@ -459,18 +459,7 @@ function find_escapes(ir::IRCode, nargs::Int)
             if isa(stmt, Expr)
                 head = stmt.head
                 if head === :call
-                    throwness_checked = escape_call!(astate, pc, stmt.args)
-                    # TODO throwness ≠ "effect-free-ness"
-                    if !throwness_checked
-                        # we escape statements with the `ThrownEscape` property
-                        # using the effect-freeness computed by `stmt_effect_free`
-                        # invoked within inlining
-                        if !(stmts.flag[pc] & IR_FLAG_EFFECT_FREE ≠ 0)
-                            for x in stmt.args
-                                add_escape_change!(astate, x, ThrownEscape(pc))
-                            end
-                        end
-                    end
+                    escape_call!(astate, pc, stmt.args)
                 elseif head === :invoke
                     escape_invoke!(astate, pc, stmt.args)
                 elseif head === :new || head === :splatnew
@@ -779,7 +768,7 @@ function escape_call!(astate::AnalysisState, pc::Int, args::Vector{Any})
     f = singleton_type(ft)
     if isa(f, Core.IntrinsicFunction)
         # COMBAK we may break soundness here, e.g. `pointerref`
-        return false
+        @goto add_thrown_escapes
     end
     result = escape_builtin!(f, astate, pc, args)
     if result === missing
@@ -788,10 +777,19 @@ function escape_call!(astate::AnalysisState, pc::Int, args::Vector{Any})
         for i in 2:length(args)
             add_escape_change!(astate, args[i], AllEscape())
         end
+        return
     elseif result === true
-        return true # ThrownEscape is already checked
+        return # ThrownEscape is already checked
     end
-    return false # will impose ThrownEscape based on `stmt_effect_free`
+    # we escape statements with the `ThrownEscape` property using the effect-freeness
+    # computed by `stmt_effect_free` invoked within inlining
+    # TODO throwness ≠ "effect-free-ness"
+    @label add_thrown_escapes
+    if !(astate.ir.stmts.flag[pc] & IR_FLAG_EFFECT_FREE ≠ 0)
+        for i in 1:length(args)
+            add_escape_change!(astate, args[i], ThrownEscape(pc))
+        end
+    end
 end
 
 escape_builtin!(@nospecialize(f), _...) = return missing
