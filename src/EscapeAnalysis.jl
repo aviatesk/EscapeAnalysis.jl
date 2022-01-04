@@ -27,7 +27,7 @@ import ._TOP_MOD:     # Base definitions
     @__MODULE__, @eval, @assert, @nospecialize, @inbounds, @inline, @noinline, @label, @goto,
     !, !==, !=, ≠, +, -, ≤, <, ≥, >, &, |, include, error, missing, copy,
     Vector, BitSet, IdDict, IdSet, ∪, ⊆, ∩, :, length, get, first, last, in, isempty,
-    isassigned, push!, empty!, max, min
+    isassigned, push!, empty!, max, min, Csize_t
 import Core.Compiler: # Core.Compiler specific definitions
     isbitstype, isexpr, is_meta_expr_head, println,
     IRCode, IR_FLAG_EFFECT_FREE, widenconst, argextype, singleton_type, fieldcount_noerror,
@@ -853,6 +853,9 @@ function escape_foreigncall!(astate::AnalysisState, pc::Int, args::Vector{Any})
         if is_array_copy(nn)
             escape_array_copy!(astate, pc, args)
             return
+        elseif is_array_isassigned(nn)
+            escape_array_isassigned!(astate, pc, args)
+            return
         end
         # if nn === :jl_gc_add_finalizer_th
         #     # TODO add `FinalizerEscape` ?
@@ -1316,6 +1319,40 @@ function escape_array_copy!(astate::AnalysisState, pc::Int, args::Vector{Any})
         add_escape_change!(astate, ary, newaryinfo)
     end
 end
+
+is_array_isassigned(name::Symbol) = name === :jl_array_isassigned
+
+function escape_array_isassigned!(astate::AnalysisState, pc::Int, args::Vector{Any})
+    if !array_isassigned_nothrow(args, astate.ir)
+        add_thrown_escapes!(astate, pc, args)
+    end
+end
+
+function array_isassigned_nothrow(args::Vector{Any}, src::IRCode)
+    # if !validate_foreigncall_args(args,
+    #     :jl_array_isassigned, Cint, svec(Any,Csize_t), 0, :ccall)
+    #     return false
+    # end
+    length(args) ≥ 7 || return false
+    arytype = argextype(args[6], src)
+    arytype ⊑ₜ Array || return false
+    idxtype = argextype(args[7], src)
+    idxtype ⊑ₜ Csize_t || return false
+    return true
+end
+
+# # COMBAK do we want to enable this (and also backport this to Base for array allocations?)
+# import Core.Compiler: Cint, svec
+# function validate_foreigncall_args(args::Vector{Any},
+#     name::Symbol, @nospecialize(rt), argtypes::SimpleVector, nreq::Int, convension::Symbol)
+#     length(args) ≥ 5 || return false
+#     normalize(args[1]) === name || return false
+#     args[2] === rt || return false
+#     args[3] === argtypes || return false
+#     args[4] === vararg || return false
+#     normalize(args[5]) === convension || return false
+#     return true
+# end
 
 # NOTE define fancy package utilities when developing EA as an external package
 if _TOP_MOD !== Core.Compiler

@@ -1325,6 +1325,15 @@ end
         @test has_thrown_escape(result.state[Argument(2)], t)
         @test has_return_escape(result.state[Argument(2)], r)
     end
+
+    # isassigned
+    let result = analyze_escapes((Vector{Any},Int)) do xs, i
+            return isassigned(xs, i)
+        end
+        r = only(findall(isreturn, result.ir.stmts.inst))
+        @test !has_return_escape(result.state[Argument(2)], r)
+        @test !has_thrown_escape(result.state[Argument(2)])
+    end
 end
 
 # demonstrate array primitive support with a realistic end to end example
