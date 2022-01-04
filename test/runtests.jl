@@ -65,12 +65,6 @@ include("setup.jl")
         @test !isnothing(i)
         @test has_no_escape(result.state[SSAValue(i)])
     end
-    let # :foreigncall
-        result = analyze_escapes((Vector{String}, Int, )) do a, b
-            return isassigned(a, b) # TODO: specialize isassigned
-        end
-        @test has_all_escape(result.state[Argument(2)])
-    end
     let # ϕ-node
         result = analyze_escapes((Bool,Any,Any)) do cond, a, b
             c = cond ? a : b # ϕ(a, b)
@@ -1030,6 +1024,364 @@ let result = @analyze_escapes compute!(MPoint(1+.5im, 2+.5im), MPoint(2+.25im, 4
     end
 end
 
+@testset "array primitives" begin
+    # arrayref
+    let result = analyze_escapes((Vector{String},Int)) do xs, i
+            s = Base.arrayref(true, xs, i)
+            return s
+        end
+        r = only(findall(isreturn, result.ir.stmts.inst))
+        @test has_return_escape(result.state[Argument(2)], r)   # xs
+        @test_broken !has_thrown_escape(result.state[Argument(2)])     # xs
+        @test !has_return_escape(result.state[Argument(3)], r)  # i
+    end
+    let result = analyze_escapes((Vector{String},Bool)) do xs, i
+            c = Base.arrayref(true, xs, i) # TypeError will happen here
+            return c
+        end
+        t = only(findall(iscall((result.ir, Base.arrayref)), result.ir.stmts.inst))
+        @test has_thrown_escape(result.state[Argument(2)], t) # xs
+    end
+    let result = analyze_escapes((String,Int)) do xs, i
+            c = Base.arrayref(true, xs, i) # TypeError will happen here
+            return c
+        end
+        t = only(findall(iscall((result.ir, Base.arrayref)), result.ir.stmts.inst))
+        @test has_thrown_escape(result.state[Argument(2)], t) # xs
+    end
+    let result = analyze_escapes((AbstractVector{String},Int)) do xs, i
+            c = Base.arrayref(true, xs, i) # TypeError may happen here
+            return c
+        end
+        t = only(findall(iscall((result.ir, Base.arrayref)), result.ir.stmts.inst))
+        @test has_thrown_escape(result.state[Argument(2)], t) # xs
+    end
+    let result = analyze_escapes((Vector{String},Any)) do xs, i
+            c = Base.arrayref(true, xs, i) # TypeError may happen here
+            return c
+        end
+        t = only(findall(iscall((result.ir, Base.arrayref)), result.ir.stmts.inst))
+        @test has_thrown_escape(result.state[Argument(2)], t) # xs
+    end
+
+    # arrayset
+    let result = analyze_escapes((Vector{String},String,Int,)) do xs, x, i
+            Base.arrayset(true, xs, x, i)
+            return xs
+        end
+        r = only(findall(isreturn, result.ir.stmts.inst))
+        @test has_return_escape(result.state[Argument(2)], r) # xs
+        @test has_return_escape(result.state[Argument(3)], r) # x
+    end
+    let result = analyze_escapes((String,String,String,)) do s, t, u
+            xs = Vector{String}(undef, 3)
+            Base.arrayset(true, xs, s, 1)
+            Base.arrayset(true, xs, t, 2)
+            Base.arrayset(true, xs, u, 3)
+            return xs
+        end
+        i = only(findall(isarrayalloc, result.ir.stmts.inst))
+        r = only(findall(isreturn, result.ir.stmts.inst))
+        @test has_return_escape(result.state[SSAValue(i)], r)
+        for i in 2:result.state.nargs
+            @test has_return_escape(result.state[Argument(i)], r)
+        end
+    end
+    let result = analyze_escapes((Vector{String},String,Bool,)) do xs, x, i
+            Base.arrayset(true, xs, x, i) # TypeError will happen here
+            return xs
+        end
+        t = only(findall(iscall((result.ir, Base.arrayset)), result.ir.stmts.inst))
+        @test has_thrown_escape(result.state[Argument(2)], t) # xs
+        @test has_thrown_escape(result.state[Argument(3)], t) # x
+    end
+    let result = analyze_escapes((String,String,Int,)) do xs, x, i
+            Base.arrayset(true, xs, x, i) # TypeError will happen here
+            return xs
+        end
+        t = only(findall(iscall((result.ir, Base.arrayset)), result.ir.stmts.inst))
+        @test has_thrown_escape(result.state[Argument(2)], t) # xs::String
+        @test has_thrown_escape(result.state[Argument(3)], t) # x::String
+    end
+    let result = analyze_escapes((AbstractVector{String},String,Int,)) do xs, x, i
+            Base.arrayset(true, xs, x, i) # TypeError may happen here
+            return xs
+        end
+        t = only(findall(iscall((result.ir, Base.arrayset)), result.ir.stmts.inst))
+        @test has_thrown_escape(result.state[Argument(2)], t) # xs
+        @test has_thrown_escape(result.state[Argument(3)], t) # x
+    end
+    let result = analyze_escapes((Vector{String},AbstractString,Int,)) do xs, x, i
+            Base.arrayset(true, xs, x, i) # TypeError may happen here
+            return xs
+        end
+        t = only(findall(iscall((result.ir, Base.arrayset)), result.ir.stmts.inst))
+        @test has_thrown_escape(result.state[Argument(2)], t) # xs
+        @test has_thrown_escape(result.state[Argument(3)], t) # x
+    end
+    let result = analyze_escapes((Vector{Any},AbstractString,Int,)) do xs, x, i
+            Base.arrayset(true, xs, x, i) # TypeError may happen here
+            return xs
+        end
+        t = only(findall(iscall((result.ir, Base.arrayset)), result.ir.stmts.inst))
+        @test !has_thrown_escape(result.state[Argument(2)], t) # xs
+        @test !has_thrown_escape(result.state[Argument(3)], t) # x
+    end
+
+    # arrayref and arrayset
+    let result = analyze_escapes() do
+            a = Vector{Vector{Any}}(undef, 1)
+            b = Any[]
+            a[1] = b
+            return a[1]
+        end
+        r = only(findall(isreturn, result.ir.stmts.inst))
+        ai = only(findall(result.ir.stmts.inst) do @nospecialize x
+            isarrayalloc(x) && x.args[2] === Vector{Vector{Any}}
+        end)
+        bi = only(findall(result.ir.stmts.inst) do @nospecialize x
+            isarrayalloc(x) && x.args[2] === Vector{Any}
+        end)
+        @test !has_return_escape(result.state[SSAValue(ai)], r)
+        @test has_return_escape(result.state[SSAValue(bi)], r)
+    end
+    let result = analyze_escapes() do
+            a = Vector{Vector{Any}}(undef, 1)
+            b = Any[]
+            a[1] = b
+            return a
+        end
+        r = only(findall(isreturn, result.ir.stmts.inst))
+        ai = only(findall(result.ir.stmts.inst) do @nospecialize x
+            isarrayalloc(x) && x.args[2] === Vector{Vector{Any}}
+        end)
+        bi = only(findall(result.ir.stmts.inst) do @nospecialize x
+            isarrayalloc(x) && x.args[2] === Vector{Any}
+        end)
+        @test has_return_escape(result.state[SSAValue(ai)], r)
+        @test has_return_escape(result.state[SSAValue(bi)], r)
+    end
+    let result = analyze_escapes((Vector{Any},String,Int,Int)) do xs, s, i, j
+            x = SafeRef(s)
+            xs[i] = x
+            xs[j] # potential error
+        end
+        i = only(findall(isnew, result.ir.stmts.inst))
+        t = only(findall(iscall((result.ir, Base.arrayref)), result.ir.stmts.inst))
+        @test has_thrown_escape(result.state[Argument(3)], t) # s
+        @test has_thrown_escape(result.state[SSAValue(i)], t) # x
+    end
+
+    # arraysize
+    let result = analyze_escapes((Vector{Any},)) do xs
+            Core.arraysize(xs, 1)
+        end
+        t = only(findall(iscall((result.ir, Core.arraysize)), result.ir.stmts.inst))
+        @test !has_thrown_escape(result.state[Argument(2)], t)
+    end
+    let result = analyze_escapes((Vector{Any},Int,)) do xs, dim
+            Core.arraysize(xs, dim)
+        end
+        t = only(findall(iscall((result.ir, Core.arraysize)), result.ir.stmts.inst))
+        @test !has_thrown_escape(result.state[Argument(2)], t)
+    end
+    let result = analyze_escapes((Any,)) do xs
+            Core.arraysize(xs, 1)
+        end
+        t = only(findall(iscall((result.ir, Core.arraysize)), result.ir.stmts.inst))
+        @test has_thrown_escape(result.state[Argument(2)], t)
+    end
+
+    # arraylen
+    let result = analyze_escapes((Vector{Any},)) do xs
+            Base.arraylen(xs)
+        end
+        t = only(findall(iscall((result.ir, Base.arraylen)), result.ir.stmts.inst))
+        @test !has_thrown_escape(result.state[Argument(2)], t) # xs
+    end
+    let result = analyze_escapes((String,)) do xs
+            Base.arraylen(xs)
+        end
+        t = only(findall(iscall((result.ir, Base.arraylen)), result.ir.stmts.inst))
+        @test has_thrown_escape(result.state[Argument(2)], t) # xs
+    end
+    let result = analyze_escapes((Vector{Any},)) do xs
+            Base.arraylen(xs, 1)
+        end
+        t = only(findall(iscall((result.ir, Base.arraylen)), result.ir.stmts.inst))
+        @test has_thrown_escape(result.state[Argument(2)], t) # xs
+    end
+
+    # array resizing
+    # without BoundsErrors
+    let result = analyze_escapes((Vector{Any},String)) do xs, x
+            @ccall jl_array_grow_beg(xs::Any, 2::UInt)::Cvoid
+            xs[1] = x
+            xs
+        end
+        t = only(findall(isarrayresize, result.ir.stmts.inst))
+        @test !has_thrown_escape(result.state[Argument(2)], t) # xs
+        @test !has_thrown_escape(result.state[Argument(3)], t) # x
+    end
+    let result = analyze_escapes((Vector{Any},String)) do xs, x
+            @ccall jl_array_grow_end(xs::Any, 2::UInt)::Cvoid
+            xs[1] = x
+            xs
+        end
+        t = only(findall(isarrayresize, result.ir.stmts.inst))
+        @test !has_thrown_escape(result.state[Argument(2)], t) # xs
+        @test !has_thrown_escape(result.state[Argument(3)], t) # x
+    end
+    # with possible BoundsErrors
+    let result = analyze_escapes((String,)) do x
+            xs = Any[1,2,3]
+            xs[3] = x
+            @ccall jl_array_del_beg(xs::Any, 2::UInt)::Cvoid # can potentially throw
+            xs
+        end
+        i = only(findall(isarrayalloc, result.ir.stmts.inst))
+        t = only(findall(isarrayresize, result.ir.stmts.inst))
+        @test !has_thrown_escape(result.state[SSAValue(i)], t) # xs
+        @test has_thrown_escape(result.state[Argument(2)], t) # x
+    end
+    let result = analyze_escapes((String,)) do x
+            xs = Any[1,2,3]
+            xs[1] = x
+            @ccall jl_array_del_end(xs::Any, 2::UInt)::Cvoid # can potentially throw
+            xs
+        end
+        i = only(findall(isarrayalloc, result.ir.stmts.inst))
+        t = only(findall(isarrayresize, result.ir.stmts.inst))
+        @test !has_thrown_escape(result.state[SSAValue(i)], t) # xs
+        @test has_thrown_escape(result.state[Argument(2)], t) # x
+    end
+    let result = analyze_escapes((String,)) do x
+            xs = Any[x]
+            @ccall jl_array_grow_at(xs::Any, 1::UInt, 2::UInt)::Cvoid # can potentially throw
+        end
+        i = only(findall(isarrayalloc, result.ir.stmts.inst))
+        t = only(findall(isarrayresize, result.ir.stmts.inst))
+        @test !has_thrown_escape(result.state[SSAValue(i)], t) # xs
+        @test has_thrown_escape(result.state[Argument(2)], t) # x
+    end
+    let result = analyze_escapes((String,)) do x
+            xs = Any[x]
+            @ccall jl_array_del_at(xs::Any, 1::UInt, 2::UInt)::Cvoid # can potentially throw
+        end
+        i = only(findall(isarrayalloc, result.ir.stmts.inst))
+        t = only(findall(isarrayresize, result.ir.stmts.inst))
+        @test !has_thrown_escape(result.state[SSAValue(i)], t) # xs
+        @test has_thrown_escape(result.state[Argument(2)], t) # x
+    end
+
+    # array copy
+    let result = analyze_escapes((Vector{Any},)) do xs
+            return copy(xs)
+        end
+        i = only(findall(isarraycopy, result.ir.stmts.inst))
+        r = only(findall(isreturn, result.ir.stmts.inst))
+        @test has_return_escape(result.state[SSAValue(i)], r)
+        @test_broken !has_return_escape(result.state[Argument(2)], r)
+    end
+    let result = analyze_escapes((String,)) do s
+            xs = String[s]
+            xs′ = copy(xs)
+            return xs′[1]
+        end
+        i1 = only(findall(isarrayalloc, result.ir.stmts.inst))
+        i2 = only(findall(isarraycopy, result.ir.stmts.inst))
+        r = only(findall(isreturn, result.ir.stmts.inst))
+        @test !has_return_escape(result.state[SSAValue(i1)])
+        @test !has_return_escape(result.state[SSAValue(i2)])
+        @test has_return_escape(result.state[Argument(2)], r) # s
+    end
+    let result = analyze_escapes((Vector{Any},)) do xs
+            xs′ = copy(xs)
+            return xs′[1] # may potentially throw BoundsError, should escape `xs` conservatively (i.e. escape its elements)
+        end
+        i = only(findall(isarraycopy, result.ir.stmts.inst))
+        ref = only(findall(iscall((result.ir, Base.arrayref)), result.ir.stmts.inst))
+        ret = only(findall(isreturn, result.ir.stmts.inst))
+        @test_broken !has_thrown_escape(result.state[SSAValue(i)], ref)
+        @test_broken !has_return_escape(result.state[SSAValue(i)], ret)
+        @test has_thrown_escape(result.state[Argument(2)], ref)
+        @test has_return_escape(result.state[Argument(2)], ret)
+    end
+    let result = analyze_escapes((String,)) do s
+            xs = Vector{String}(undef, 1)
+            xs[1] = s
+            xs′ = copy(xs)
+            length(xs′) > 2 && throw(xs′)
+            return xs′
+        end
+        i1 = only(findall(isarrayalloc, result.ir.stmts.inst))
+        i2 = only(findall(isarraycopy, result.ir.stmts.inst))
+        t = only(findall(iscall((result.ir, throw)), result.ir.stmts.inst))
+        r = only(findall(isreturn, result.ir.stmts.inst))
+        @test_broken !has_thrown_escape(result.state[SSAValue(i1)], t)
+        @test_broken !has_return_escape(result.state[SSAValue(i1)], r)
+        @test has_thrown_escape(result.state[SSAValue(i2)], t)
+        @test has_return_escape(result.state[SSAValue(i2)], r)
+        @test has_thrown_escape(result.state[Argument(2)], t)
+        @test has_return_escape(result.state[Argument(2)], r)
+    end
+
+    # isassigned
+    let result = analyze_escapes((Vector{Any},Int)) do xs, i
+            return isassigned(xs, i)
+        end
+        r = only(findall(isreturn, result.ir.stmts.inst))
+        @test !has_return_escape(result.state[Argument(2)], r)
+        @test !has_thrown_escape(result.state[Argument(2)])
+    end
+end
+
+# demonstrate array primitive support with a realistic end to end example
+let result = analyze_escapes((Int,String,)) do n,s
+        xs = String[]
+        for i in 1:n
+            push!(xs, s)
+        end
+        xs
+    end
+    i = only(findall(isarrayalloc, result.ir.stmts.inst))
+    r = only(findall(isreturn, result.ir.stmts.inst))
+    @test has_return_escape(result.state[SSAValue(i)], r)
+    @test !has_thrown_escape(result.state[SSAValue(i)])
+    @test has_return_escape(result.state[Argument(3)], r) # s
+    @test !has_thrown_escape(result.state[Argument(3)]) # s
+end
+let result = analyze_escapes((Int,String,)) do n,s
+        xs = String[]
+        for i in 1:n
+            pushfirst!(xs, s)
+        end
+        xs
+    end
+    i = only(findall(isarrayalloc, result.ir.stmts.inst))
+    r = only(findall(isreturn, result.ir.stmts.inst))
+    @test has_return_escape(result.state[SSAValue(i)], r)
+    @test !has_thrown_escape(result.state[SSAValue(i)])
+    @test has_return_escape(result.state[Argument(3)], r) # s
+    @test !has_thrown_escape(result.state[Argument(3)]) # s
+end
+let result = analyze_escapes((String,String,String)) do s, t, u
+        xs = String[]
+        resize!(xs, 3)
+        xs[1] = s
+        xs[1] = t
+        xs[1] = u
+        xs
+    end
+    i = only(findall(isarrayalloc, result.ir.stmts.inst))
+    r = only(findall(isreturn, result.ir.stmts.inst))
+    @test has_return_escape(result.state[SSAValue(i)], r)
+    @test !has_thrown_escape(result.state[SSAValue(i)])
+    @test has_return_escape(result.state[Argument(2)], r) # s
+    @test has_return_escape(result.state[Argument(3)], r) # t
+    @test has_return_escape(result.state[Argument(4)], r) # u
+end
+
 # demonstrate a simple type level analysis can sometimes improve the analysis accuracy
 # by compensating the lack of yet unimplemented analyses
 @testset "special-casing bitstype" begin
@@ -1096,14 +1448,17 @@ end
         ft === typeof(EscapeAnalysis.escape_builtin!) && return false # `escape_builtin!` is very untyped, ignore
         return true
     end
+    target_modules = (EscapeAnalysis,)
     test_opt(only(methods(EscapeAnalysis.find_escapes)).sig;
         function_filter,
+        target_modules,
         # skip_nonconcrete_calls=false,
         )
     for m in methods(EscapeAnalysis.escape_builtin!)
         Base._methods_by_ftype(m.sig, 1, Base.get_world_counter()) === false && continue
         test_opt(m.sig;
             function_filter,
+            target_modules,
             # skip_nonconcrete_calls=false,
             )
     end
