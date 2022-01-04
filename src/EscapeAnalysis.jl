@@ -1,7 +1,7 @@
 baremodule EscapeAnalysis
 
 export
-    find_escapes,
+    analyze_escapes,
     GLOBAL_ESCAPE_CACHE,
     has_not_analyzed,
     has_no_escape,
@@ -125,7 +125,7 @@ There are utility constructors to create common `EscapeLattice`s, e.g.,
 - `NoEscape()`: the bottom element of this lattice, meaning it won't escape to anywhere
 - `AllEscape()`: the topmost element of this lattice, meaning it will escape to everywhere
 
-`find_escapes` will transition these elements from the bottom to the top,
+`analyze_escapes` will transition these elements from the bottom to the top,
 in the same direction as Julia's native type inference routine.
 An abstract state will be initialized with the bottom(-like) elements:
 - the call arguments are initialized as `ArgumentReturnEscape()`, because they're visible from a caller immediately
@@ -495,12 +495,12 @@ struct AnalysisState
 end
 
 """
-    find_escapes(ir::IRCode, nargs::Int) -> EscapeState
+    analyze_escapes(ir::IRCode, nargs::Int) -> EscapeState
 
 Analyzes escape information in `ir`.
 `nargs` is the number of actual arguments of the analyzed call.
 """
-function find_escapes(ir::IRCode, nargs::Int)
+function analyze_escapes(ir::IRCode, nargs::Int)
     stmts = ir.stmts
     nstmts = length(stmts)
 
@@ -872,7 +872,7 @@ end
 
 normalize(@nospecialize x) = isa(x, QuoteNode) ? x.value : x
 
-# NOTE error cases will be handled in `find_escapes` anyway, so we don't need to take care of them below
+# NOTE error cases will be handled in `analyze_escapes` anyway, so we don't need to take care of them below
 # TODO implement more builtins, make them more accurate
 # TODO use `T_IFUNC`-like logic and don't not abuse dispatch ?
 

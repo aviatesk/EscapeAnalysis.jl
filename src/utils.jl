@@ -15,16 +15,16 @@ end
 
 using InteractiveUtils
 
-macro analyze_escapes(ex0...)
-    return InteractiveUtils.gen_call_with_extracted_types_and_kwargs(__module__, :analyze_escapes, ex0)
+macro code_escapes(ex0...)
+    return InteractiveUtils.gen_call_with_extracted_types_and_kwargs(__module__, :code_escapes, ex0)
 end
 
-function analyze_escapes(@nospecialize(f), @nospecialize(types=Tuple{});
-                         world = get_world_counter(),
-                         interp = Core.Compiler.NativeInterpreter(world))
+function code_escapes(@nospecialize(f), @nospecialize(types=Tuple{});
+                      world = get_world_counter(),
+                      interp = Core.Compiler.NativeInterpreter(world))
     interp = EscapeAnalyzer(interp)
     results = code_typed(f, types; optimize=true, world, interp)
-    isone(length(results)) || throw(ArgumentError("`analyze_escapes` only supports single analysis result"))
+    isone(length(results)) || throw(ArgumentError("`code_escapes` only supports single analysis result"))
     return EscapeResult(interp.ir, interp.state, interp.linfo)
 end
 
@@ -67,7 +67,7 @@ import Core:
 import .CC:
     OptimizationState, IRCode
 import .EA:
-    find_escapes, GLOBAL_ESCAPE_CACHE, EscapeCache
+    analyze_escapes, GLOBAL_ESCAPE_CACHE, EscapeCache
 
 mutable struct EscapeAnalyzer{State} <: AbstractInterpreter
     native::NativeInterpreter
@@ -157,7 +157,7 @@ function run_passes_with_ea(interp::EscapeAnalyzer, ci::CodeInfo, sv::Optimizati
     nargs = let def = sv.linfo.def
         isa(def, Method) ? Int(def.nargs) : 0
     end
-    @timeit "collect escape information" state = find_escapes(ir, nargs)
+    @timeit "collect escape information" state = analyze_escapes(ir, nargs)
     cacheir = Core.Compiler.copy(ir)
     # cache this result
     GLOBAL_ESCAPE_CACHE[sv.linfo] = EscapeCache(state, cacheir)
@@ -304,8 +304,8 @@ end
 end # module EAUtils
 
 using .EAUtils:
-    analyze_escapes,
-    @analyze_escapes
+    code_escapes,
+    @code_escapes
 export
-    analyze_escapes,
-    @analyze_escapes
+    code_escapes,
+    @code_escapes
