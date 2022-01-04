@@ -836,7 +836,7 @@ end
 # TODO: we can apply a similar strategy like builtin calls to specialize some foreigncalls
 function escape_foreigncall!(astate::AnalysisState, pc::Int, args::Vector{Any})
     nargs = length(args)
-    if nargs ≤ 6
+    if nargs < 6
         # invalid foreigncall, just escape everything
         return add_thrown_escapes!(astate, pc, args)
     end
@@ -848,6 +848,10 @@ function escape_foreigncall!(astate::AnalysisState, pc::Int, args::Vector{Any})
         if bounderror_ninds !== nothing
             bounderror, ninds = bounderror_ninds
             escape_array_resize!(bounderror, ninds, astate, pc, args)
+            return
+        end
+        if is_array_copy(nn)
+            escape_array_copy!(astate, pc, args)
             return
         end
         # if nn === :jl_gc_add_finalizer_th
@@ -1293,6 +1297,23 @@ function escape_array_resize!(bounderror::Bool, ninds::Int,
                 @goto conservative_propagation
             end
         end
+    end
+end
+
+is_array_copy(name::Symbol) = name === :jl_array_copy
+
+# FIXME this implementation is very conservative, improve the accuracy and solve broken test cases
+function escape_array_copy!(astate::AnalysisState, pc::Int, args::Vector{Any})
+    length(args) ≥ 6 || return add_thrown_escapes!(astate, pc, args)
+    ary = args[6]
+    aryt = argextype(ary, astate.ir)
+    aryt ⊑ₜ Array || return add_thrown_escapes!(astate, pc, args)
+    if isa(ary, SSAValue) || isa(ary, Argument)
+        newary = SSAValue(pc)
+        aryinfo = astate.estate[ary]
+        newaryinfo = astate.estate[newary]
+        add_escape_change!(astate, newary, aryinfo)
+        add_escape_change!(astate, ary, newaryinfo)
     end
 end
 

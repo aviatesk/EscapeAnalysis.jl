@@ -1032,7 +1032,7 @@ end
         end
         r = only(findall(isreturn, result.ir.stmts.inst))
         @test has_return_escape(result.state[Argument(2)], r)   # xs
-        # @test !has_thrown_escape(result.state[Argument(2)])     # xs
+        @test_broken !has_thrown_escape(result.state[Argument(2)])     # xs
         @test !has_return_escape(result.state[Argument(3)], r)  # i
     end
     let result = analyze_escapes((Vector{String},Bool)) do xs, i
@@ -1130,7 +1130,7 @@ end
 
     # arrayref and arrayset
     let result = analyze_escapes() do
-            a = Vector{Any}[]
+            a = Vector{Vector{Any}}(undef, 1)
             b = Any[]
             a[1] = b
             return a[1]
@@ -1146,7 +1146,7 @@ end
         @test has_return_escape(result.state[SSAValue(bi)], r)
     end
     let result = analyze_escapes() do
-            a = Vector{Any}[]
+            a = Vector{Vector{Any}}(undef, 1)
             b = Any[]
             a[1] = b
             return a
@@ -1272,6 +1272,58 @@ end
         t = only(findall(isarrayresize, result.ir.stmts.inst))
         @test !has_thrown_escape(result.state[SSAValue(i)], t) # xs
         @test has_thrown_escape(result.state[Argument(2)], t) # x
+    end
+
+    # array copy
+    let result = analyze_escapes((Vector{Any},)) do xs
+            return copy(xs)
+        end
+        i = only(findall(isarraycopy, result.ir.stmts.inst))
+        r = only(findall(isreturn, result.ir.stmts.inst))
+        @test has_return_escape(result.state[SSAValue(i)], r)
+        @test_broken !has_return_escape(result.state[Argument(2)], r)
+    end
+    let result = analyze_escapes((String,)) do s
+            xs = String[s]
+            xs′ = copy(xs)
+            return xs′[1]
+        end
+        i1 = only(findall(isarrayalloc, result.ir.stmts.inst))
+        i2 = only(findall(isarraycopy, result.ir.stmts.inst))
+        r = only(findall(isreturn, result.ir.stmts.inst))
+        @test !has_return_escape(result.state[SSAValue(i1)])
+        @test !has_return_escape(result.state[SSAValue(i2)])
+        @test has_return_escape(result.state[Argument(2)], r) # s
+    end
+    let result = analyze_escapes((Vector{Any},)) do xs
+            xs′ = copy(xs)
+            return xs′[1] # may potentially throw BoundsError, should escape `xs` conservatively (i.e. escape its elements)
+        end
+        i = only(findall(isarraycopy, result.ir.stmts.inst))
+        ref = only(findall(iscall((result.ir, Base.arrayref)), result.ir.stmts.inst))
+        ret = only(findall(isreturn, result.ir.stmts.inst))
+        @test_broken !has_thrown_escape(result.state[SSAValue(i)], ref)
+        @test_broken !has_return_escape(result.state[SSAValue(i)], ret)
+        @test has_thrown_escape(result.state[Argument(2)], ref)
+        @test has_return_escape(result.state[Argument(2)], ret)
+    end
+    let result = analyze_escapes((String,)) do s
+            xs = Vector{String}(undef, 1)
+            xs[1] = s
+            xs′ = copy(xs)
+            length(xs′) > 2 && throw(xs′)
+            return xs′
+        end
+        i1 = only(findall(isarrayalloc, result.ir.stmts.inst))
+        i2 = only(findall(isarraycopy, result.ir.stmts.inst))
+        t = only(findall(iscall((result.ir, throw)), result.ir.stmts.inst))
+        r = only(findall(isreturn, result.ir.stmts.inst))
+        @test_broken !has_thrown_escape(result.state[SSAValue(i1)], t)
+        @test_broken !has_return_escape(result.state[SSAValue(i1)], r)
+        @test has_thrown_escape(result.state[SSAValue(i2)], t)
+        @test has_return_escape(result.state[SSAValue(i2)], r)
+        @test has_thrown_escape(result.state[Argument(2)], t)
+        @test has_return_escape(result.state[Argument(2)], r)
     end
 end
 

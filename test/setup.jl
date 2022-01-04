@@ -24,22 +24,17 @@ isreturn(@nospecialize x) = isa(x, Core.ReturnNode) && isdefined(x, :val)
 isthrow(@nospecialize x) = Meta.isexpr(x, :call) && Core.Compiler.is_throw_call(x)
 isnew(@nospecialize x) = Meta.isexpr(x, :new)
 isϕ(@nospecialize x) = isa(x, Core.PhiNode)
-function isarrayalloc(@nospecialize x)
+function with_normalized_name(@nospecialize(f), @nospecialize(x))
     if Meta.isexpr(x, :foreigncall)
         name = x.args[1]
         nn = EscapeAnalysis.normalize(name)
-        return alloc_array_ndims(nn) !== nothing
+        return isa(nn, Symbol) && f(nn)
     end
     return false
 end
-function isarrayresize(@nospecialize x)
-    if Meta.isexpr(x, :foreigncall)
-        name = x.args[1]
-        nn = EscapeAnalysis.normalize(name)
-        return EscapeAnalysis.is_array_resize(nn) !== nothing
-    end
-    return false
-end
+isarrayalloc(@nospecialize x) = with_normalized_name(nn->!isnothing(alloc_array_ndims(nn)), x)
+isarrayresize(@nospecialize x) = with_normalized_name(nn->!isnothing(EscapeAnalysis.is_array_resize(nn)), x)
+isarraycopy(@nospecialize x) = with_normalized_name(nn->EscapeAnalysis.is_array_copy(nn), x)
 import Core.Compiler: argextype, singleton_type
 const EMPTY_SPTYPES = Any[]
 iscall(y) = @nospecialize(x) -> iscall(y, x)
