@@ -1260,12 +1260,6 @@ function arraysize_typecheck(@nospecialize(ary), @nospecialize(dim), ir::IRCode)
     return true
 end
 
-# if isdefined(Core, :arrayfreeze)
-# function escape_builtin!(::typeof(Core.arrayfreeze), astate::AnalysisState, pc::Int, args::Vector{Any})
-#     return true # TODO needs to account for `TypeError` etc.
-# end
-# end # if isdefined(Core, :arrayfreeze)
-
 # returns nothing if this isn't array resizing operation,
 # otherwise returns true if it can throw BoundsError and false if not
 function is_array_resize(name::Symbol)
@@ -1374,6 +1368,22 @@ end
 #     normalize(args[5]) === convension || return false
 #     return true
 # end
+
+if isdefined(Core, :arrayfreeze) && isdefined(Core, :arraythaw) &&  isdefined(Core, :mutating_arrayfreeze)
+
+escape_builtin!(::typeof(Core.arrayfreeze), astate::AnalysisState, pc::Int, args::Vector{Any}) =
+    escape_immutable_array!(Array, astate, pc, args)
+escape_builtin!(::typeof(Core.mutating_arrayfreeze), astate::AnalysisState, pc::Int, args::Vector{Any}) =
+    escape_immutable_array!(Array, astate, pc, args)
+escape_builtin!(::typeof(Core.arraythaw), astate::AnalysisState, pc::Int, args::Vector{Any}) =
+    escape_immutable_array!(Core.ImmutableArray, astate, pc, args)
+function escape_immutable_array!(@nospecialize(arytype), astate::AnalysisState, pc::Int, args::Vector{Any})
+    length(args) == 2 || return false
+    argextype(args[2], astate.ir) ⊑ₜ arytype || return false
+    return true
+end
+
+end # if isdefined(Core, :arrayfreeze) && isdefined(Core, :arraythaw) &&  isdefined(Core, :mutating_arrayfreeze)
 
 # NOTE define fancy package utilities when developing EA as an external package
 if _TOP_MOD !== Core.Compiler
