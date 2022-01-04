@@ -978,6 +978,46 @@ end
         @test has_return_escape(result.state[Argument(2)], r) # a
         @test_broken !has_return_escape(result.state[Argument(3)], r) # b
     end
+
+    # handle conflicting field information correctly
+    let result = analyze_escapes((Bool,String,String,)) do cnd, baz, qux
+            if cnd
+                o = SafeRef("foo")
+            else
+                o = SafeRefs("bar", baz)
+                r = getfield(o, 2)
+            end
+            if cnd
+                o = o::SafeRef
+                setfield!(o, 1, qux)
+                r = getfield(o, 1)
+            end
+            r
+        end
+        r = only(findall(isreturn, result.ir.stmts.inst))
+        @test has_return_escape(result.state[Argument(3)], r) # baz
+        @test has_return_escape(result.state[Argument(4)], r) # qux
+        for new in findall(isnew, result.ir.stmts.inst)
+            @test is_sroa_eligible(result.state[SSAValue(new)])
+        end
+    end
+    let result = analyze_escapes((Bool,String,String,)) do cnd, baz, qux
+            if cnd
+                o = SafeRefs("foo", "bar")
+                r = setfield!(o, 2, baz)
+            else
+                o = SafeRef(qux)
+            end
+            if !cnd
+                o = o::SafeRef
+                r = getfield(o, 1)
+            end
+            r
+        end
+        r = only(findall(isreturn, result.ir.stmts.inst))
+        @test has_return_escape(result.state[Argument(3)], r) # baz
+        @test has_return_escape(result.state[Argument(4)], r) # qux
+    end
 end
 
 # demonstrate the power of our field / alias analysis with a realistic end to end example
