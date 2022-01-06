@@ -31,28 +31,7 @@ import ._TOP_MOD:     # Base definitions
 import Core.Compiler: # Core.Compiler specific definitions
     isbitstype, isexpr, is_meta_expr_head, println,
     IRCode, IR_FLAG_EFFECT_FREE, widenconst, argextype, singleton_type, fieldcount_noerror,
-    try_compute_fieldidx, hasintersect, ⊑ as ⊑ₜ, intrinsic_nothrow
-
-if isdefined(Core.Compiler, :try_compute_field)
-    import Core.Compiler: try_compute_field
-else
-    function try_compute_field(ir::IRCode, @nospecialize(field))
-        # fields are usually literals, handle them manually
-        if isa(field, QuoteNode)
-            field = field.value
-        elseif isa(field, Int) || isa(field, Symbol)
-        # try to resolve other constants, e.g. global reference
-        else
-            field = argextype(field, ir)
-            if isa(field, Const)
-                field = field.val
-            else
-                return nothing
-            end
-        end
-        return isa(field, Union{Int, Symbol}) ? field : nothing
-    end
-end
+    try_compute_field, try_compute_fieldidx, hasintersect, ⊑ as ⊑ₜ, intrinsic_nothrow
 
 if isdefined(Core.Compiler, :array_builtin_common_typecheck) &&
    isdefined(Core.Compiler, :arrayset_typecheck)
