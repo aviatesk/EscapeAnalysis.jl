@@ -31,32 +31,8 @@ import ._TOP_MOD:     # Base definitions
 import Core.Compiler: # Core.Compiler specific definitions
     isbitstype, isexpr, is_meta_expr_head, println,
     IRCode, IR_FLAG_EFFECT_FREE, widenconst, argextype, singleton_type, fieldcount_noerror,
-    try_compute_field, try_compute_fieldidx, hasintersect, ⊑ as ⊑ₜ, intrinsic_nothrow
-
-if isdefined(Core.Compiler, :array_builtin_common_typecheck) &&
-   isdefined(Core.Compiler, :arrayset_typecheck)
-    import Core.Compiler: array_builtin_common_typecheck, arrayset_typecheck
-else
-    function array_builtin_common_typecheck(
-        @nospecialize(boundcheck), @nospecialize(ary),
-        argtypes::Vector{Any}, first_idx_idx::Int)
-        (boundcheck ⊑ₜ Bool && ary ⊑ₜ Array) || return false
-        for i = first_idx_idx:length(argtypes)
-            argtypes[i] ⊑ₜ Int || return false
-        end
-        return true
-    end
-    function arrayset_typecheck(@nospecialize(atype), @nospecialize(elm))
-        # Check that we can determine the element type
-        atype = widenconst(atype)
-        isa(atype, DataType) || return false
-        ap1 = atype.parameters[1]
-        isa(ap1, Type) || return false
-        # Check that the element type is compatible with the element we're assigning
-        elm ⊑ₜ ap1 || return false
-        return true
-    end
-end
+    try_compute_field, try_compute_fieldidx, hasintersect, ⊑ as ⊑ₜ, intrinsic_nothrow,
+    array_builtin_common_typecheck, arrayset_typecheck, setfield!_nothrow
 
 if _TOP_MOD !== Core.Compiler
     include(@__MODULE__, "disjoint_set.jl")
