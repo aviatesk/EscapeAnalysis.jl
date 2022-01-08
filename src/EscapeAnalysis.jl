@@ -997,7 +997,7 @@ function escape_builtin!(::typeof(setfield!), astate::AnalysisState, pc::Int, ar
     else
         # unanalyzable object (e.g. obj::GlobalRef): escape field value conservatively
         add_escape_change!(astate, val, AllEscape())
-        return false
+        @goto add_thrown_escapes
     end
     AliasEscapes = objinfo.AliasEscapes
     if isa(AliasEscapes, Bool)
@@ -1065,7 +1065,14 @@ function escape_builtin!(::typeof(setfield!), astate::AnalysisState, pc::Int, ar
         ssainfo = NoEscape()
     end
     add_escape_change!(astate, val, ssainfo)
-    return false
+    # compute the throwness of this setfield! call here since builtin_nothrow doesn't account for that
+    @label add_thrown_escapes
+    argtypes = Any[]
+    for i = 2:length(args)
+        push!(argtypes, argextype(args[i], ir))
+    end
+    setfield!_nothrow(argtypes) || add_thrown_escapes!(astate, pc, args, 2)
+    return true
 end
 
 function escape_builtin!(::typeof(arrayref), astate::AnalysisState, pc::Int, args::Vector{Any})
