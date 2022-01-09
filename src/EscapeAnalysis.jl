@@ -1168,14 +1168,12 @@ function escape_builtin!(::typeof(arrayset), astate::AnalysisState, pc::Int, arg
     AliasEscapes = aryinfo.AliasEscapes
     if isa(AliasEscapes, Bool)
         if !AliasEscapes
-            # the elements of this array haven't been analyzed yet: set ArrayEscapes now
-            AliasEscapes = ArrayEscapes()
-            @goto add_element_escape
+            # the elements of this array haven't been analyzed yet: don't need to consider ArrayEscapes for now
+            @goto add_ary_escape
         end
         @label conservative_propagation
         add_escape_change!(astate, val, aryinfo)
     elseif isa(AliasEscapes, ArrayEscapes)
-        @label add_element_escape
         for xidx in AliasEscapes
             if isa(xidx, Int)
                 x = irval(xidx, estate)::SSAValue # TODO remove me once we implement ArgEscape
@@ -1185,6 +1183,7 @@ function escape_builtin!(::typeof(arrayset), astate::AnalysisState, pc::Int, arg
                 add_escape_change!(astate, val, ThrownEscape(xidx.id))
             end
         end
+        @label add_ary_escape
         add_escape_change!(astate, val, ignore_aliasescapes(aryinfo))
     else
         # this object has been used as struct, but it is "used" as array here (thus should throw)
@@ -1331,7 +1330,7 @@ end
 #     return true
 # end
 
-if isdefined(Core, :arrayfreeze) && isdefined(Core, :arraythaw) &&  isdefined(Core, :mutating_arrayfreeze)
+if isdefined(Core, :arrayfreeze) && isdefined(Core, :arraythaw) && isdefined(Core, :mutating_arrayfreeze)
 
 escape_builtin!(::typeof(Core.arrayfreeze), astate::AnalysisState, pc::Int, args::Vector{Any}) =
     escape_immutable_array!(Array, astate, pc, args)
