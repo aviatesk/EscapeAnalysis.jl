@@ -19,7 +19,7 @@ import ._TOP_MOD: ==, getindex, setindex!
 import Core:
     MethodInstance, Const, Argument, SSAValue, PiNode, PhiNode, UpsilonNode, PhiCNode,
     ReturnNode, GotoNode, GotoIfNot, SimpleVector, sizeof, ifelse, arrayset, arrayref,
-    arraysize
+    arraysize, ImmutableArray, arrayfreeze, mutating_arrayfreeze, arraythaw
 import ._TOP_MOD:     # Base definitions
     @__MODULE__, @eval, @assert, @specialize, @nospecialize, @inbounds, @inline, @noinline,
     @label, @goto, !, !==, !=, ≠, +, -, ≤, <, ≥, >, &, |, include, error, missing, copy,
@@ -1364,13 +1364,15 @@ function escape_builtin!(::typeof(setfield!), astate::AnalysisState, pc::Int, ar
     return true
 end
 
+const Arrayish = Union{Array,Core.ImmutableArray}
+
 function escape_builtin!(::typeof(arrayref), astate::AnalysisState, pc::Int, args::Vector{Any})
     length(args) ≥ 4 || return false
     # check potential thrown escapes from this arrayref call
     argtypes = Any[argextype(args[i], astate.ir) for i in 2:length(args)]
     boundcheckt = argtypes[1]
     aryt = argtypes[2]
-    if !array_builtin_common_typecheck(boundcheckt, aryt, argtypes, 3)
+    if !array_builtin_common_typecheck(Arrayish, boundcheckt, aryt, argtypes, 3)
         add_thrown_escapes!(astate, pc, args, 2)
     end
     ary = args[3]
@@ -1419,7 +1421,7 @@ function escape_builtin!(::typeof(arrayset), astate::AnalysisState, pc::Int, arg
     boundcheckt = argtypes[1]
     aryt = argtypes[2]
     valt = argtypes[3]
-    if !(array_builtin_common_typecheck(boundcheckt, aryt, argtypes, 4) &&
+    if !(array_builtin_common_typecheck(Array, boundcheckt, aryt, argtypes, 4) &&
          arrayset_typecheck(aryt, valt))
         add_thrown_escapes!(astate, pc, args, 2)
     end
@@ -1574,10 +1576,6 @@ end
 #     return true
 # end
 
-if isdefined(Core, :ImmutableArray)
-
-import Core: ImmutableArray, arrayfreeze, mutating_arrayfreeze, arraythaw
-
 escape_builtin!(::typeof(arrayfreeze), astate::AnalysisState, pc::Int, args::Vector{Any}) =
     is_safe_immutable_array_op(Array, astate, args)
 escape_builtin!(::typeof(mutating_arrayfreeze), astate::AnalysisState, pc::Int, args::Vector{Any}) =
@@ -1589,8 +1587,6 @@ function is_safe_immutable_array_op(@nospecialize(arytype), astate::AnalysisStat
     argextype(args[2], astate.ir) ⊑ₜ arytype || return false
     return true
 end
-
-end # if isdefined(Core, :ImmutableArray)
 
 # NOTE define fancy package utilities when developing EA as an external package
 if _TOP_MOD !== Core.Compiler
