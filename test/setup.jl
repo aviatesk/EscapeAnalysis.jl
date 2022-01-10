@@ -33,7 +33,7 @@ function with_normalized_name(@nospecialize(f), @nospecialize(x))
     return false
 end
 isarrayalloc(@nospecialize x) = with_normalized_name(nn->!isnothing(alloc_array_ndims(nn)), x)
-isarrayresize(@nospecialize x) = with_normalized_name(nn->!isnothing(EscapeAnalysis.is_array_resize(nn)), x)
+isarrayresize(@nospecialize x) = with_normalized_name(nn->!isnothing(EscapeAnalysis.array_resize_info(nn)), x)
 isarraycopy(@nospecialize x) = with_normalized_name(nn->EscapeAnalysis.is_array_copy(nn), x)
 import Core.Compiler: argextype, singleton_type
 const EMPTY_SPTYPES = Any[]
