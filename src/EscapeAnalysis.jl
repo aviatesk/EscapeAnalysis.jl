@@ -317,21 +317,6 @@ x::EscapeLattice ⊔ y::EscapeLattice = begin
         )
 end
 
-"""
-    x::EscapeLattice ⊓ y::EscapeLattice -> EscapeLattice
-
-Computes the meet of `x` and `y` in the partial order defined by `EscapeLattice`.
-"""
-x::EscapeLattice ⊓ y::EscapeLattice = begin
-    return EscapeLattice(
-        x.Analyzed & y.Analyzed,
-        x.ReturnEscape & y.ReturnEscape,
-        x.ThrownEscape & y.ThrownEscape,
-        x.EscapeSites ∩ y.EscapeSites,
-        x.AliasEscapes, # FIXME
-        )
-end
-
 # TODO setup a more effient struct for cache
 # which can discard escape information on SSS values and arguments that don't join dispatch signature
 
@@ -340,11 +325,8 @@ const AliasSet = IntDisjointSet{Int}
 """
     estate::EscapeState
 
-Extended lattice that maps arguments and SSA values to escape information represented as `EscapeLattice`:
-- `estate.arguments::Vector{EscapeLattice}`: escape information about "arguments";
-  note that "argument" can include both call arguments and slots appearing in analysis frame
-- `ssavalues::Vector{EscapeLattice}`: escape information about each SSA value
-- `aliaset::IntDisjointSet{Int}`: a disjoint set that maintains aliased arguments and SSA values
+Extended lattice that maps arguments and SSA values to escape information represented as `EscapeLattice`.
+Escape information imposed on `x` can be retrieved by `estate[x]`.
 """
 struct EscapeState
     escapes::Vector{EscapeLattice}
@@ -683,7 +665,9 @@ function escape_invoke!(astate::AnalysisState, pc::Int, args::Vector{Any})
                 argi = nargs
             end
             arginfo = argescapes[argi]
-            isempty(arginfo.ReturnEscape) && invalid_escape_invoke!(astate, linfo, linfo_estate)
+            if !(arginfo.ReturnEscape && !isempty(arginfo.EscapeSites))
+                invalid_escape_invoke!(astate, linfo, argescapes)
+            end
             info = from_interprocedural(arginfo, retinfo, pc)
             add_escape_change!(astate, arg, info)
         end
@@ -693,7 +677,6 @@ end
 # reinterpret the escape information imposed on the callee argument (`arginfo`) in the
 # context of the caller frame using the escape information imposed on the return value (`retinfo`)
 function from_interprocedural(arginfo::EscapeLattice, retinfo::EscapeLattice, pc::Int)
-    @assert arginfo.ReturnEscape
     if arginfo.ThrownEscape
         EscapeSites = BitSet(pc)
     else
@@ -718,7 +701,7 @@ function from_interprocedural(arginfo::EscapeLattice, retinfo::EscapeLattice, pc
     end
 end
 
-@noinline function invalid_escape_invoke!(astate::AnalysisState, linfo::MethodInstance, linfo_estate::EscapeState)
+@noinline function invalid_escape_invoke!(astate::AnalysisState, linfo::MethodInstance, linfo_estate::Vector{EscapeLattice})
     @eval Main (astate = $astate; linfo = $linfo; linfo_estate = $linfo_estate)
     error("invalid escape lattice element returned from inter-procedural context: inspect `Main.astate`, `Main.linfo` and `Main.linfo_estate`")
 end
