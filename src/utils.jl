@@ -202,7 +202,7 @@ function get_name_color(x::EscapeLattice, symbol::Bool = false)
         name, color = (nothing, "*"), :red
     end
     name = symbol ? last(name) : first(name)
-    if name !== nothing && EA.has_aliasescapes(x)
+    if name !== nothing && !isa(x.AliasEscapes, Bool)
         name = string(name, "′")
     end
     return name, color

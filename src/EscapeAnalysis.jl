@@ -8,6 +8,7 @@ export
     has_return_escape,
     has_thrown_escape,
     has_all_escape,
+    is_load_forwardable,
     is_sroa_eligible,
     can_elide_finalizer
 
@@ -158,23 +159,30 @@ has_thrown_escape(x::EscapeLattice) = x.ThrownEscape
 has_thrown_escape(x::EscapeLattice, pc::Int) = has_thrown_escape(x) && pc in x.EscapeSites
 has_all_escape(x::EscapeLattice) = AllEscape() ⊑ x
 
+# utility lattice constructors
 ignore_aliasescapes(x::EscapeLattice) = EscapeLattice(x, BOT_ALIAS_ESCAPES)
-has_aliasescapes(x::EscapeLattice) = !isa(x.AliasEscapes, Bool)
 
-# TODO is_sroa_eligible: consider throwness?
+"""
+    is_load_forwardable(x::EscapeLattice) -> Bool
+
+Queries if `x` is elibigle for store-to-load forwarding optimization.
+"""
+function is_load_forwardable(x::EscapeLattice)
+    if x.AliasEscapes === false || # allows this query to work for immutables since we don't impose escape on them
+       isa(x.AliasEscapes, FieldEscapes)
+        # NOTE technically we also need to check `!has_thrown_escape(x)` here as well,
+        # but we can also do equivalent check during forwarding
+        return true
+    end
+    return false
+end
 
 """
     is_sroa_eligible(x::EscapeLattice) -> Bool
 
 Queries allocation eliminability by SROA.
 """
-function is_sroa_eligible(x::EscapeLattice)
-    if x.AliasEscapes === false || # allows this query to work for immutables since we don't impose escape on them
-       isa(x.AliasEscapes, FieldEscapes)
-        return !has_return_escape(x) # TODO technically we also need to check !has_thrown_escape(x) as well
-    end
-    return false
-end
+is_sroa_eligible(x::EscapeLattice) = is_load_forwardable(x) && !has_return_escape(x)
 
 """
     can_elide_finalizer(x::EscapeLattice, pc::Int) -> Bool
