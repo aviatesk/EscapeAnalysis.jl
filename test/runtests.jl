@@ -1422,33 +1422,35 @@ let result = code_escapes((String,String,String)) do s, t, u
     @test has_return_escape(result.state[Argument(4)], r) # u
 end
 
-@static if isdefined(Core, :arrayfreeze) && isdefined(Core, :arraythaw) &&  isdefined(Core, :mutating_arrayfreeze)
+@static if isdefined(Core, :ImmutableArray)
+
+import Core: ImmutableArray, arrayfreeze, mutating_arrayfreeze, arraythaw
 
 @testset "ImmutableArray" begin
     # arrayfreeze
     let result = code_escapes((Vector{Any},)) do xs
-            Core.arrayfreeze(xs)
+            arrayfreeze(xs)
         end
         @test !has_thrown_escape(result.state[Argument(2)])
     end
     let result = code_escapes((Vector,)) do xs
-            Core.arrayfreeze(xs)
+            arrayfreeze(xs)
         end
         @test !has_thrown_escape(result.state[Argument(2)])
     end
     let result = code_escapes((Any,)) do xs
-            Core.arrayfreeze(xs)
+            arrayfreeze(xs)
         end
         @test has_thrown_escape(result.state[Argument(2)])
     end
-    let result = code_escapes((Core.ImmutableArray{Any,1},)) do xs
-            Core.arrayfreeze(xs)
+    let result = code_escapes((ImmutableArray{Any,1},)) do xs
+            arrayfreeze(xs)
         end
         @test has_thrown_escape(result.state[Argument(2)])
     end
     let result = code_escapes() do
             xs = Any[]
-            Core.arrayfreeze(xs)
+            arrayfreeze(xs)
         end
         i = only(findall(isarrayalloc, result.ir.stmts.inst))
         @test has_no_escape(result.state[SSAValue(1)])
@@ -1456,57 +1458,57 @@ end
 
     # mutating_arrayfreeze
     let result = code_escapes((Vector{Any},)) do xs
-            Core.mutating_arrayfreeze(xs)
+            mutating_arrayfreeze(xs)
         end
         @test !has_thrown_escape(result.state[Argument(2)])
     end
     let result = code_escapes((Vector,)) do xs
-            Core.mutating_arrayfreeze(xs)
+            mutating_arrayfreeze(xs)
         end
         @test !has_thrown_escape(result.state[Argument(2)])
     end
     let result = code_escapes((Any,)) do xs
-            Core.mutating_arrayfreeze(xs)
+            mutating_arrayfreeze(xs)
         end
         @test has_thrown_escape(result.state[Argument(2)])
     end
-    let result = code_escapes((Core.ImmutableArray{Any,1},)) do xs
-            Core.mutating_arrayfreeze(xs)
+    let result = code_escapes((ImmutableArray{Any,1},)) do xs
+            mutating_arrayfreeze(xs)
         end
         @test has_thrown_escape(result.state[Argument(2)])
     end
     let result = code_escapes() do
             xs = Any[]
-            Core.mutating_arrayfreeze(xs)
+            mutating_arrayfreeze(xs)
         end
         i = only(findall(isarrayalloc, result.ir.stmts.inst))
         @test has_no_escape(result.state[SSAValue(1)])
     end
 
     # arraythaw
-    let result = code_escapes((Core.ImmutableArray{Any,1},)) do xs
-            Core.arraythaw(xs)
+    let result = code_escapes((ImmutableArray{Any,1},)) do xs
+            arraythaw(xs)
         end
         @test !has_thrown_escape(result.state[Argument(2)])
     end
-    let result = code_escapes((Core.ImmutableArray,)) do xs
-            Core.arraythaw(xs)
+    let result = code_escapes((ImmutableArray,)) do xs
+            arraythaw(xs)
         end
         @test !has_thrown_escape(result.state[Argument(2)])
     end
     let result = code_escapes((Any,)) do xs
-            Core.arraythaw(xs)
+            arraythaw(xs)
         end
         @test has_thrown_escape(result.state[Argument(2)])
     end
     let result = code_escapes((Vector{Any},)) do xs
-            Core.arraythaw(xs)
+            arraythaw(xs)
         end
         @test has_thrown_escape(result.state[Argument(2)])
     end
     let result = code_escapes() do
-            xs = Core.ImmutableArray(Any[])
-            Core.arraythaw(xs)
+            xs = ImmutableArray(Any[])
+            arraythaw(xs)
         end
         i = only(findall(isarrayalloc, result.ir.stmts.inst))
         @test has_no_escape(result.state[SSAValue(1)])
@@ -1517,14 +1519,14 @@ end
 # has_no_escape(ary) means ary is eligible for arrayfreeze to mutating_arrayfreeze optimization
 let result = code_escapes((Int,)) do n
         xs = collect(1:n)
-        Core.ImmutableArray(xs)
+        ImmutableArray(xs)
     end
     i = only(findall(isarrayalloc, result.ir.stmts.inst))
     @test has_no_escape(result.state[SSAValue(i)])
 end
 let result = code_escapes((Vector{Float64},)) do xs
         ys = sin.(xs)
-        Core.ImmutableArray(ys)
+        ImmutableArray(ys)
     end
     i = only(findall(isarrayalloc, result.ir.stmts.inst))
     @test_broken has_no_escape(result.state[SSAValue(i)])
@@ -1535,13 +1537,13 @@ let result = code_escapes((Vector{Pair{Int,String}},)) do xs
         for (i, s) in xs
             ys[i] = s
         end
-        Core.ImmutableArray(xs)
+        ImmutableArray(xs)
     end
     i = only(findall(isarrayalloc, result.ir.stmts.inst))
     @test has_no_escape(result.state[SSAValue(i)])
 end
 
-end # @static if isdefined(Core, :arrayfreeze) && isdefined(Core, :arraythaw) &&  isdefined(Core, :mutating_arrayfreeze)
+end # @static if isdefined(Core, :ImmutableArray)
 
 # demonstrate a simple type level analysis can sometimes improve the analysis accuracy
 # by compensating the lack of yet unimplemented analyses
