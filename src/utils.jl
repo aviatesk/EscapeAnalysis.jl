@@ -194,7 +194,7 @@ __clear_caches!() = (__clear_code_cache!(); EA.__clear_escape_cache!())
 
 function get_name_color(x::EscapeLattice, symbol::Bool = false)
     getname(x) = string(nameof(x))
-    if x == EA.NotAnalyzed()
+    if x === EA.⊥′
         name, color = (getname(EA.NotAnalyzed), "◌"), :plain
     elseif EA.has_no_escape(x)
         name, color = (getname(EA.NoEscape), "✓"), :green
