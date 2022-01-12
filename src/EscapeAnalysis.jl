@@ -134,7 +134,6 @@ const ARG_RETURN_ESCAPE = BitSet(0)
 const TOP_RETURN_ESCAPE = BitSet(0:100_000)
 
 const BOT_THROWN_ESCAPE = BitSet()
-const UNHANDLED_THROWN_ESCAPE = BitSet(0)
 const TOP_THROWN_ESCAPE = BitSet(0:100_000)
 
 const BOT_ALIAS_ESCAPES = false
@@ -146,7 +145,7 @@ NoEscape() = EscapeLattice(true, BOT_RETURN_ESCAPE, BOT_THROWN_ESCAPE, BOT_ALIAS
 ReturnEscape(pc::Int) = EscapeLattice(true, BitSet(pc), BOT_THROWN_ESCAPE, BOT_ALIAS_ESCAPES)
 ArgumentReturnEscape() = EscapeLattice(true, ARG_RETURN_ESCAPE, BOT_THROWN_ESCAPE, TOP_ALIAS_ESCAPES) # TODO allow interprocedural field analysis?
 AllReturnEscape() = EscapeLattice(true, TOP_RETURN_ESCAPE, BOT_THROWN_ESCAPE, BOT_ALIAS_ESCAPES)
-ThrownEscape(pc::Int) = EscapeLattice(true, BOT_RETURN_ESCAPE, pc == 0 ? UNHANDLED_THROWN_ESCAPE : BitSet(pc), BOT_ALIAS_ESCAPES)
+ThrownEscape(pc::Int) = EscapeLattice(true, BOT_RETURN_ESCAPE, BitSet(pc), BOT_ALIAS_ESCAPES)
 ThrownEscape(pcs::BitSet) = EscapeLattice(true, BOT_RETURN_ESCAPE, pcs, BOT_ALIAS_ESCAPES)
 AllEscape() = EscapeLattice(true, TOP_RETURN_ESCAPE, TOP_THROWN_ESCAPE, TOP_ALIAS_ESCAPES)
 
@@ -766,16 +765,17 @@ function escape_exception!(astate::AnalysisState, tryregions::Vector{UnitRange{I
     escapes = estate.escapes
     for i in 1:length(escapes)
         x = escapes[i]
+        xt = x.ThrownEscape
+        xt === TOP_THROWN_ESCAPE && @goto propagate_exception_escape # fast pass
         for pc in x.ThrownEscape
             for region in tryregions
-                if pc in region
-                    xval = irval(i, estate)
-                    add_escape_change!(astate, xval, excinfo)
-                    @goto next_escape # early break because of AllEscape
-                end
+                pc in region && @goto propagate_exception_escape # early break because of AllEscape
             end
         end
-        @label next_escape
+        continue
+        @label propagate_exception_escape
+        xval = irval(i, estate)
+        add_escape_change!(astate, xval, excinfo)
     end
 end
 
