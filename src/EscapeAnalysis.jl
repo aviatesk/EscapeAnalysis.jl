@@ -3,7 +3,6 @@ baremodule EscapeAnalysis
 export
     analyze_escapes,
     cache_escapes!,
-    has_not_analyzed,
     has_no_escape,
     has_return_escape,
     has_thrown_escape,
@@ -77,8 +76,8 @@ A lattice for escape information, which holds the following properties:
   * `n` : through argument N
 
 There are utility constructors to create common `EscapeLattice`s, e.g.,
-- `NoEscape() === ⊥`: the bottom element of this lattice, meaning it won't escape to anywhere
-- `AllEscape() === ⊤`: the topmost element of this lattice, meaning it will escape to everywhere
+- `NoEscape()`: the bottom(-like) element of this lattice, meaning it won't escape to anywhere
+- `AllEscape()`: the topmost element of this lattice, meaning it will escape to everywhere
 
 `analyze_escapes` will transition these elements from the bottom to the top,
 in the same direction as Julia's native type inference routine.
@@ -149,10 +148,10 @@ ThrownEscape(pc::Int) = EscapeLattice(true, BOT_RETURN_ESCAPE, BitSet(pc), BOT_A
 ThrownEscape(pcs::BitSet) = EscapeLattice(true, BOT_RETURN_ESCAPE, pcs, BOT_ALIAS_ESCAPES)
 AllEscape() = EscapeLattice(true, TOP_RETURN_ESCAPE, TOP_THROWN_ESCAPE, TOP_ALIAS_ESCAPES)
 
-const ⊥′, ⊥, ⊤ = NotAnalyzed(), NoEscape(), AllEscape()
+const ⊥, ⊤ = NotAnalyzed(), AllEscape()
 
 # Convenience names for some ⊑ queries
-has_no_escape(x::EscapeLattice) = ignore_aliasescapes(x) ⊑ ⊥
+has_no_escape(x::EscapeLattice) = ignore_aliasescapes(x) ⊑ NoEscape()
 has_return_escape(x::EscapeLattice) = !isempty(x.ReturnEscape)
 has_return_escape(x::EscapeLattice, pc::Int) = pc in x.ReturnEscape
 has_thrown_escape(x::EscapeLattice) = !isempty(x.ThrownEscape)
@@ -351,7 +350,7 @@ struct EscapeState
 end
 function EscapeState(nargs::Int, nstmts::Int)
     escapes = EscapeLattice[
-        1 ≤ i ≤ nargs ? ArgumentReturnEscape() : ⊥′ for i in 1:(nargs+nstmts)]
+        1 ≤ i ≤ nargs ? ArgumentReturnEscape() : ⊥ for i in 1:(nargs+nstmts)]
     aliaset = AliasSet(nargs+nstmts)
     return EscapeState(escapes, aliaset, nargs)
 end
@@ -462,7 +461,7 @@ else
         GLOBAL_ESCAPE_CACHE[linfo] = cache
         return cache
     end
-    argescapes_from_cache(cache::Vector{EscapeLattice}) = cache
+    argescapes_from_cache(cache::Vector{EscapeLatticeCache}) = cache
 end
 
 function to_interprocedural(estate::EscapeState)
@@ -531,29 +530,17 @@ function analyze_escapes(ir::IRCode, nargs::Int)
                 elseif is_meta_expr_head(head)
                     # meta expressions doesn't account for any usages
                     continue
-                elseif head === :enter || head === :leave ||
-                       head === :the_exception || head === :pop_exception
+                elseif head === :enter || head === :leave || head === :the_exception || head === :pop_exception
                     # ignore these expressions since escapes via exceptions are handled by `escape_exception!`
                     # `escape_exception!` conservatively propagates `AllEscape` anyway,
                     # and so escape information imposed on `:the_exception` isn't computed
                     continue
-                elseif head === :static_parameter
-                    # :static_parameter refers any of static parameters, but since they exist
-                    # statically, we're really not interested in their escapes
-                    continue
-                elseif head === :copyast
-                    # copyast simply copies a surface syntax AST, and should never use any of arguments or SSA values
-                    continue
-                elseif head === :undefcheck
-                    # undefcheck is temporarily inserted by compiler
-                    # it will be processd be later pass so it won't change any of escape states
-                    continue
-                elseif head === :isdefined
-                    # just returns `Bool`, nothing accounts for any usages
-                    continue
-                elseif head === :gc_preserve_begin || head === :gc_preserve_end
-                    # `GC.@preserve` may "use" arbitrary values, but we can just ignore the escape information
-                    # imposed on `GC.@preserve` expressions since they're supposed to never be used elsewhere
+                elseif head === :static_parameter ||  # this exists statically, not interested in its escape
+                       head === :copyast ||           # XXX can this account for some escapes?
+                       head === :undefcheck ||        # XXX can this account for some escapes?
+                       head === :isdefined ||         # just returns `Bool`, nothing accounts for any escapes
+                       head === :gc_preserve_begin || # `GC.@preserve` expressions themselves won't be used anywhere
+                       head === :gc_preserve_end      # `GC.@preserve` expressions themselves won't be used anywhere
                     continue
                 else
                     for x in stmt.args
@@ -646,7 +633,7 @@ function propagate_alias_change!(estate::EscapeState, change::AliasChange)
 end
 
 function add_escape_change!(astate::AnalysisState, @nospecialize(x), info::EscapeLattice)
-    info === ⊥′ && return # performance optimization
+    info === ⊥ && return # performance optimization
     xidx = iridx(x, astate.estate)
     if xidx !== nothing
         if !isbitstype(widenconst(argextype(x, astate.ir)))
