@@ -647,6 +647,7 @@ function propagate_alias_change!(estate::EscapeState, change::AliasChange)
 end
 
 function add_escape_change!(astate::AnalysisState, @nospecialize(x), info::EscapeLattice)
+    info === ⊥′ && return # performance optimization
     xidx = iridx(x, astate.estate)
     if xidx !== nothing
         if !isbitstype(widenconst(argextype(x, astate.ir)))
