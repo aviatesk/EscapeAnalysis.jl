@@ -67,7 +67,7 @@ import Core:
 import .CC:
     OptimizationState, IRCode
 import .EA:
-    analyze_escapes, GLOBAL_ESCAPE_CACHE, EscapeCache
+    analyze_escapes, cache_escapes!
 
 mutable struct EscapeAnalyzer{State} <: AbstractInterpreter
     native::NativeInterpreter
@@ -157,10 +157,17 @@ function run_passes_with_ea(interp::EscapeAnalyzer, ci::CodeInfo, sv::Optimizati
     nargs = let def = sv.linfo.def
         isa(def, Method) ? Int(def.nargs) : 0
     end
-    @timeit "collect escape information" state = analyze_escapes(ir, nargs)
+    local state
+    try
+        @timeit "collect escape information" state = analyze_escapes(ir, nargs)
+    catch err
+        @info "error happened within `analyze_escapes`, insepct `Main.ir` and `Main.nargs`"
+        @eval Main (ir = $ir; nargs = $nargs)
+        rethrow(err)
+    end
     cacheir = Core.Compiler.copy(ir)
     # cache this result
-    GLOBAL_ESCAPE_CACHE[sv.linfo] = EscapeCache(state, cacheir)
+    cache_escapes!(sv.linfo, state, cacheir)
     # return back the result
     interp.ir = cacheir
     interp.state = state
@@ -180,11 +187,10 @@ end
 
 import Core: Argument, SSAValue
 import .CC: widenconst, singleton_type
-import .EA:
-    EscapeLattice, EscapeState, TOP_ESCAPE_SITES, BOT_ALIAS_ESCAPES, ⊑, ⊏, __clear_escape_cache!
+import .EA: EscapeLattice, EscapeState, ⊑, ⊏
 
 # in order to run a whole analysis from ground zero (e.g. for benchmarking, etc.)
-__clear_caches!() = (__clear_code_cache!(); __clear_escape_cache!())
+__clear_caches!() = (__clear_code_cache!(); EA.__clear_escape_cache!())
 
 function get_name_color(x::EscapeLattice, symbol::Bool = false)
     getname(x) = string(nameof(x))
@@ -192,14 +198,14 @@ function get_name_color(x::EscapeLattice, symbol::Bool = false)
         name, color = (getname(EA.NotAnalyzed), "◌"), :plain
     elseif EA.has_no_escape(x)
         name, color = (getname(EA.NoEscape), "✓"), :green
-    elseif EA.NoEscape() ⊏ EA.ignore_aliasescapes(x) ⊑ AllReturnEscape()
-        name, color = (getname(EA.ReturnEscape), "↑"), :cyan
-    elseif EA.NoEscape() ⊏ EA.ignore_aliasescapes(x) ⊑ AllThrownEscape()
-        name, color = (getname(EA.ThrownEscape), "↓"), :yellow
     elseif EA.has_all_escape(x)
         name, color = (getname(EA.AllEscape), "X"), :red
+    elseif EA.NoEscape() ⊏ (EA.ignore_thrownescapes ∘ EA.ignore_aliasescapes)(x) ⊑ EA.AllReturnEscape()
+        name = (getname(EA.ReturnEscape), "↑")
+        color = EA.has_thrown_escape(x) ? :yellow : :cyan
     else
-        name, color = (nothing, "*"), :red
+        name = (nothing, "*")
+        color = EA.has_thrown_escape(x) ? :yellow : :bold
     end
     name = symbol ? last(name) : first(name)
     if name !== nothing && !isa(x.AliasEscapes, Bool)
@@ -207,9 +213,6 @@ function get_name_color(x::EscapeLattice, symbol::Bool = false)
     end
     return name, color
 end
-
-AllReturnEscape() = EscapeLattice(true, true, false, TOP_ESCAPE_SITES, BOT_ALIAS_ESCAPES)
-AllThrownEscape() = EscapeLattice(true, false, true, TOP_ESCAPE_SITES, BOT_ALIAS_ESCAPES)
 
 # pcs = sprint(show, collect(x.EscapeSites); context=:limit=>true)
 function Base.show(io::IO, x::EscapeLattice)

@@ -124,11 +124,20 @@ include("setup.jl")
         i = only(findall(isT(SafeRef{Bool}), result.ir.stmts.type))
         @test has_return_escape(result.state[SSAValue(i)])
     end
-    let # exception
+    let # try/catch
         result = code_escapes((Any,)) do a
             try
                 nothing
             catch err
+                return a # return escape
+            end
+        end
+        @test has_return_escape(result.state[Argument(2)])
+    end
+    let result = code_escapes((Any,)) do a
+            try
+                nothing
+            finally
                 return a # return escape
             end
         end
@@ -379,39 +388,271 @@ end
         @assert length(rts) == 3
         @test count(rt->has_return_escape(result.state[SSAValue(i)], rt), rts) == 2
     end
+end
 
-    # ThrownEscape
-    let result = code_escapes((Bool,)) do cond
-            r = Ref("foo")
-            if cond
-                println("bar")
-                return
+@testset "escape through exceptions" begin
+    M = @eval Module() begin
+        unsafeget(x) = isassigned(x) ? x[] : throw(x)
+        @noinline function rethrow_escape!()
+            try
+                rethrow()
+            catch err
+                Gx[] = err
             end
-            throw(r)
         end
-        i = only(findall(isT(Base.RefValue{String}), result.ir.stmts.type))
-        t = only(findall(isthrow, result.ir.stmts.inst))
-        @test length(result.state[SSAValue(i)].EscapeSites) == 1
-        @test has_thrown_escape(result.state[SSAValue(i)], t)
+        @noinline function current_exceptions_escape!()
+            excs = Base.current_exceptions()
+            Gx[] = excs
+        end
+        const Gx = Ref{Any}()
+        @__MODULE__
     end
-    let result = code_escapes((Bool,)) do cond
-            r = Ref("foo")
-            cnt = 0
-            while rand(Bool)
-                cnt += 1
-                if rand(Bool)
-                    throw(r)
+
+    let # simple: return escape
+        result = @eval M $code_escapes() do
+            r = Ref{String}()
+            local ret
+            try
+                s = unsafeget(r)
+                ret = sizeof(s)
+            catch err
+                ret = err
+            end
+            return ret
+        end
+        i = only(findall(isnew, result.ir.stmts.inst))
+        @test has_return_escape(result.state[SSAValue(i)])
+    end
+
+    let # simple: global escape
+        result = @eval M $code_escapes() do
+            r = Ref{String}()
+            local ret # prevent DCE
+            try
+                s = unsafeget(r)
+                ret = sizeof(s)
+            catch err
+                global g = err
+            end
+            nothing
+        end
+        i = only(findall(isnew, result.ir.stmts.inst))
+        @test has_all_escape(result.state[SSAValue(i)])
+    end
+
+    let # account for possible escapes via nested throws
+        result = @eval M $code_escapes() do
+            r = Ref{String}()
+            try
+                try
+                    unsafeget(r)
+                catch err1
+                    throw(err1)
+                end
+            catch err2
+                Gx[] = err2
+            end
+        end
+        i = only(findall(isnew, result.ir.stmts.inst))
+        @test has_all_escape(result.state[SSAValue(i)])
+    end
+    let # account for possible escapes via `rethrow`
+        result = @eval M $code_escapes() do
+            r = Ref{String}()
+            try
+                try
+                    unsafeget(r)
+                catch err1
+                    rethrow(err1)
+                end
+            catch err2
+                Gx[] = err2
+            end
+        end
+        i = only(findall(isnew, result.ir.stmts.inst))
+        @test has_all_escape(result.state[SSAValue(i)])
+    end
+    let # account for possible escapes via `rethrow`
+        result = @eval M $code_escapes() do
+            try
+                r = Ref{String}()
+                unsafeget(r)
+            catch
+                rethrow_escape!()
+            end
+        end
+        i = only(findall(isnew, result.ir.stmts.inst))
+        @test has_all_escape(result.state[SSAValue(i)])
+    end
+    let # account for possible escapes via `rethrow`
+        result = @eval M $code_escapes() do
+            local t
+            try
+                r = Ref{String}()
+                t = unsafeget(r)
+            catch err
+                t = typeof(err)
+                rethrow_escape!()
+            end
+            return t
+        end
+        i = only(findall(isnew, result.ir.stmts.inst))
+        @test has_all_escape(result.state[SSAValue(i)])
+    end
+    let # account for possible escapes via `Base.current_exceptions`
+        result = @eval M $code_escapes() do
+            try
+                r = Ref{String}()
+                unsafeget(r)
+            catch
+                Gx[] = Base.current_exceptions()
+            end
+        end
+        i = only(findall(isnew, result.ir.stmts.inst))
+        @test has_all_escape(result.state[SSAValue(i)])
+    end
+    let # account for possible escapes via `Base.current_exceptions`
+        result = @eval M $code_escapes() do
+            try
+                r = Ref{String}()
+                unsafeget(r)
+            catch
+                current_exceptions_escape!()
+            end
+        end
+        i = only(findall(isnew, result.ir.stmts.inst))
+        @test has_all_escape(result.state[SSAValue(i)])
+    end
+
+    let # contextual: escape information imposed on `err` shouldn't propagate to `r2`, but only to `r1`
+        result = @eval M $code_escapes() do
+            r1 = Ref{String}()
+            r2 = Ref{String}()
+            local ret
+            try
+                s1 = unsafeget(r1)
+                ret = sizeof(s1)
+            catch err
+                global g = err
+            end
+            s2 = unsafeget(r2)
+            return s2, r2
+        end
+        is = findall(isnew, result.ir.stmts.inst)
+        @test length(is) == 2
+        i1, i2 = is
+        r = only(findall(isreturn, result.ir.stmts.inst))
+        @test has_all_escape(result.state[SSAValue(i1)])
+        @test !has_all_escape(result.state[SSAValue(i2)])
+        @test has_return_escape(result.state[SSAValue(i2)], r)
+    end
+
+    # XXX test cases below are currently broken because of the technical reason described in `escape_exception!`
+
+    let # limited propagation: exception is caught within a frame => doesn't escape to a caller
+        result = @eval M $code_escapes() do
+            r = Ref{String}()
+            local ret
+            try
+                s = unsafeget(r)
+                ret = sizeof(s)
+            catch
+                ret = nothing
+            end
+            return ret
+        end
+        i = only(findall(isnew, result.ir.stmts.inst))
+        r = only(findall(isreturn, result.ir.stmts.inst))
+        @test_broken !has_return_escape(result.state[SSAValue(i)], r)
+    end
+    let # sequential: escape information imposed on `err1` and `err2 should propagate separately
+        result = @eval M $code_escapes() do
+            r1 = Ref{String}()
+            r2 = Ref{String}()
+            local ret
+            try
+                s1 = unsafeget(r1)
+                ret = sizeof(s1)
+            catch err1
+                global g = err1
+            end
+            try
+                s2 = unsafeget(r2)
+                ret = sizeof(s2)
+            catch err2
+                ret = err2
+            end
+            return ret
+        end
+        is = findall(isnew, result.ir.stmts.inst)
+        @test length(is) == 2
+        i1, i2 = is
+        r = only(findall(isreturn, result.ir.stmts.inst))
+        @test has_all_escape(result.state[SSAValue(i1)])
+        @test has_return_escape(result.state[SSAValue(i2)], r)
+        @test_broken !has_all_escape(result.state[SSAValue(i2)])
+    end
+    let # nested: escape information imposed on `inner` shouldn't propagate to `s`
+        result = @eval M $code_escapes() do
+            r = Ref{String}()
+            local ret
+            try
+                s = unsafeget(r)
+                try
+                    ret = sizeof(s)
+                catch inner
+                    return inner
+                end
+            catch outer
+                ret = nothing
+            end
+            return ret
+        end
+        i = only(findall(isnew, result.ir.stmts.inst))
+        @test_broken !has_return_escape(result.state[SSAValue(i)])
+    end
+    let # merge: escape information imposed on `err1` and `err2 should be merged
+        result = @eval M $code_escapes() do
+            r = Ref{String}()
+            local ret
+            try
+                s = unsafeget(r)
+                ret = sizeof(s)
+            catch err1
+                return err1
+            end
+            try
+                s = unsafeget(r)
+                ret = sizeof(s)
+            catch err2
+                return err2
+            end
+            nothing
+        end
+        i = only(findall(isnew, result.ir.stmts.inst))
+        rs = findall(isreturn, result.ir.stmts.inst)
+        @test_broken !has_all_escape(result.state[SSAValue(i)])
+        for r in rs
+            @test has_return_escape(result.state[SSAValue(i)], r)
+        end
+    end
+    let # no exception handling: should keep propagating the escape
+        result = @eval M $code_escapes() do
+            r = Ref{String}()
+            local ret
+            try
+                s = unsafeget(r)
+                ret = sizeof(s)
+            finally
+                if !@isdefined(ret)
+                    ret = 42
                 end
             end
-            if rand(Bool)
-                throw(r)
-            end
-            return
+            return ret
         end
-        i = only(findall(isT(Base.RefValue{String}), result.ir.stmts.type))
-        ts = findall(isthrow, result.ir.stmts.inst)
-        @assert length(ts) == 2
-        @test all(t->has_thrown_escape(result.state[SSAValue(i)], t), ts)
+        i = only(findall(isnew, result.ir.stmts.inst))
+        r = only(findall(isreturn, result.ir.stmts.inst))
+        @test_broken !has_return_escape(result.state[SSAValue(i)], r)
     end
 end
 

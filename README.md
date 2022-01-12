@@ -5,10 +5,8 @@
 
 This analysis works on a lattice called `x::EscapeLattice`, which holds the following properties:
 - `x.Analyzed::Bool`: not formally part of the lattice, indicates `x` has not been analyzed at all
-- `x.ReturnEscape::Bool`: indicates `x` may escape to the caller via return
-- `x.ThrownEscape::Bool`: indicates `x` may escape to somewhere through an exception
-- `x.EscapeSites::BitSet`: records SSA statements where `x` can escape via any of
-  `ReturnEscape` or `ThrownEscape`
+- `x.ReturnEscape::BitSet`: records SSA statements where `x` can escape to the caller via return
+- `x.ThrownEscape::BitSet`: records SSA statements where `x` can be thrown as exception
 - `x.AliasEscapes::Union{FieldEscapes,ArrayEscapes,Bool}`: maintains all possible values
   that may escape objects that can be referenced from `x`:
 - `x.ArgEscape::Int` (not implemented yet): indicates it will escape to the caller through
@@ -23,7 +21,7 @@ bottom to the top until every lattice element gets converged to a fixed point by
 a (conceptual) working set that contains program counters corresponding to remaining SSA
 statements to be analyzed. The analysis manages a single global state that tracks
 `EscapeLattice` of each argument and SSA statement, but also note that some flow-sensitivity
-is being encoded as program counters recorded in `EscapeLattice`'s `EscapeSites` property,
+is encoded as program counters recorded in `EscapeLattice`'s `ReturnEscape` property,
 which can be combined with domination analysis to reason about flow-sensitivity if necessary.
 
 One distinctive design of this analysis is that escape information is propagated in a
