@@ -1305,6 +1305,82 @@ let result = @code_escapes compute!(MPoint(1+.5im, 2+.5im), MPoint(2+.25im, 4+.7
     end
 end
 
+@testset "pointer operations" begin
+    let # :jl_value_ptr
+        result = code_escapes((String,)) do s
+            ref  = Ref(s)
+            ref′ = Ref(ref)
+            GC.@preserve ref′ begin
+                ptr  = pointer_from_objref(ref′)
+                ptr′ = Ptr{Any}(ptr)
+                return unsafe_pointer_to_objref(ptr) # should escape ref′, ref, and s
+            end
+        end
+        is = findall(isnew, result.ir.stmts.inst)
+        @assert length(is) == 2
+        i, i′ = is
+        r = only(findall(isreturn, result.ir.stmts.inst))
+        @test has_return_escape(result.state[Argument(2)], r)  # s
+        @test has_return_escape(result.state[SSAValue(i)], r)  # ref
+        @test has_return_escape(result.state[SSAValue(i′)], r) # ref′
+    end
+
+    let # pointerref
+        result = code_escapes((String,)) do s
+            ref  = Ref(s)
+            ref′ = Ref(ref)
+            GC.@preserve ref′ begin
+                ptr  = pointer_from_objref(ref′)
+                ptr′ = Ptr{Base.RefValue{Base.RefValue{String}}}(ptr)
+                return unsafe_load(ptr′) # should escape s, ref and ref′
+            end
+        end
+        is = findall(isnew, result.ir.stmts.inst)
+        @assert length(is) == 2
+        i, i′ = is
+        r = only(findall(isreturn, result.ir.stmts.inst))
+        @test has_return_escape(result.state[Argument(2)], r)  # s
+        @test has_return_escape(result.state[SSAValue(i)], r)  # ref
+        @test has_return_escape(result.state[SSAValue(i′)], r) # ref′
+    end
+    let # pointerset
+        result = code_escapes((String,)) do s
+            ref  = Ref("foo")
+            ref1 = Ref(ref)
+            ref2 = Ref(s)
+            GC.@preserve ref2 begin
+                ptr  = pointer_from_objref(ref1)
+                ptr′ = Ptr{Any}(ptr)
+                unsafe_store!(ptr′, ref2)
+                return unsafe_load(ptr′) # should escape s and ref1
+            end
+        end
+        is = findall(isnew, result.ir.stmts.inst)
+        @assert length(is) == 3
+        i, i1, i2 = is
+        r = only(findall(isreturn, result.ir.stmts.inst))
+        @test has_return_escape(result.state[Argument(2)], r)  # s
+        @test has_return_escape(result.state[SSAValue(i2)], r) # ref2
+    end
+
+    let # jl_array_ptr / jl_ptr_to_array_1d
+        result = code_escapes((String,)) do s
+            ref = Ref(s)
+            ary = [ref]
+            GC.@preserve ary begin
+                ptr = pointer(ary)
+                return unsafe_wrap(Array, ptr, length(ary)) # should escape ref and s
+            end
+        end
+        i = only(findall(isnew, result.ir.stmts.inst))
+        a = only(findall(isarrayalloc, result.ir.stmts.inst))
+        r = only(findall(isreturn, result.ir.stmts.inst))
+        @test has_return_escape(result.state[Argument(2)], r)  # s
+        @test has_return_escape(result.state[SSAValue(i)], r) # ref
+        @test_broken !has_return_escape(result.state[SSAValue(a)], r) # ary
+    end
+end
+
 @testset "array primitives" begin
     # arrayref
     let result = code_escapes((Vector{String},Int)) do xs, i

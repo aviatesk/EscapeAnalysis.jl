@@ -23,6 +23,7 @@ import Core:
     MethodInstance, Const, Argument, SSAValue, PiNode, PhiNode, UpsilonNode, PhiCNode,
     ReturnNode, GotoNode, GotoIfNot, SimpleVector, sizeof, ifelse, arrayset, arrayref,
     arraysize
+using Core.Intrinsics
 import ._TOP_MOD:     # Base definitions
     @__MODULE__, @eval, @assert, @nospecialize, @inbounds, @inline, @noinline, @label, @goto,
     !, !==, !=, ≠, +, -, ≤, <, ≥, >, &, |, include, error, missing, copy,
@@ -938,7 +939,10 @@ function escape_foreigncall!(astate::AnalysisState, pc::Int, args::Vector{Any})
     nargs = length(args)
     if nargs < 6
         # invalid foreigncall, just escape everything
-        return add_thrown_escapes!(astate, pc, args)
+        for i = 1:length(args)
+            add_escape_change!(astate, args[i], AllEscape())
+        end
+        return
     end
     foreigncall_nargs = length((args[3])::SimpleVector)
     name = args[1]
@@ -960,9 +964,17 @@ function escape_foreigncall!(astate::AnalysisState, pc::Int, args::Vector{Any})
         # if nn === :jl_gc_add_finalizer_th
         #     # TODO add `FinalizerEscape` ?
         # end
+        conservative_propagation = is_getting_pointer(nn)
+    else # might be getting a pointer etc.
+        conservative_propagation = true
     end
-    # NOTE array allocations might have been proven as nothrow (https://github.com/JuliaLang/julia/pull/43565)
-    if !(astate.ir.stmts[pc][:flag] & IR_FLAG_EFFECT_FREE ≠ 0)
+    if conservative_propagation
+        add_escape_change!(astate, name, AllEscape())
+        for i in 6:5+foreigncall_nargs
+            add_escape_change!(astate, args[i], AllEscape())
+        end
+    elseif !(astate.ir.stmts[pc][:flag] & IR_FLAG_EFFECT_FREE ≠ 0)
+        # sometimes array alloction etc. are proven to be safe
         add_escape_change!(astate, name, ThrownEscape(pc))
         for i in 6:5+foreigncall_nargs
             add_escape_change!(astate, args[i], ThrownEscape(pc))
@@ -971,6 +983,13 @@ function escape_foreigncall!(astate::AnalysisState, pc::Int, args::Vector{Any})
 end
 
 normalize(@nospecialize x) = isa(x, QuoteNode) ? x.value : x
+
+function is_getting_pointer(name::Symbol)
+    return name === :jl_value_ptr ||
+           name === :jl_array_ptr ||
+           name === :jl_string_ptr ||
+           name === :jl_symbol_name
+end
 
 # NOTE error cases will be handled in `analyze_escapes` anyway, so we don't need to take care of them below
 # TODO implement more builtins, make them more accurate
@@ -981,6 +1000,13 @@ function escape_call!(astate::AnalysisState, pc::Int, args::Vector{Any})
     ft = argextype(first(args), ir, ir.sptypes, ir.argtypes)
     f = singleton_type(ft)
     if isa(f, Core.IntrinsicFunction)
+        if is_pointer_op(f)
+            # don't bother with pointer operations for now
+            for i in 2:length(args)
+                add_escape_change!(astate, args[i], AllEscape())
+            end
+            return
+        end
         # COMBAK we may break soundness and need to account for some aliasing here, e.g. `pointerref`
         argtypes = Any[argextype(args[i], astate.ir) for i = 2:length(args)]
         intrinsic_nothrow(f, argtypes) || add_thrown_escapes!(astate, pc, args, 2)
@@ -1003,6 +1029,17 @@ function escape_call!(astate::AnalysisState, pc::Int, args::Vector{Any})
     if !(astate.ir.stmts.flag[pc] & IR_FLAG_EFFECT_FREE ≠ 0)
         add_thrown_escapes!(astate, pc, args, 2)
     end
+end
+
+function is_pointer_op(@nospecialize f)
+    return f === pointerref ||
+           f === pointerset ||
+           f === atomic_fence ||
+           f === atomic_pointerref ||
+           f === atomic_pointerset ||
+           f === atomic_pointerswap ||
+           f === atomic_pointermodify ||
+           f === atomic_pointerreplace
 end
 
 escape_builtin!(@nospecialize(f), _...) = return missing
