@@ -457,7 +457,7 @@ if _TOP_MOD !== Core.Compiler
     argescapes_from_cache(cache::EscapeCache) = cache.cache
 else
     const GLOBAL_ESCAPE_CACHE = IdDict{MethodInstance,Vector{EscapeLatticeCache}}()
-    function cache_escapes!(linfo::MethodInstance, state::EscapeState, _::IRCode)
+    function cache_escapes!(linfo::MethodInstance, estate::EscapeState, _::IRCode)
         cache = to_interprocedural(estate)
         GLOBAL_ESCAPE_CACHE[linfo] = cache
         return cache
