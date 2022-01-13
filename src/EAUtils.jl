@@ -1,19 +1,23 @@
+const EA_AS_PKG = Symbol(@__MODULE__) !== :Base # develop EA as an external package
+
 module EAUtils
 
-import ..EscapeAnalysis: EscapeAnalysis
+import ..EA_AS_PKG
+if EA_AS_PKG
+    import ..EscapeAnalysis
+else
+    import Core.Compiler.EscapeAnalysis: EscapeAnalysis
+    Base.getindex(estate::EscapeAnalysis.EscapeState, @nospecialize(x)) =
+        Core.Compiler.getindex(estate, x)
+end
 const EA = EscapeAnalysis
 const CC = Core.Compiler
-
-let
-    README = normpath(dirname(@__DIR__), "README.md")
-    include_dependency(README)
-    @doc read(README, String) EA
-end
 
 # entries
 # -------
 
-using InteractiveUtils
+@static if EA_AS_PKG
+import InteractiveUtils: gen_call_with_extracted_types_and_kwargs
 
 """
     @code_escapes [options...] f(args...)
@@ -24,8 +28,9 @@ As with `@code_typed` and its family, any of `code_escapes` keyword arguments ca
 as the optional arguments like `@code_escpase interp=myinterp myfunc(myargs...)`.
 """
 macro code_escapes(ex0...)
-    return InteractiveUtils.gen_call_with_extracted_types_and_kwargs(__module__, :code_escapes, ex0)
+    return gen_call_with_extracted_types_and_kwargs(__module__, :code_escapes, ex0)
 end
+end # @static if EA_AS_PKG
 
 """
     code_escapes(f, argtypes=Tuple{}; [world], [interp]) -> result::EscapeResult
@@ -402,9 +407,10 @@ end
 
 end # module EAUtils
 
-using .EAUtils:
-    code_escapes,
-    @code_escapes
-export
-    code_escapes,
-    @code_escapes
+if EA_AS_PKG
+    using .EAUtils: code_escapes, @code_escapes
+    export code_escapes, @code_escapes
+else
+    using .EAUtils: code_escapes
+    export code_escapes
+end

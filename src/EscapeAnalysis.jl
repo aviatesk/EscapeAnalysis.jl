@@ -37,7 +37,7 @@ import Core.Compiler: # Core.Compiler specific definitions
 if _TOP_MOD !== Core.Compiler
     include(@__MODULE__, "disjoint_set.jl")
 else
-    include(@__MODULE__, "compiler/EscapeAnalysis/disjoint_set.jl")
+    include(@__MODULE__, "compiler/ssair/EscapeAnalysis/disjoint_set.jl")
 end
 
 # XXX better to be IdSet{Int}?
@@ -481,7 +481,7 @@ end
 """
     cache_escapes!(linfo::MethodInstance, estate::EscapeState, _::IRCode)
 
-Transforms escape information of `estate` for interprocedural propagation, 
+Transforms escape information of `estate` for interprocedural propagation,
 and caches it in a global cache that can then be looked up later when
 `linfo` callsite is seen again.
 """
@@ -981,10 +981,15 @@ function escape_call!(astate::AnalysisState, pc::Int, args::Vector{Any})
     ft = argextype(first(args), ir, ir.sptypes, ir.argtypes)
     f = singleton_type(ft)
     if isa(f, Core.IntrinsicFunction)
-        # COMBAK we may break soundness and need to account for some aliasing here, e.g. `pointerref`
-        argtypes = Any[argextype(args[i], astate.ir) for i = 2:length(args)]
+        # XXX somehow `:call` expression can creep in here, ideally we should be able to do:
+        # argtypes = Any[argextype(args[i], astate.ir) for i = 2:length(args)]
+        argtypes = Any[]
+        for i = 2:length(args)
+            arg = args[i]
+            push!(argtypes, isexpr(arg, :call) ? Any : argextype(arg, ir))
+        end
         intrinsic_nothrow(f, argtypes) || add_thrown_escapes!(astate, pc, args, 2)
-        return
+        return # TODO accounts for pointer operations
     end
     result = escape_builtin!(f, astate, pc, args)
     if result === missing
@@ -1481,7 +1486,7 @@ end # if isdefined(Core, :arrayfreeze) && isdefined(Core, :arraythaw) &&  isdefi
 
 # NOTE define fancy package utilities when developing EA as an external package
 if _TOP_MOD !== Core.Compiler
-    include(@__MODULE__, "utils.jl")
+    include(@__MODULE__, "EAUtils.jl")
 end
 
 end # baremodule EscapeAnalysis

@@ -1,4 +1,11 @@
-using EscapeAnalysis, Test, JET
+using Test
+if @isdefined(EA_AS_PKG)
+    using EscapeAnalysis
+else
+    using Core.Compiler.EscapeAnalysis
+    import Base: code_escapes
+    import InteractiveUtils: @code_escapes
+end
 import Core: Argument, SSAValue
 
 @static if isdefined(Core.Compiler, :alloc_array_ndims)
