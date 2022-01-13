@@ -1221,22 +1221,22 @@ end
 
 function escape_builtin!(::typeof(arrayref), astate::AnalysisState, pc::Int, args::Vector{Any})
     length(args) ≥ 4 || return false
-    # check potential escapes from this arrayref call
-    # NOTE here we essentially only need to account for TypeError, assuming that
-    # UndefRefError or BoundsError don't capture any of the arguments here
+    # check potential thrown escapes from this arrayref call
     argtypes = Any[argextype(args[i], astate.ir) for i in 2:length(args)]
     boundcheckt = argtypes[1]
     aryt = argtypes[2]
     if !array_builtin_common_typecheck(boundcheckt, aryt, argtypes, 3)
         add_thrown_escapes!(astate, pc, args, 2)
     end
+    ary = args[3]
+    inbounds = isa(boundcheckt, Const) && !boundcheckt.val::Bool
+    inbounds || add_escape_change!(astate, ary, ThrownEscape(pc))
     # we don't track precise index information about this array and thus don't know what values
     # can be referenced here: directly propagate the escape information imposed on the return
     # value of this `arrayref` call to the array itself as the most conservative propagation
     # but also with updated index information
     # TODO enable index analysis when constant values are available?
     estate = astate.estate
-    ary = args[3]
     if isa(ary, SSAValue) || isa(ary, Argument)
         aryinfo = estate[ary]
     else
@@ -1253,21 +1253,12 @@ function escape_builtin!(::typeof(arrayref), astate::AnalysisState, pc::Int, arg
         @label conservative_propagation
         ssainfo = estate[ret]
         add_escape_change!(astate, ary, ssainfo)
-        if isa(boundcheckt, Const)
-            if boundcheckt.val::Bool
-                add_escape_change!(astate, ary, ThrownEscape(pc))
-            end
-        end
     elseif isa(AliasEscapes, ArrayEscapes)
         # record the return value of this `arrayref` call as a possibility that imposes escape
         AliasEscapes = copy(AliasEscapes)
         @label record_element_escape
         push!(AliasEscapes, iridx(ret, estate))
-        if isa(boundcheckt, Const) # record possible BoundsError at this arrayref
-            if boundcheckt.val::Bool
-                push!(AliasEscapes, SSAValue(pc))
-            end
-        end
+        inbounds || push!(AliasEscapes, SSAValue(pc)) # record possible BoundsError at this arrayref
         add_escape_change!(astate, ary, EscapeLattice(aryinfo, AliasEscapes))
     else
         # this object has been used as struct, but it is used as array here (thus should throw)
@@ -1292,13 +1283,15 @@ function escape_builtin!(::typeof(arrayset), astate::AnalysisState, pc::Int, arg
          arrayset_typecheck(aryt, valt))
         add_thrown_escapes!(astate, pc, args, 2)
     end
+    ary = args[3]
+    val = args[4]
+    inbounds = isa(boundcheckt, Const) && !boundcheckt.val::Bool
+    inbounds || add_escape_change!(astate, ary, ThrownEscape(pc))
     # we don't track precise index information about this array and won't record what value
     # is being assigned here: directly propagate the escape information of this array to
     # the value being assigned as the most conservative propagation
     # TODO enable index analysis when constant values are available?
     estate = astate.estate
-    ary = args[3]
-    val = args[4]
     if isa(ary, SSAValue) || isa(ary, Argument)
         aryinfo = estate[ary]
     else
@@ -1387,33 +1380,8 @@ function escape_array_resize!(boundserror::Bool, ninds::Int,
         indt ⊑ₜ Integer || return add_thrown_escapes!(astate, pc, args)
     end
     if boundserror
-        if isa(ary, SSAValue) || isa(ary, Argument)
-            estate = astate.estate
-            aryinfo = estate[ary]
-            AliasEscapes = aryinfo.AliasEscapes
-            if isa(AliasEscapes, Bool)
-                if !AliasEscapes
-                    # the elements of this array haven't been analyzed yet: set ArrayEscapes now
-                    AliasEscapes = ArrayEscapes()
-                    @goto record_element_escape
-                end
-                @label conservative_propagation
-                # array resizing can potentially throw `BoundsError`, impose it now
-                add_escape_change!(astate, ary, ThrownEscape(pc))
-            elseif isa(AliasEscapes, ArrayEscapes)
-                AliasEscapes = copy(AliasEscapes)
-                @label record_element_escape
-                # array resizing can potentially throw `BoundsError`, record it now
-                push!(AliasEscapes, SSAValue(pc))
-                add_escape_change!(astate, ary, EscapeLattice(aryinfo, AliasEscapes))
-            else
-                # this object has been used as struct, but it is used as array here (thus should throw)
-                # update ary's element information and just handle this case conservatively
-                @assert isa(AliasEscapes, FieldEscapes)
-                aryinfo = escape_unanalyzable_obj!(astate, ary, aryinfo)
-                @goto conservative_propagation
-            end
-        end
+        # this array resizing can potentially throw `BoundsError`, impose it now
+        add_escape_change!(astate, ary, ThrownEscape(pc))
     end
 end
 

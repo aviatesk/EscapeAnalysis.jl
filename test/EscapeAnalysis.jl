@@ -1304,6 +1304,8 @@ let result = @code_escapes compute!(MPoint(1+.5im, 2+.5im), MPoint(2+.25im, 4+.7
 end
 
 @testset "array primitives" begin
+    inbounds = Base.JLOptions().check_bounds == 0
+
     # arrayref
     let result = code_escapes((Vector{String},Int)) do xs, i
             s = Base.arrayref(true, xs, i)
@@ -1311,7 +1313,25 @@ end
         end
         r = only(findall(isreturn, result.ir.stmts.inst))
         @test has_return_escape(result.state[Argument(2)], r)   # xs
-        @test_broken !has_thrown_escape(result.state[Argument(2)])     # xs
+        @test has_thrown_escape(result.state[Argument(2)])      # xs
+        @test !has_return_escape(result.state[Argument(3)], r)  # i
+    end
+    let result = code_escapes((Vector{String},Int)) do xs, i
+            s = Base.arrayref(false, xs, i)
+            return s
+        end
+        r = only(findall(isreturn, result.ir.stmts.inst))
+        @test has_return_escape(result.state[Argument(2)], r)   # xs
+        @test !has_thrown_escape(result.state[Argument(2)])     # xs
+        @test !has_return_escape(result.state[Argument(3)], r)  # i
+    end
+    inbounds && let result = code_escapes((Vector{String},Int)) do xs, i
+            s = @inbounds xs[i]
+            return s
+        end
+        r = only(findall(isreturn, result.ir.stmts.inst))
+        @test has_return_escape(result.state[Argument(2)], r)   # xs
+        @test !has_thrown_escape(result.state[Argument(2)])     # xs
         @test !has_return_escape(result.state[Argument(3)], r)  # i
     end
     let result = code_escapes((Vector{String},Bool)) do xs, i
@@ -1350,6 +1370,25 @@ end
         end
         r = only(findall(isreturn, result.ir.stmts.inst))
         @test has_return_escape(result.state[Argument(2)], r) # xs
+        @test has_thrown_escape(result.state[Argument(2)])    # xs
+        @test has_return_escape(result.state[Argument(3)], r) # x
+    end
+    let result = code_escapes((Vector{String},String,Int,)) do xs, x, i
+            Base.arrayset(false, xs, x, i)
+            return xs
+        end
+        r = only(findall(isreturn, result.ir.stmts.inst))
+        @test has_return_escape(result.state[Argument(2)], r) # xs
+        @test !has_thrown_escape(result.state[Argument(2)])    # xs
+        @test has_return_escape(result.state[Argument(3)], r) # x
+    end
+    inbounds && let result = code_escapes((Vector{String},String,Int,)) do xs, x, i
+            @inbounds xs[i] = x
+            return xs
+        end
+        r = only(findall(isreturn, result.ir.stmts.inst))
+        @test has_return_escape(result.state[Argument(2)], r) # xs
+        @test !has_thrown_escape(result.state[Argument(2)])    # xs
         @test has_return_escape(result.state[Argument(3)], r) # x
     end
     let result = code_escapes((String,String,String,)) do s, t, u
@@ -1397,14 +1436,6 @@ end
         t = only(findall(iscall((result.ir, Base.arrayset)), result.ir.stmts.inst))
         @test has_thrown_escape(result.state[Argument(2)], t) # xs
         @test has_thrown_escape(result.state[Argument(3)], t) # x
-    end
-    let result = code_escapes((Vector{Any},AbstractString,Int,)) do xs, x, i
-            Base.arrayset(true, xs, x, i) # TypeError may happen here
-            return xs
-        end
-        t = only(findall(iscall((result.ir, Base.arrayset)), result.ir.stmts.inst))
-        @test !has_thrown_escape(result.state[Argument(2)], t) # xs
-        @test !has_thrown_escape(result.state[Argument(3)], t) # x
     end
 
     # arrayref and arrayset
@@ -1520,7 +1551,7 @@ end
         end
         i = only(findall(isarrayalloc, result.ir.stmts.inst))
         t = only(findall(isarrayresize, result.ir.stmts.inst))
-        @test !has_thrown_escape(result.state[SSAValue(i)], t) # xs
+        @test has_thrown_escape(result.state[SSAValue(i)], t) # xs
         @test has_thrown_escape(result.state[Argument(2)], t) # x
     end
     let result = code_escapes((String,)) do x
@@ -1531,7 +1562,7 @@ end
         end
         i = only(findall(isarrayalloc, result.ir.stmts.inst))
         t = only(findall(isarrayresize, result.ir.stmts.inst))
-        @test !has_thrown_escape(result.state[SSAValue(i)], t) # xs
+        @test has_thrown_escape(result.state[SSAValue(i)], t) # xs
         @test has_thrown_escape(result.state[Argument(2)], t) # x
     end
     let result = code_escapes((String,)) do x
@@ -1540,7 +1571,7 @@ end
         end
         i = only(findall(isarrayalloc, result.ir.stmts.inst))
         t = only(findall(isarrayresize, result.ir.stmts.inst))
-        @test !has_thrown_escape(result.state[SSAValue(i)], t) # xs
+        @test has_thrown_escape(result.state[SSAValue(i)], t) # xs
         @test has_thrown_escape(result.state[Argument(2)], t) # x
     end
     let result = code_escapes((String,)) do x
@@ -1549,7 +1580,16 @@ end
         end
         i = only(findall(isarrayalloc, result.ir.stmts.inst))
         t = only(findall(isarrayresize, result.ir.stmts.inst))
-        @test !has_thrown_escape(result.state[SSAValue(i)], t) # xs
+        @test has_thrown_escape(result.state[SSAValue(i)], t) # xs
+        @test has_thrown_escape(result.state[Argument(2)], t) # x
+    end
+    inbounds && let result = code_escapes((String,)) do x
+            xs = @inbounds Any[x]
+            @ccall jl_array_del_at(xs::Any, 1::UInt, 2::UInt)::Cvoid # can potentially throw
+        end
+        i = only(findall(isarrayalloc, result.ir.stmts.inst))
+        t = only(findall(isarrayresize, result.ir.stmts.inst))
+        @test has_thrown_escape(result.state[SSAValue(i)], t) # xs
         @test has_thrown_escape(result.state[Argument(2)], t) # x
     end
 
@@ -1626,9 +1666,9 @@ let result = code_escapes((Int,String,)) do n,s
     i = only(findall(isarrayalloc, result.ir.stmts.inst))
     r = only(findall(isreturn, result.ir.stmts.inst))
     @test has_return_escape(result.state[SSAValue(i)], r)
-    @test !has_thrown_escape(result.state[SSAValue(i)])
+    @test has_thrown_escape(result.state[SSAValue(i)])
     @test has_return_escape(result.state[Argument(3)], r) # s
-    @test !has_thrown_escape(result.state[Argument(3)]) # s
+    @test has_thrown_escape(result.state[Argument(3)])    # s
 end
 let result = code_escapes((Int,String,)) do n,s
         xs = String[]
@@ -1639,10 +1679,10 @@ let result = code_escapes((Int,String,)) do n,s
     end
     i = only(findall(isarrayalloc, result.ir.stmts.inst))
     r = only(findall(isreturn, result.ir.stmts.inst))
-    @test has_return_escape(result.state[SSAValue(i)], r)
-    @test !has_thrown_escape(result.state[SSAValue(i)])
+    @test has_return_escape(result.state[SSAValue(i)], r) # xs
+    @test has_thrown_escape(result.state[SSAValue(i)])    # xs
     @test has_return_escape(result.state[Argument(3)], r) # s
-    @test !has_thrown_escape(result.state[Argument(3)]) # s
+    @test has_thrown_escape(result.state[Argument(3)])    # s
 end
 let result = code_escapes((String,String,String)) do s, t, u
         xs = String[]
@@ -1655,7 +1695,7 @@ let result = code_escapes((String,String,String)) do s, t, u
     i = only(findall(isarrayalloc, result.ir.stmts.inst))
     r = only(findall(isreturn, result.ir.stmts.inst))
     @test has_return_escape(result.state[SSAValue(i)], r)
-    @test !has_thrown_escape(result.state[SSAValue(i)])
+    @test has_thrown_escape(result.state[SSAValue(i)])    # xs
     @test has_return_escape(result.state[Argument(2)], r) # s
     @test has_return_escape(result.state[Argument(3)], r) # t
     @test has_return_escape(result.state[Argument(4)], r) # u
@@ -1755,20 +1795,20 @@ import Core: ImmutableArray, arrayfreeze, mutating_arrayfreeze, arraythaw
 end
 
 # demonstrate some arrayfreeze optimizations
-# has_no_escape(ary) means ary is eligible for arrayfreeze to mutating_arrayfreeze optimization
+# !has_return_escape(ary) means ary is eligible for arrayfreeze to mutating_arrayfreeze optimization
 let result = code_escapes((Int,)) do n
         xs = collect(1:n)
         ImmutableArray(xs)
     end
     i = only(findall(isarrayalloc, result.ir.stmts.inst))
-    @test has_no_escape(result.state[SSAValue(i)])
+    @test !has_return_escape(result.state[SSAValue(i)])
 end
 let result = code_escapes((Vector{Float64},)) do xs
         ys = sin.(xs)
         ImmutableArray(ys)
     end
     i = only(findall(isarrayalloc, result.ir.stmts.inst))
-    @test_broken has_no_escape(result.state[SSAValue(i)])
+    @test !has_return_escape(result.state[SSAValue(i)])
 end
 let result = code_escapes((Vector{Pair{Int,String}},)) do xs
         n = maximum(first, xs)
@@ -1779,7 +1819,7 @@ let result = code_escapes((Vector{Pair{Int,String}},)) do xs
         ImmutableArray(xs)
     end
     i = only(findall(isarrayalloc, result.ir.stmts.inst))
-    @test has_no_escape(result.state[SSAValue(i)])
+    @test !has_return_escape(result.state[SSAValue(i)])
 end
 
 end # @static if isdefined(Core, :ImmutableArray)
