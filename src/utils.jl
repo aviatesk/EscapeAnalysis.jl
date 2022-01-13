@@ -15,15 +15,111 @@ end
 
 using InteractiveUtils
 
+"""
+    @code_escapes [options...] f(args...)
+
+Evaluates the arguments to the function call, determines its types, and then calls
+[`code_escapes`](@ref) on the resulting expression.
+As with `@code_typed` and its family, any of `code_escapes` keyword arguments can be given
+as the optional arguments like `@code_escpase interp=myinterp myfunc(myargs...)`.
+"""
 macro code_escapes(ex0...)
     return InteractiveUtils.gen_call_with_extracted_types_and_kwargs(__module__, :code_escapes, ex0)
 end
 
-function code_escapes(@nospecialize(f), @nospecialize(types=Tuple{});
+"""
+    code_escapes(f, argtypes=Tuple{}; [world], [interp]) -> result::EscapeResult
+    code_escapes(tt::Type{<:Tuple}; [world], [interp]) -> result::EscapeResult
+
+Runs the escape analysis on optimized IR of a genefic function call with the given type signature.
+
+Note that the escape analysis runs after inlining, but before any other optimizations.
+
+[`EscapeState`](@ref) can be accessed by `result.state`.
+`result::EscapeResult` would be printed as like:
+```julia
+julia> mutable struct SafeRef{T}
+           x::T
+       end
+
+julia> Base.getindex(x::SafeRef) = x.x;
+
+julia> Base.isassigned(x::SafeRef) = true;
+
+julia> get′(x) = isassigned(x) ? x[] : throw(x);
+
+julia> result = code_escapes((String,String,String)) do s1, s2, s3
+           r1 = Ref(s1)
+           r2 = Ref(s2)
+           r3 = SafeRef(s3)
+           try
+               s1 = get′(r1)
+               ret = sizeof(s1)
+           catch err
+               global g = err # will definitely escape `r1`
+           end
+           s2 = get′(r2)      # still `r2` doesn't escape fully
+           s3 = get′(r3)      # still `r2` doesn't escape fully
+           return s2, s3
+       end
+#3(X _2::String, ↑ _3::String, ↑ _4::String) in Main at REPL[7]:2
+2  X  1 ── %1  = %new(Base.RefValue{String}, _2)::Base.RefValue{String}   │╻╷╷ Ref
+3  *′ │    %2  = %new(Base.RefValue{String}, _3)::Base.RefValue{String}   │╻╷╷ Ref
+4  ✓′ └─── %3  = %new(SafeRef{String}, _4)::SafeRef{String}               │╻╷  SafeRef
+5  ◌  2 ── %4  = \$(Expr(:enter, #8))                                      │
+   ✓′ │    %5  = ϒ (%3)::SafeRef{String}                                  │
+   *′ └─── %6  = ϒ (%2)::Base.RefValue{String}                            │
+6  ◌  3 ── %7  = Base.isdefined(%1, :x)::Bool                             │╻╷  get′
+   ◌  └───       goto #5 if not %7                                        ││
+   X  4 ──       Base.getfield(%1, :x)::String                            ││╻   getindex
+   ◌  └───       goto #6                                                  ││
+   ◌  5 ──       Main.throw(%1)::Union{}                                  ││
+   ◌  └───       unreachable                                              ││
+7  ◌  6 ──       nothing::typeof(Core.sizeof)                             │╻   sizeof
+   ◌  │          nothing::Int64                                           ││
+   ◌  └───       \$(Expr(:leave, 1))                                       │
+   ◌  7 ──       goto #10                                                 │
+   ✓′ 8 ── %17 = φᶜ (%5)::SafeRef{String}                                 │
+   *′ │    %18 = φᶜ (%6)::Base.RefValue{String}                           │
+   ◌  └───       \$(Expr(:leave, 1))                                       │
+   X  9 ── %20 = \$(Expr(:the_exception))::Any                             │
+9  ◌  │          (Main.g = %20)::Any                                      │
+   ◌  └───       \$(Expr(:pop_exception, :(%4)))::Any                      │
+11 ✓′ 10 ┄ %23 = φ (#7 => %3, #9 => %17)::SafeRef{String}                 │
+   *′ │    %24 = φ (#7 => %2, #9 => %18)::Base.RefValue{String}           │
+   ◌  │    %25 = Base.isdefined(%24, :x)::Bool                            ││╻   isassigned
+   ◌  └───       goto #12 if not %25                                      ││
+   ↑  11 ─ %27 = Base.getfield(%24, :x)::String                           │││╻   getproperty
+   ◌  └───       goto #13                                                 ││
+   ◌  12 ─       Main.throw(%24)::Union{}                                 ││
+   ◌  └───       unreachable                                              ││
+12 ↑  13 ─ %31 = Base.getfield(%23, :x)::String                           │╻╷╷ get′
+13 ↑  │    %32 = Core.tuple(%27, %31)::Tuple{String, String}              │
+   ◌  └───       return %32                                               │
+```
+
+, where the symbols in the side of each call argument and SSA statements represents the following meaning:
+- `◌`: this value is not analyzed because escape information of it won't be used anyway (when the object is `isbitstype` for example)
+- `✓`: this value never escapes (`has_no_escape(result.state[x])` holds)
+- `↑`: this value can escape to the caller via return (`has_return_escape(result.state[x])` holds)
+- `X`: this value can escape to somewhere the escape analysis can't reason about like escapes to a global memory (`has_all_escape(result.state[x])` holds)
+- `*`: this value's escape state is between the `ReturnEscape` and `AllEscape` in the `EscapeLattice`, e.g. it has unhandled `ThrownEscape`
+and additional `′` indicates that field analysis has been done successfully on that value.
+
+For testing, escape information of each call argument and SSA value can be inspected programmatically as like:
+```julia
+julia> result.state[Core.Argument(3)]
+ReturnEscape
+
+julia> result.state[Core.SSAValue(3)]
+NoEscape′
+```
+"""
+function code_escapes(@nospecialize(args...);
                       world = get_world_counter(),
                       interp = Core.Compiler.NativeInterpreter(world))
     interp = EscapeAnalyzer(interp)
-    results = code_typed(f, types; optimize=true, world, interp)
+    results = code_typed(args...; optimize=true, world, interp)
     isone(length(results)) || throw(ArgumentError("`code_escapes` only supports single analysis result"))
     return EscapeResult(interp.ir, interp.state, interp.linfo)
 end
@@ -258,7 +354,7 @@ function print_with_info(io::IO,
             arg = state[Argument(i)]
             i == 1 && continue
             c, color = get_name_color(arg, true)
-            printstyled(io, '_', i, "::", ir.argtypes[i], ' ', c; color)
+            printstyled(io, c, ' ', '_', i, "::", ir.argtypes[i]; color)
             i ≠ state.nargs && print(io, ", ")
         end
         print(io, ')')

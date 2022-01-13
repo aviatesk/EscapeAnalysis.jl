@@ -52,7 +52,7 @@ const ArrayEscapes = IdSet{Union{Int,SSAValue}}
     x::EscapeLattice
 
 A lattice for escape information, which holds the following properties:
-- `x.Analyzed::Bool`: not formally part of the lattice, indicates `x` has not been analyzed at all
+- `x.Analyzed::Bool`: not formally part of the lattice, only indicates `x` has not been analyzed or not
 - `x.ReturnEscape::BitSet`: records SSA statements where `x` can escape to the caller via return
   where `0 ∈ x.ReturnEscape` has the special meaning that it's visible to the caller
   simply because it's passed as call argument
@@ -379,7 +379,7 @@ const AliasSet = IntDisjointSet{Int}
     estate::EscapeState
 
 Extended lattice that maps arguments and SSA values to escape information represented as `EscapeLattice`.
-Escape information imposed on `x` can be retrieved by `estate[x]`.
+Escape information imposed on SSA IR element `x` can be retrieved by `estate[x]`.
 """
 struct EscapeState
     escapes::Vector{EscapeLattice}
@@ -478,6 +478,15 @@ struct EscapeLatticeCache
     end
 end
 
+"""
+    cache_escapes!(linfo::MethodInstance, estate::EscapeState, _::IRCode)
+
+Transforms escape information of `estate` for interprocedural propagation, 
+and caches it in a global cache that can then be looked up later when
+`linfo` callsite is seen again.
+"""
+function cache_escapes! end
+
 # when working outside of Core.Compiler, cache as much as information for later inspection and debugging
 if _TOP_MOD !== Core.Compiler
     struct EscapeCache
@@ -523,7 +532,7 @@ struct AnalysisState
 end
 
 """
-    analyze_escapes(ir::IRCode, nargs::Int) -> EscapeState
+    analyze_escapes(ir::IRCode, nargs::Int) -> estate::EscapeState
 
 Analyzes escape information in `ir`.
 `nargs` is the number of actual arguments of the analyzed call.
