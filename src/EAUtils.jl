@@ -108,8 +108,7 @@ The symbols in the side of each call argument and SSA statements represents the 
 - `*`: this value's escape state is between the `ReturnEscape` and `AllEscape` in the `EscapeLattice`, e.g. it has unhandled `ThrownEscape`
 and additional `′` indicates that field analysis has been done successfully on that value.
 
-For testing, escape information of each call argument and SSA value can be inspected programmatically
-via the [`EscapeState`](@ref) interface as like:
+For testing, escape information of each call argument and SSA value can be inspected programmatically as like:
 ```julia
 julia> result.state[Core.Argument(3)]
 ReturnEscape

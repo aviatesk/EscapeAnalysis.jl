@@ -20,9 +20,9 @@ that works on a lattice called `x::EscapeLattice`, which has the following prope
 - `x.Analyzed::Bool`: not formally part of the lattice, only indicates `x` has not been analyzed or not
 - `x.ReturnEscape::BitSet`: records SSA statements where `x` can escape to the caller via return
 - `x.ThrownEscape::BitSet`: records SSA statements where `x` can be thrown as exception
-  (used for the [exception-handling](@id exception-handling) described below)
+  (used for the [exception-handling](@id EA-Exception-Handling) described below)
 - `x.AliasEscapes`: maintains all possibilities that may escape objects that can be referenced from `x`
-  (used for the [field/alias analysis](@id field-alias-analysis) described below)
+  (used for the [field analysis](@id Field-Analysis) described below)
 - `x.ArgEscape::Int` (not implemented yet): indicates it will escape to the caller through
   `setfield!` on argument(s)
 
@@ -118,10 +118,16 @@ Here the identity of `v` (`SSAValue(3)` in the above) is recorded in `obj`'s
 that escape information is propagated to `s` (`_2` or `Argument(2)` in the above)
 but not propagated to `obj` itself (`SSAValue(1)` in the above).
 
-However, in some cases such field analysis is impossible mostly because of the lack of precise
-type information. In such cases `AliasEscapes` property is raised to the topmost element
-within its lattice, and it makes succeeding field analysis conservative and propagate escapes
-imposed on fields of an unanalyzable object to the object itself.
+However, in some cases such field analysis is impossible mostly when:
+1. the object escapes to somewhere where the escape analysis can't account for possible memory effects on it
+2. fields of the objects can't be known because of the lack of type information.
+In such cases `AliasEscapes` property is raised to the topmost element within its lattice,
+and it makes succeeding field analysis conservative and propagate escapes imposed on fields
+of an unanalyzable object to the object itself.
+
+Also note that escapes imposed on array elements can also be handled by a imprecise version
+of this field analysis, where `AliasEscapes` doesn't try to track precise array index
+but rather simply records all possibilities that can escape any elements of the array.
 
 ### Alias Analysis
 
@@ -172,7 +178,7 @@ aliased arguments and SSA statements. The alias set manages values that can be a
 each other and allows new escape information imposed on any of such aliased values to be
 equalized between them.
 
-### Exception Handling
+### [Exception Handling](@id EA-Exception-Handling)
 
 It would be also noting how `EscapeAnalysis` handles possible escapes via exceptions.
 Naively it seems enough to propagate escape information imposed on `:the_exception` object to
@@ -302,7 +308,7 @@ Core.Compiler.EscapeAnalysis.cache_escapes!
     where each lattice property is represented by a special lattice element type object.
     It turns out that it makes started to complicate implementations of the lattice mainly
     because it often requires conversion rules between each lattice element type object,
-    and we are actually working on [overhauling our type inference lattice implementation](https://github.com/JuliaLang/julia/pull/42596)
+    and we are working on [overhauling our type inference lattice implementation](https://github.com/JuliaLang/julia/pull/42596)
     with `EscapeLattice`-like lattice design.
 
 [^MM02]: _A Graph-Free approach to Data-Flow Analysis_.
