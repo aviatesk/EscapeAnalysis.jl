@@ -19,7 +19,7 @@ const CC = Core.Compiler
 @static if EA_AS_PKG
 import InteractiveUtils: gen_call_with_extracted_types_and_kwargs
 
-"""
+@doc """
     @code_escapes [options...] f(args...)
 
 Evaluates the arguments to the function call, determines its types, and then calls
@@ -37,11 +37,8 @@ end # @static if EA_AS_PKG
     code_escapes(tt::Type{<:Tuple}; [world], [interp]) -> result::EscapeResult
 
 Runs the escape analysis on optimized IR of a genefic function call with the given type signature.
-
 Note that the escape analysis runs after inlining, but before any other optimizations.
 
-[`EscapeState`](@ref) can be accessed by `result.state`.
-`result::EscapeResult` would be printed as like:
 ```julia
 julia> mutable struct SafeRef{T}
            x::T
@@ -103,7 +100,7 @@ julia> result = code_escapes((String,String,String)) do s1, s2, s3
    ◌  └───       return %32                                               │
 ```
 
-, where the symbols in the side of each call argument and SSA statements represents the following meaning:
+The symbols in the side of each call argument and SSA statements represents the following meaning:
 - `◌`: this value is not analyzed because escape information of it won't be used anyway (when the object is `isbitstype` for example)
 - `✓`: this value never escapes (`has_no_escape(result.state[x])` holds)
 - `↑`: this value can escape to the caller via return (`has_return_escape(result.state[x])` holds)
@@ -111,7 +108,8 @@ julia> result = code_escapes((String,String,String)) do s1, s2, s3
 - `*`: this value's escape state is between the `ReturnEscape` and `AllEscape` in the `EscapeLattice`, e.g. it has unhandled `ThrownEscape`
 and additional `′` indicates that field analysis has been done successfully on that value.
 
-For testing, escape information of each call argument and SSA value can be inspected programmatically as like:
+For testing, escape information of each call argument and SSA value can be inspected programmatically
+via the [`EscapeState`](@ref) interface as like:
 ```julia
 julia> result.state[Core.Argument(3)]
 ReturnEscape

@@ -1,36 +1,14 @@
 [![CI](https://github.com/aviatesk/EscapeAnalysis.jl/actions/workflows/ci.yml/badge.svg)](https://github.com/aviatesk/EscapeAnalysis.jl/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/aviatesk/EscapeAnalysis.jl/branch/master/graph/badge.svg?token=ADEKPZRUJH)](https://codecov.io/gh/aviatesk/EscapeAnalysis.jl)
+[![](https://img.shields.io/badge/docs-dev-blue.svg)](https://aviatesk.github.io/EscapeAnalysis.jl/dev/)
 
 `EscapeAnalysis` is a simple module that collects escape information in
 [Julia's SSA optimization IR](@id Julia-SSA-form-IR) a.k.a. `IRCode`.
 
-## Analysis Usage
-
-### Usages within High-level Optimization Passes
-
-When using `EscapeAnalysis` in Julia's high-level optimization pipeline, we can run
-`EscapeAnalysis.analyze_escapes(ir::IRCode) -> estate::EscapeState`  to analyze
-escape information of each SSA-IR elements in `ir`.
-
-Note that it should be most effective if `EscapeAnalysis.analyze_escapes` runs after inlining,
-as `EscapeAnalysis`'s interprocedural escape information handling is limited at this moment.
-
-Since the computational cost of `EscapeAnalysis.analyze_escapes` is not that cheap,
-it is more ideal to run it once and succeeding optimizations incrementally update
-the escape information upon IR transformation.
-
+We can try the escape analysis using the following convenience entries `EscapeAnalysis` exports for testing and debugging purposes:
 ```@docs
-EscapeAnalysis.analyze_escapes
-EscapeAnalysis.EscapeState
-EscapeAnalysis.cache_escapes!
-```
-
-### Entries for Debugging/Testing
-
-For testing and debugging purposes, `EscapeAnalysis` exports convenience entries for the escape analysis.
-```@docs
-EscapeAnalysis.code_escapes
-EscapeAnalysis.@code_escapes
+Base.code_escapes
+InteractiveUtils.@code_escapes
 ```
 
 ## Analysis Design
@@ -298,7 +276,26 @@ julia> result = code_escapes((String,String)) do s1, s2
    ◌  └───       goto #13                                                 ││
    ◌  12 ─       Main.throw(%20)::Union{}                                 ││
    ◌  └───       unreachable                                              ││
-12 ◌  13 ─       return %23                                               │   
+12 ◌  13 ─       return %23                                               │
+```
+
+## Analysis Usage
+
+When using `EscapeAnalysis` in Julia's high-level optimization pipeline, we can run
+`analyze_escapes(ir::IRCode) -> estate::EscapeState`  to analyze
+escape information of each SSA-IR elements in `ir`.
+
+Note that it should be most effective if `analyze_escapes` runs after inlining,
+as `EscapeAnalysis`'s interprocedural escape information handling is limited at this moment.
+
+Since the computational cost of `analyze_escapes` is not that cheap,
+it is more ideal to run it once and succeeding optimizations incrementally update
+the escape information upon IR transformation.
+
+```@docs
+Core.Compiler.EscapeAnalysis.analyze_escapes
+Core.Compiler.EscapeAnalysis.EscapeState
+Core.Compiler.EscapeAnalysis.cache_escapes!
 ```
 
 [^latticedesign]: Our type inference implementation takes the alternative approach,

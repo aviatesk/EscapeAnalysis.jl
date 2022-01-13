@@ -1,9 +1,16 @@
 using EscapeAnalysis, Documenter
 
 let
-    local README = normpath(@__DIR__, "src", "index.md")
+    local README_PATH = normpath(@__DIR__, "src", "index.md")
     try
-        cp(normpath(@__DIR__, "..", "README.md"), README)
+        s = let s = read(normpath(@__DIR__, "..", "README.md"), String)
+            s = replace(s,
+                "Core.Compiler.EscapeAnalysis." => "EscapeAnalysis.",
+                "Base.code_escapes" => "EscapeAnalysis.EAUtils.code_escapes",
+                "InteractiveUtils.@code_escapes" => "EscapeAnalysis.EAUtils.@code_escapes",
+                )
+            write(README_PATH, s)
+        end
         makedocs(; modules = [EscapeAnalysis],
                    sitename = "EscapeAnalysis.jl",
                    pages = Any["EscapeAnalysis" => "index.md"],
@@ -15,7 +22,7 @@ let
     catch err
         rethrow(err)
     finally
-        rm(README)
+        rm(README_PATH)
     end
 end
 
