@@ -198,6 +198,24 @@ can_elide_finalizer(x::EscapeLattice, pc::Int) =
 # we need to make sure this `==` operator corresponds to lattice equality rather than object equality,
 # otherwise `propagate_changes` can't detect the convergence
 x::EscapeLattice == y::EscapeLattice = begin
+    # fast pass: better to avoid top comparison
+    x === y && return true
+    xr, yr = x.ReturnEscape, y.ReturnEscape
+    if xr === TOP_RETURN_ESCAPE
+        yr === TOP_RETURN_ESCAPE || return false
+    elseif yr === TOP_RETURN_ESCAPE
+        return false # x.ReturnEscape === TOP_RETURN_ESCAPE
+    else
+        xr == yr || return false
+    end
+    xt, yt = x.ThrownEscape, y.ThrownEscape
+    if xt === TOP_THROWN_ESCAPE
+        yt === TOP_THROWN_ESCAPE || return false
+    elseif yt === TOP_THROWN_ESCAPE
+        return false # x.ThrownEscape === TOP_THROWN_ESCAPE
+    else
+        xt == yt || return false
+    end
     xf, yf = x.AliasEscapes, y.AliasEscapes
     if isa(xf, Bool)
         xf === yf || return false
@@ -209,10 +227,7 @@ x::EscapeLattice == y::EscapeLattice = begin
         isa(yf, ArrayEscapes) || return false
         xf == yf || return false
     end
-    return x.Analyzed === y.Analyzed &&
-           x.ReturnEscape == y.ReturnEscape &&
-           x.ThrownEscape == y.ThrownEscape &&
-           true
+    return x.Analyzed === y.Analyzed
 end
 
 """
@@ -221,6 +236,28 @@ end
 The non-strict partial order over `EscapeLattice`.
 """
 x::EscapeLattice ⊑ y::EscapeLattice = begin
+    # fast pass: better to avoid top comparison
+    if y === ⊤
+        return true
+    elseif x === ⊤
+        return false # return y === ⊤
+    elseif x === ⊥
+        return true
+    elseif y === ⊥
+        return false # return x === ⊥
+    end
+    xr, yr = x.ReturnEscape, y.ReturnEscape
+    if xr === TOP_RETURN_ESCAPE
+        yr !== TOP_RETURN_ESCAPE && return false
+    elseif yr !== TOP_RETURN_ESCAPE
+        xr ⊆ yr || return false
+    end
+    xt, yt = x.ThrownEscape, y.ThrownEscape
+    if xt === TOP_THROWN_ESCAPE
+        yt !== TOP_THROWN_ESCAPE && return false
+    elseif yt !== TOP_THROWN_ESCAPE
+        xt ⊆ yt || return false
+    end
     xf, yf = x.AliasEscapes, y.AliasEscapes
     if isa(xf, Bool)
         xf && yf !== true && return false
@@ -242,13 +279,7 @@ x::EscapeLattice ⊑ y::EscapeLattice = begin
             yf === true || return false
         end
     end
-    if x.Analyzed ≤ y.Analyzed &&
-       x.ReturnEscape ⊆ y.ReturnEscape &&
-       x.ThrownEscape ⊆ y.ThrownEscape &&
-       true
-        return true
-    end
-    return false
+    return x.Analyzed ≤ y.Analyzed
 end
 
 """
@@ -273,6 +304,34 @@ x::EscapeLattice ⋤ y::EscapeLattice = !(y ⊑ x)
 Computes the join of `x` and `y` in the partial order defined by `EscapeLattice`.
 """
 x::EscapeLattice ⊔ y::EscapeLattice = begin
+    # fast pass: better to avoid top join
+    if x === ⊤ || y === ⊤
+        return ⊤
+    elseif x === ⊥
+        return y
+    elseif y === ⊥
+        return x
+    end
+    xr, yr = x.ReturnEscape, y.ReturnEscape
+    if xr === TOP_RETURN_ESCAPE || yr === TOP_RETURN_ESCAPE
+        ReturnEscape = TOP_RETURN_ESCAPE
+    elseif xr === BOT_RETURN_ESCAPE
+        ReturnEscape = yr
+    elseif yr === BOT_RETURN_ESCAPE
+        ReturnEscape = xr
+    else
+        ReturnEscape = xr ∪ yr
+    end
+    xt, yt = x.ThrownEscape, y.ThrownEscape
+    if xt === TOP_THROWN_ESCAPE || yt === TOP_THROWN_ESCAPE
+        ThrownEscape = TOP_THROWN_ESCAPE
+    elseif xt === BOT_THROWN_ESCAPE
+        ThrownEscape = yt
+    elseif yt === BOT_THROWN_ESCAPE
+        ThrownEscape = xt
+    else
+        ThrownEscape = xt ∪ yt
+    end
     xf, yf = x.AliasEscapes, y.AliasEscapes
     if xf === true || yf === true
         AliasEscapes = true
@@ -302,27 +361,6 @@ x::EscapeLattice ⊔ y::EscapeLattice = begin
         else
             AliasEscapes = true # handle conflicting case conservatively
         end
-    end
-    # try to avoid new allocations as minor optimizations
-    xr, yr = x.ReturnEscape, y.ReturnEscape
-    if xr === TOP_RETURN_ESCAPE || yr === TOP_RETURN_ESCAPE
-        ReturnEscape = TOP_RETURN_ESCAPE
-    elseif xr === BOT_RETURN_ESCAPE
-        ReturnEscape = yr
-    elseif yr === BOT_RETURN_ESCAPE
-        ReturnEscape = xr
-    else
-        ReturnEscape = xr ∪ yr
-    end
-    xt, yt = x.ThrownEscape, y.ThrownEscape
-    if xt === TOP_THROWN_ESCAPE || yt === TOP_THROWN_ESCAPE
-        ThrownEscape = TOP_THROWN_ESCAPE
-    elseif xt === BOT_THROWN_ESCAPE
-        ThrownEscape = yt
-    elseif yt === BOT_THROWN_ESCAPE
-        ThrownEscape = xt
-    else
-        ThrownEscape = xt ∪ yt
     end
     return EscapeLattice(
         x.Analyzed | y.Analyzed,
