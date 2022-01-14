@@ -700,21 +700,25 @@ function add_alias_change!(astate::AnalysisState, @nospecialize(x), @nospecializ
     elseif isa(y, GlobalRef)
         return add_escape_change!(astate, x, ⊤)
     end
-    xidx = iridx(x, astate.estate)
-    yidx = iridx(y, astate.estate)
+    estate = astate.estate
+    xidx = iridx(x, estate)
+    yidx = iridx(y, estate)
     if xidx !== nothing && yidx !== nothing
         pushfirst!(astate.changes, AliasChange(xidx, yidx)) # propagate `AliasChange` first for faster convergence
+        xinfo = estate.escapes[xidx]
+        yinfo = estate.escapes[yidx]
+        xyinfo = xinfo ⊔ yinfo
+        add_escape_change!(astate, x, xyinfo)
+        add_escape_change!(astate, y, xyinfo)
     end
     return nothing
 end
 
 function escape_edges!(astate::AnalysisState, pc::Int, edges::Vector{Any})
     ret = SSAValue(pc)
-    info = astate.estate[ret]
     for i in 1:length(edges)
         if isassigned(edges, i)
             v = edges[i]
-            add_escape_change!(astate, v, info)
             add_alias_change!(astate, ret, v)
         end
     end
@@ -725,8 +729,6 @@ escape_val_ifdefined!(astate::AnalysisState, pc::Int, x) =
 
 function escape_val!(astate::AnalysisState, pc::Int, @nospecialize(val))
     ret = SSAValue(pc)
-    info = astate.estate[ret]
-    add_escape_change!(astate, val, info)
     add_alias_change!(astate, ret, val)
 end
 
@@ -927,7 +929,6 @@ function escape_field!(astate::AnalysisState, @nospecialize(v), xf::FieldEscape)
     estate = astate.estate
     for xidx in xf
         x = irval(xidx, estate)::SSAValue # TODO remove me once we implement ArgEscape
-        add_escape_change!(astate, v, estate[x])
         add_alias_change!(astate, v, x)
     end
 end
@@ -1039,20 +1040,15 @@ function escape_builtin!(::typeof(ifelse), astate::AnalysisState, pc::Int, args:
     length(args) == 4 || return false
     f, cond, th, el = args
     ret = SSAValue(pc)
-    info = astate.estate[ret]
     condt = argextype(cond, astate.ir)
     if isa(condt, Const) && (cond = condt.val; isa(cond, Bool))
         if cond
-            add_escape_change!(astate, th, info)
             add_alias_change!(astate, th, ret)
         else
-            add_escape_change!(astate, el, info)
             add_alias_change!(astate, el, ret)
         end
     else
-        add_escape_change!(astate, th, info)
         add_alias_change!(astate, th, ret)
-        add_escape_change!(astate, el, info)
         add_alias_change!(astate, el, ret)
     end
     return false
@@ -1062,8 +1058,6 @@ function escape_builtin!(::typeof(typeassert), astate::AnalysisState, pc::Int, a
     length(args) == 3 || return false
     f, obj, typ = args
     ret = SSAValue(pc)
-    info = astate.estate[ret]
-    add_escape_change!(astate, obj, info)
     add_alias_change!(astate, ret, obj)
     return false
 end
@@ -1341,7 +1335,6 @@ function escape_elements!(astate::AnalysisState, @nospecialize(v), xa::ArrayEsca
     estate = astate.estate
     for xidx in xa
         x = irval(xidx, estate)::SSAValue # TODO remove me once we implement ArgEscape
-        add_escape_change!(astate, v, estate[x])
         add_alias_change!(astate, v, x)
     end
 end

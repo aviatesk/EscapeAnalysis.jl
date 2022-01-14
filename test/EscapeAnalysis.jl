@@ -1292,7 +1292,7 @@ function compute(T, ax, ay, bx, by)
 end
 function compute(a, b)
     for i in 0:(100000000-1)
-        a = add(add(a, b), b)
+        a = add(add(a, b), b) # unreplaceable, since it can be the call argument
     end
     a.x, a.y
 end
@@ -1307,14 +1307,22 @@ let result = @code_escapes compute(MPoint, 1+.5im, 2+.5im, 2+.25im, 4+.75im)
     for i in findall(isnew, result.ir.stmts.inst)
         @test is_load_forwardable(result.state[SSAValue(i)])
     end
+    for i in findall(isϕ, result.ir.stmts.inst)
+        @test is_load_forwardable(result.state[SSAValue(i)])
+    end
 end
 let result = @code_escapes compute(MPoint(1+.5im, 2+.5im), MPoint(2+.25im, 4+.75im))
-    for i in findall(isnew, result.ir.stmts.inst)
-        @test is_load_forwardable(result.state[SSAValue(i)])
+    for i in findall(1:length(result.ir.stmts)) do i
+                 isϕ(result.ir.stmts[i][:inst]) && isT(MPoint{ComplexF64})(result.ir.stmts[i][:type])
+             end
+        @test !is_load_forwardable(result.state[SSAValue(i)])
     end
 end
 let result = @code_escapes compute!(MPoint(1+.5im, 2+.5im), MPoint(2+.25im, 4+.75im))
     for i in findall(isnew, result.ir.stmts.inst)
+        @test is_load_forwardable(result.state[SSAValue(i)])
+    end
+    for i in findall(isϕ, result.ir.stmts.inst)
         @test is_load_forwardable(result.state[SSAValue(i)])
     end
 end

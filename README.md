@@ -3,7 +3,7 @@
 [![](https://img.shields.io/badge/docs-dev-blue.svg)](https://aviatesk.github.io/EscapeAnalysis.jl/dev/)
 
 `EscapeAnalysis` is a simple module that collects escape information in
-[Julia's SSA optimization IR](@id Julia-SSA-form-IR) a.k.a. `IRCode`.
+[Julia's SSA optimization IR](@ref Julia-SSA-form-IR) a.k.a. `IRCode`.
 
 You can give a try to the escape analysis with the convenience entries that
 `EscapeAnalysis` exports for testing and debugging purposes:
@@ -21,9 +21,9 @@ that works on a lattice called `x::EscapeLattice`, which is composed of the foll
 - `x.Analyzed::Bool`: not formally part of the lattice, only indicates `x` has not been analyzed or not
 - `x.ReturnEscape::BitSet`: records SSA statements where `x` can escape to the caller via return
 - `x.ThrownEscape::BitSet`: records SSA statements where `x` can be thrown as exception
-  (used for the [exception handling](@id EA-Exception-Handling) described below)
+  (used for the [exception handling](@ref EA-Exception-Handling) described below)
 - `x.AliasEscapes`: maintains all possible values that can be aliased to fields or array elements of `x`
-  (used for the [alias analysis](@id Alias-Analysis) described below)
+  (used for the [alias analysis](@ref Alias-Analysis) described below)
 - `x.ArgEscape::Int` (not implemented yet): indicates it will escape to the caller through
   `setfield!` on argument(s)
 
@@ -121,11 +121,11 @@ that escape information is propagated to `_2` but not to `%1`.
 So `EscapeAnalysis` tracks which IR elements can be aliased across a `getfield`-`%new`/`setfield!` chain
 in order to analyze escapes of object fields, but actually this alias analysis needs to be
 generalized to handle other IR elements as well. This is because in Julia IR the same
-object is sometimes represented by different IR elements and we need to make sure that those
-different IR elements that actually can represent the same object share _new_ escape information.
+object is sometimes represented by different IR elements and so we should make sure that those
+different IR elements that actually can represent the same object share the same escape information.
 IR elements that return the same object as their operand(s), such as `PiNode` and `typeassert`,
-can cause that IR-level aliasing and thus requires any new escape information imposed on
-any of aliased values to be propagated to all of them.
+can cause that IR-level aliasing and thus requires escape information imposed on any of such
+aliased values to be shared between them.
 More interestingly, it is also needed for correctly reasoning about mutations on `PhiNode`.
 Let's consider the following example:
 ```julia
@@ -153,7 +153,7 @@ julia> code_escapes((Bool, String,)) do cond, x
 `ϕ1 = %5` and `ϕ2 = %6` are aliased and thus `ReturnEscape` imposed on `%8 = Base.getfield(%6, :x)::String` (corresponding to `y = ϕ1[]`)
 needs to be propagated to `Base.setfield!(%5, :x, _3)::String` (corresponding to `ϕ2[] = x`).
 In order for such escape information to be propagated correctly, the analysis should recognize that
-the _predecessors_ of `ϕ1` and `ϕ2` can be aliased and make sure new escape information propagates to be shared among them.
+the _predecessors_ of `ϕ1` and `ϕ2` can be aliased as well and equalize their escape information.
 
 One interesting property of such aliasing information is that it is not known at "usage" site
 but can only be derived at "definition" site (as aliasing is conceptually equivalent to assignment),
@@ -162,8 +162,8 @@ information between related values, EscapeAnalysis.jl uses an approach inspired 
 analysis algorithm explained in an old JVM paper[^JVM05]. That is, in addition to managing
 escape lattice elements, the analysis also maintains an "equi"-alias set, a disjoint set of
 aliased arguments and SSA statements. The alias set manages values that can be aliased to
-each other and allows new escape information imposed on any of such aliased values to be
-shared between them.
+each other and allows escape information imposed on any of such aliased values to be equalized
+between them.
 
 Lastly, this scheme of alias/field analysis can also be generalized to analyze array operations.
 `EscapeAnalysis` currently reasons about escapes imposed on array elements using
