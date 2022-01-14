@@ -571,7 +571,7 @@ function analyze_escapes(ir::IRCode, nargs::Int)
                     if isa(lhs, GlobalRef) # global store
                         add_escape_change!(astate, rhs, ⊤)
                     else
-                        invalid_escape_assignment!(ir, pc)
+                        unexpected_assignment!(ir, pc)
                     end
                 elseif head === :foreigncall
                     escape_foreigncall!(astate, pc, stmt.args)
@@ -872,7 +872,7 @@ function from_interprocedural(arginfo::EscapeLatticeCache, retinfo::EscapeLattic
         # it might be okay from the SROA point of view, since we can't remove the allocation
         # as far as it's passed to a callee anyway, but still we may want some field analysis
         # for e.g. stack allocation or some other IPO optimizations
-        TOP_ALIAS_ESCAPES)
+        #=AliasEscapes=#TOP_ALIAS_ESCAPES)
 
     if !arginfo.ReturnEscape
         # if this is simply passed as the call argument, we can discard the `ReturnEscape`
@@ -884,7 +884,7 @@ function from_interprocedural(arginfo::EscapeLatticeCache, retinfo::EscapeLattic
     return newarginfo ⊔ retinfo
 end
 
-@noinline function invalid_escape_assignment!(ir::IRCode, pc::Int)
+@noinline function unexpected_assignment!(ir::IRCode, pc::Int)
     @eval Main (ir = $ir; pc = $pc)
     error("unexpected assignment found: inspect `Main.pc` and `Main.pc`")
 end
@@ -975,11 +975,12 @@ function escape_foreigncall!(astate::AnalysisState, pc::Int, args::Vector{Any})
         # end
     end
     # NOTE array allocations might have been proven as nothrow (https://github.com/JuliaLang/julia/pull/43565)
-    if !(astate.ir.stmts[pc][:flag] & IR_FLAG_EFFECT_FREE ≠ 0)
-        add_escape_change!(astate, name, ThrownEscape(pc))
-        for i in 6:5+foreigncall_nargs
-            add_escape_change!(astate, args[i], ThrownEscape(pc))
-        end
+    info = astate.ir.stmts[pc][:flag] & IR_FLAG_EFFECT_FREE ≠ 0 ?
+           EscapeLattice(NoEscape(), #=AliasEscapes=#true) :
+           EscapeLattice(ThrownEscape(pc), #=AliasEscapes=#true)
+    add_escape_change!(astate, name, info)
+    for i in 6:5+foreigncall_nargs
+        add_escape_change!(astate, args[i], info)
     end
 end
 

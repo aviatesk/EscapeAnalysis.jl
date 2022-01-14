@@ -1257,6 +1257,22 @@ end
         @test has_return_escape(result.state[Argument(3)], r) # baz
         @test has_return_escape(result.state[Argument(4)], r) # qux
     end
+
+    # foreigncall should disable field analysis
+    let result = code_escapes((Any,Nothing,Int,UInt)) do t, mt, lim, world
+            ambig = false
+            min = Ref{UInt}(typemin(UInt))
+            max = Ref{UInt}(typemax(UInt))
+            has_ambig = Ref{Int32}(0)
+            mt = ccall(:jl_matching_methods, Any,
+                (Any, Any, Cint, Cint, UInt, Ptr{UInt}, Ptr{UInt}, Ref{Int32}),
+                t, mt, lim, ambig, world, min, max, has_ambig)::Union{Array{Any,1}, Bool}
+            return mt, has_ambig[]
+        end
+        for i in findall(isnew, result.ir.stmts.inst)
+            @test !is_sroa_eligible(result.state[SSAValue(i)])
+        end
+    end
 end
 
 # demonstrate the power of our field / alias analysis with a realistic end to end example
