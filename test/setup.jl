@@ -1,5 +1,6 @@
 using Test
 if @isdefined(EA_AS_PKG)
+    import EscapeAnalysis: code_escapes, @code_escapes
     using EscapeAnalysis
 else
     using Core.Compiler.EscapeAnalysis

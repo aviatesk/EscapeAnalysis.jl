@@ -1436,25 +1436,29 @@ end
 #     return true
 # end
 
-if isdefined(Core, :arrayfreeze) && isdefined(Core, :arraythaw) && isdefined(Core, :mutating_arrayfreeze)
+if isdefined(Core, :ImmutableArray)
 
-escape_builtin!(::typeof(Core.arrayfreeze), astate::AnalysisState, pc::Int, args::Vector{Any}) =
+import Core: ImmutableArray, arrayfreeze, mutating_arrayfreeze, arraythaw
+
+escape_builtin!(::typeof(arrayfreeze), astate::AnalysisState, pc::Int, args::Vector{Any}) =
     is_safe_immutable_array_op(Array, astate, args)
-escape_builtin!(::typeof(Core.mutating_arrayfreeze), astate::AnalysisState, pc::Int, args::Vector{Any}) =
+escape_builtin!(::typeof(mutating_arrayfreeze), astate::AnalysisState, pc::Int, args::Vector{Any}) =
     is_safe_immutable_array_op(Array, astate, args)
-escape_builtin!(::typeof(Core.arraythaw), astate::AnalysisState, pc::Int, args::Vector{Any}) =
-    is_safe_immutable_array_op(Core.ImmutableArray, astate, args)
+escape_builtin!(::typeof(arraythaw), astate::AnalysisState, pc::Int, args::Vector{Any}) =
+    is_safe_immutable_array_op(ImmutableArray, astate, args)
 function is_safe_immutable_array_op(@nospecialize(arytype), astate::AnalysisState, args::Vector{Any})
     length(args) == 2 || return false
     argextype(args[2], astate.ir) ⊑ₜ arytype || return false
     return true
 end
 
-end # if isdefined(Core, :arrayfreeze) && isdefined(Core, :arraythaw) &&  isdefined(Core, :mutating_arrayfreeze)
+end # if isdefined(Core, :ImmutableArray)
 
 # NOTE define fancy package utilities when developing EA as an external package
 if _TOP_MOD !== Core.Compiler
     include(@__MODULE__, "EAUtils.jl")
+    using .EAUtils: code_escapes, @code_escapes
+    export code_escapes, @code_escapes
 end
 
 end # baremodule EscapeAnalysis

@@ -5,7 +5,8 @@
 `EscapeAnalysis` is a simple module that collects escape information in
 [Julia's SSA optimization IR](@id Julia-SSA-form-IR) a.k.a. `IRCode`.
 
-We can try the escape analysis using the following convenience entries `EscapeAnalysis` exports for testing and debugging purposes:
+You can give a try to the escape analysis with the convenience entries that
+`EscapeAnalysis` exports for testing and debugging purposes:
 ```@docs
 Base.code_escapes
 InteractiveUtils.@code_escapes
@@ -13,14 +14,14 @@ InteractiveUtils.@code_escapes
 
 ## Analysis Design
 
-### Lattice design
+### Lattice Design
 
 `EscapeAnalysis` is implemented as a [data-flow analysis](https://en.wikipedia.org/wiki/Data-flow_analysis)
-that works on a lattice called `x::EscapeLattice`, which has the following properties:
+that works on a lattice called `x::EscapeLattice`, which is composed of the following properties:
 - `x.Analyzed::Bool`: not formally part of the lattice, only indicates `x` has not been analyzed or not
 - `x.ReturnEscape::BitSet`: records SSA statements where `x` can escape to the caller via return
 - `x.ThrownEscape::BitSet`: records SSA statements where `x` can be thrown as exception
-  (used for the [exception-handling](@id EA-Exception-Handling) described below)
+  (used for the [exception handling](@id EA-Exception-Handling) described below)
 - `x.AliasEscapes`: maintains all possibilities that may escape objects that can be referenced from `x`
   (used for the [field analysis](@id Field-Analysis) described below)
 - `x.ArgEscape::Int` (not implemented yet): indicates it will escape to the caller through
@@ -28,12 +29,12 @@ that works on a lattice called `x::EscapeLattice`, which has the following prope
 
 These attributes can be combined to create a partial lattice that has a finite height, given
 the invariant that an input program has a finite number of statements, which is assured by Julia's semantics.
-The clever part of this lattice design is that it enables relatively simple analysis implementation
-by allowing it to handle each lattice property separately[^latticedesign].
+The clever part of this lattice design is that it enables a simpler implementation of
+lattice operations by allowing them to handle each lattice property separately[^LatticeDesign].
 
 ### Backward Analysis
 
-Escape analysis implementation is based on the data-flow algorithm described in the paper[^MM02].
+This escape analysis implementation is based on the data-flow algorithm described in the paper[^MM02].
 The analysis works on the lattice of `EscapeLattice` and transitions lattice elements from the
 bottom to the top until every lattice element gets converged to a fixed point by maintaining
 a (conceptual) working set that contains program counters corresponding to remaining SSA
@@ -42,11 +43,12 @@ statements to be analyzed. The analysis manages a single global state that track
 is encoded as program counters recorded in `EscapeLattice`'s `ReturnEscape` property,
 which can be combined with domination analysis later to reason about flow-sensitivity if necessary.
 
-One distinctive design of this data-flow analysis is that it is fully _backward_,
+One distinctive design of this escape analysis is that it is fully _backward_,
 i.e. escape information flows _from usages to definitions_.
 For example, in the code snippet below, EA first analyzes the statement `return %1` and
-imposes `ReturnEscape` on `obj`, and then it analyzes `%new(Base.RefValue{String, _2}))`
-and propagates `ReturnEscape` imposed on `obj` to `s`:
+imposes `ReturnEscape` on `%1` (corresponding to `obj`), and then it analyzes
+`%1 = %new(Base.RefValue{String, _2}))` and propagates the `ReturnEscape` imposed on `%1`
+to the call argument `_2` (corresponding to `s`):
 ```julia
 julia> code_escapes((String,)) do s
            obj = Ref(s)
@@ -58,10 +60,10 @@ julia> code_escapes((String,)) do s
 ```
 
 The key observation here is that this backward analysis allows escape information to flow
-naturally along the use-def chain rather than control-flow[^backandforth].
-As a result, this scheme enables a simple implementation of escape analysis,
-e.g. `PhiNode` for example can be handled relatively simply by propagating
-escape information imposed on the `PhiNode` itself to its predecessor values:
+naturally along the use-def chain rather than control-flow[^BackandForth].
+As a result this scheme enables a simple implementation of escape analysis,
+e.g. `PhiNode` for example can be handled simply by propagating escape information
+imposed on a `PhiNode` to its predecessor values:
 ```julia
 julia> code_escapes((Bool, String, String)) do cnd, s, t
            if cnd
@@ -89,7 +91,7 @@ It records _all possibilities that can escape fields of `x`_ at "usage" sites, a
 the recorded escapes are propagated to the actual field values later at "definition" site.
 More specifically, the analysis records a value that may impose escape information on
 a field of object by analyzing `getfield` call, and then it propagates that escape information
-to the field when analyzing `Expr(:new)` or `setfield!` expressions.
+to the field when analyzing `%new(...)` expression or `setfield!` call.
 ```julia
 julia> mutable struct SafeRef{T}
            x::T
@@ -111,19 +113,18 @@ julia> code_escapes((String,)) do s
 4 ↑  │   %3 = Base.getfield(%1, :x)::String                                    │╻╷ getindex
 5 ◌  └──      return %3                                                        │
 ```
-In the example above, `ReturnEscape` imposed on `v` is _not_ directly propagated to `obj`,
-and `ReturnEscape` isn't imposed on `%1 = %new(SafeRef{String}, "init")::SafeRef{String}`.
-Here the identity of `v` (`SSAValue(3)` in the above) is recorded in `obj`'s
-`AliasEscapes` property, and then when analyzing `Base.setfield!(%1, :x, _2)::String`,
-that escape information is propagated to `s` (`_2` or `Argument(2)` in the above)
-but not propagated to `obj` itself (`SSAValue(1)` in the above).
+In the example above, `ReturnEscape` imposed on `%3` (corresponding to `v`) is _not_ directly
+propagated to `%1` (corresponding to `obj`) but rather that `ReturnEscape` is only propagated
+to `_2` (corresponding to `s`). Here `%3` is recorded in `%1`'s `AliasEscapes` property as
+it escapes the first field of `%1`, and then when analyzing `Base.setfield!(%1, :x, _2)::String`,
+that escape information is propagated to `_2` but not to `%1`.
 
-However, in some cases such field analysis is impossible mostly when:
-1. the object escapes to somewhere where the escape analysis can't account for possible memory effects on it
-2. fields of the objects can't be known because of the lack of type information.
-In such cases `AliasEscapes` property is raised to the topmost element within its lattice,
-and it makes succeeding field analysis conservative and propagate escapes imposed on fields
-of an unanalyzable object to the object itself.
+However, in some cases such field analysis is impossible when:
+1. the object escapes to somewhere the escape analysis can't account for possible memory effects on it
+2. fields of the objects can't be known because of the lack of type information
+In such cases `AliasEscapes` property is raised to the topmost element within its own lattice order,
+and it causes succeeding field analysis to be conservative and escape information imposed on
+fields of an unanalyzable object to be propagated the object itself.
 
 Also note that escapes imposed on array elements can also be handled by a imprecise version
 of this field analysis, where `AliasEscapes` doesn't try to track precise array index
@@ -134,7 +135,7 @@ but rather simply records all possibilities that can escape any elements of the 
 The escape analysis also needs to track which values can be aliased to each other. This is
 needed because in Julia IR, the same object is sometimes represented by different IR elements.
 Since the analysis maintains `EscapeLattice` per IR element, we need to make sure that those
-different IR elements that actually represent the same object to share the same escape information.
+different IR elements that actually can represent the same object to share the same escape information.
 Program constructs that return the same object as their operand(s) like `PiNode` and
 `typeassert` are obvious examples that require this escape information aliasing.
 But the escape information equalization between aliased values is needed for other cases too,
@@ -162,11 +163,10 @@ julia> code_escapes((Bool, String,)) do cond, x
 8 ↑  │   %8 = Base.getfield(%6, :x)::String                                    │╻╷ getindex
 9 ◌  └──      return %8                                                        │
 ```
-`ϕ1 = SSAValue(5)` and `ϕ2 = SSAValue(6)` are aliased and thus `ReturnEscape` imposed on
-`%8 = Base.getfield(%6, :x)::String` (corresponding to `y = ϕ1[]`) needs to be propagated to
-`Base.setfield!(%5, :x, _3)::String` (corresponding to `ϕ2[] = x`).
+`ϕ1 = %5` and `ϕ2 = %6` are aliased and thus `ReturnEscape` imposed on `%8 = Base.getfield(%6, :x)::String` (corresponding to `y = ϕ1[]`)
+needs to be propagated to `Base.setfield!(%5, :x, _3)::String` (corresponding to `ϕ2[] = x`).
 In order for such escape information to be propagated correctly, the analysis needs to
-recognize that the _predecessors_ of `ϕ1` and `ϕ2` are aliased and equalized their escape information.
+recognize that the _predecessors_ of `ϕ1` and `ϕ2` can be aliased and equalized their escape information.
 
 One interesting property of such aliasing information is that it is not known at "usage" site
 but can only be derived at "definition" site (as aliasing is conceptually equivalent to assignment),
@@ -176,13 +176,13 @@ analysis algorithm explained in an old JVM paper[^JVM05]. That is, in addition t
 escape lattice elements, the analysis also maintains an "equi"-alias set, a disjoint set of
 aliased arguments and SSA statements. The alias set manages values that can be aliased to
 each other and allows new escape information imposed on any of such aliased values to be
-equalized between them.
+shared between them.
 
 ### [Exception Handling](@id EA-Exception-Handling)
 
-It would be also noting how `EscapeAnalysis` handles possible escapes via exceptions.
+It would be also worth noting how `EscapeAnalysis` handles possible escapes via exceptions.
 Naively it seems enough to propagate escape information imposed on `:the_exception` object to
-all values that may be thrown in a `try` block.
+all values that may be thrown in a corresponding `try` block.
 But there are actually several other ways to access to the exception object in Julia,
 such as `Base.current_exceptions` and manual catch of `rethrow`n object.
 For example, escape analysis needs to account for potential escape of `r` in the example below:
@@ -230,16 +230,15 @@ julia> code_escapes() do
    ◌  └───       return %16                                                    │
 ```
 
-It requires a global analysis in order to reason about all possible escapes via existing
-exception interfaces correctly. As indicated by the above example, for now we always propagate
-the topmost escape information to all potentially thrown objects conservatively, since
-such an additional analysis might not be worthwhile to do given that exception handling and
-error path usually don't need to be very performance sensitive, and also optimizations of
-error paths might be very ineffective anyway since they are sometimes "unoptimized"
-intentionally for latency reasons.
+It requires a global analysis in order to correctly reason about all possible escapes via
+existing exception interfaces. For now we always propagate the topmost escape information to
+all potentially thrown objects conservatively, since such an additional analysis might not be
+worthwhile to do given that exception handling and error path usually don't need to be
+very performance sensitive, and also optimizations of error paths might be very ineffective anyway
+since they are often even "unoptimized" intentionally for latency reasons.
 
 `x::EscapeLattice`'s `x.ThrownEscape` property records SSA statements where `x` can be thrown as exception.
-Using this information `EscapeAnalysis` can limited propagate possible escapes via exceptions
+Using this information `EscapeAnalysis` can propagate possible escapes via exceptions limitedly
 to only those may be thrown in each `try` region:
 ```julia
 julia> result = code_escapes((String,String)) do s1, s2
@@ -287,16 +286,15 @@ julia> result = code_escapes((String,String)) do s1, s2
 
 ## Analysis Usage
 
-When using `EscapeAnalysis` in Julia's high-level optimization pipeline, we can run
-`analyze_escapes(ir::IRCode) -> estate::EscapeState`  to analyze
-escape information of each SSA-IR elements in `ir`.
+When using `EscapeAnalysis` in Julia's high-level compilation pipeline, we can run
+`analyze_escapes(ir::IRCode) -> estate::EscapeState` to analyze escape information of each SSA-IR elements in `ir`.
 
 Note that it should be most effective if `analyze_escapes` runs after inlining,
 as `EscapeAnalysis`'s interprocedural escape information handling is limited at this moment.
 
 Since the computational cost of `analyze_escapes` is not that cheap,
-it is more ideal to run it once and succeeding optimizations incrementally update
-the escape information upon IR transformation.
+it is more ideal if it runs once and succeeding optimization passes incrementally update
+    the escape information upon IR transformation.
 
 ```@docs
 Core.Compiler.EscapeAnalysis.analyze_escapes
@@ -304,20 +302,20 @@ Core.Compiler.EscapeAnalysis.EscapeState
 Core.Compiler.EscapeAnalysis.cache_escapes!
 ```
 
-[^latticedesign]: Our type inference implementation takes the alternative approach,
+[^LatticeDesign]: Our type inference implementation takes the alternative approach,
     where each lattice property is represented by a special lattice element type object.
-    It turns out that it makes started to complicate implementations of the lattice mainly
-    because it often requires conversion rules between each lattice element type object,
-    and we are working on [overhauling our type inference lattice implementation](https://github.com/JuliaLang/julia/pull/42596)
+    It turns out that it started to complicate implementations of the lattice operations
+    mainly because it often requires conversion rules between each lattice element type object.
+    And we are working on [overhauling our type inference lattice implementation](https://github.com/JuliaLang/julia/pull/42596)
     with `EscapeLattice`-like lattice design.
 
 [^MM02]: _A Graph-Free approach to Data-Flow Analysis_.
          Markas Mohnen, 2002, April.
          <https://api.semanticscholar.org/CorpusID:28519618>.
 
-[^backandforth]: In contrast, our type inference algorithm is implemented as a forward analysis,
-    because type information flows from "definition" to "usage" and it is more natural and
-    effective to propagate such information in a forward way.
+[^BackandForth]: Our type inference algorithm in contrast is implemented as a forward analysis,
+    because type information usually flows from "definition" to "usage" and it is more
+    natural and effective to propagate such information in a forward way.
 
 [^JVM05]: _Escape Analysis in the Context of Dynamic Compilation and Deoptimization_.
           Thomas Kotzmann and Hanspeter Mössenböck, 2005, June.

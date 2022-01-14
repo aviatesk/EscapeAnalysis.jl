@@ -119,7 +119,7 @@
             end
             nothing
         end
-        i = only(findall(isT(SafeRef{Bool}), result.ir.stmts.type))
+        i = only(findall(isnew, result.ir.stmts.inst))
         @test has_return_escape(result.state[SSAValue(i)])
     end
     let # try/catch
@@ -148,8 +148,7 @@ let # simple allocation
         mm = SafeRef{Bool}(c) # just allocated, never escapes
         return mm[] ? nothing : 1
     end
-
-    i = only(findall(isT(SafeRef{Bool}), result.ir.stmts.type))
+    i = only(findall(isnew, result.ir.stmts.inst))
     @test has_no_escape(result.state[SSAValue(i)])
 end
 
