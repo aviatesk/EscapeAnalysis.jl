@@ -525,6 +525,15 @@ struct AnalysisState
     changes::Changes
 end
 
+function getinst(ir::IRCode, idx::Int)
+    nstmts = length(ir.stmts)
+    if idx ≤ nstmts
+        return ir.stmts[idx]
+    else
+        return ir.new_nodes.stmts[idx - nstmts]
+    end
+end
+
 """
     analyze_escapes(ir::IRCode, nargs::Int) -> estate::EscapeState
 
@@ -533,7 +542,7 @@ Analyzes escape information in `ir`.
 """
 function analyze_escapes(ir::IRCode, nargs::Int)
     stmts = ir.stmts
-    nstmts = length(stmts)
+    nstmts = length(stmts) + length(ir.new_nodes.stmts)
 
     # only manage a single state, some flow-sensitivity is encoded as `EscapeLattice` properties
     estate = EscapeState(nargs, nstmts)
@@ -546,7 +555,7 @@ function analyze_escapes(ir::IRCode, nargs::Int)
         local anyupdate = false
 
         for pc in nstmts:-1:1
-            stmt = stmts[pc][:inst]
+            stmt = getinst(ir, pc)[:inst]
 
             # collect escape information
             if isa(stmt, Expr)
@@ -602,10 +611,11 @@ function analyze_escapes(ir::IRCode, nargs::Int)
                 escape_val_ifdefined!(astate, pc, stmt)
             elseif isa(stmt, GlobalRef) # global load
                 add_escape_change!(astate, SSAValue(pc), ⊤)
-            elseif isa(stmt, SSAValue) # after SROA, we may see SSA value as statement
+            elseif isa(stmt, SSAValue)
                 escape_val!(astate, pc, stmt)
-            else
-                @assert stmt isa GotoNode || stmt isa GotoIfNot || stmt === nothing # TODO remove me
+            elseif isa(stmt, Argument)
+                escape_val!(astate, pc, stmt)
+            else # otherwise `stmt` can be GotoNode, GotoIfNot, and inlined values etc.
                 continue
             end
 
@@ -744,6 +754,10 @@ function compute_tryregions(ir::IRCode)
             leave_pc = first(ir.cfg.blocks[leave_block].stmts)
             push!(tryregions, idx:leave_pc)
         end
+    end
+    for idx in 1:length(ir.new_nodes.stmts)
+        stmt = ir.new_nodes.stmts[idx][:inst]
+        @assert !isexpr(stmt, :enter) "try/catch inside new_nodes unsupported"
     end
     return tryregions
 end
@@ -904,7 +918,7 @@ function escape_new!(astate::AnalysisState, pc::Int, args::Vector{Any})
         objinfo = escape_unanalyzable_obj!(astate, obj, objinfo)
         @goto conservative_propagation
     end
-    if !(astate.ir.stmts.flag[pc] & IR_FLAG_EFFECT_FREE ≠ 0)
+    if !(getinst(astate.ir, pc)[:flag] & IR_FLAG_EFFECT_FREE ≠ 0)
         add_thrown_escapes!(astate, pc, args)
     end
 end
@@ -1004,7 +1018,7 @@ function escape_call!(astate::AnalysisState, pc::Int, args::Vector{Any})
     # we escape statements with the `ThrownEscape` property using the effect-freeness
     # computed by `stmt_effect_free` invoked within inlining
     # TODO throwness ≠ "effect-free-ness"
-    if !(astate.ir.stmts.flag[pc] & IR_FLAG_EFFECT_FREE ≠ 0)
+    if !(getinst(astate.ir, pc)[:flag] & IR_FLAG_EFFECT_FREE ≠ 0)
         add_thrown_escapes!(astate, pc, args, 2)
     end
 end
