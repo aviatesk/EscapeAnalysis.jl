@@ -23,7 +23,7 @@ that works on a lattice called `x::EscapeLattice`, which is composed of the foll
 - `x.ThrownEscape::BitSet`: records SSA statements where `x` can be thrown as exception
   (used for the [exception handling](@ref EA-Exception-Handling) described below)
 - `x.AliasEscapes`: maintains all possible values that can be aliased to fields or array elements of `x`
-  (used for the [alias analysis](@ref Alias-Analysis) described below)
+  (used for the [alias analysis](@ref EA-Alias-Analysis) described below)
 - `x.ArgEscape::Int` (not implemented yet): indicates it will escape to the caller through
   `setfield!` on argument(s)
 
@@ -82,7 +82,7 @@ julia> code_escapes((Bool, String, String)) do cnd, s, t
   ◌  └──      return %5                                                             │
 ```
 
-### Alias Analysis
+### [Alias Analysis](@id EA-Alias-Analysis)
 
 `EscapeAnalysis` implements a backward field analysis in order to reason about escapes
 imposed on object fields with certain accuracy,
