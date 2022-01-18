@@ -912,6 +912,7 @@ function escape_new!(astate::AnalysisState, pc::Int, args::Vector{Any})
             # fields are known: propagate escape information imposed on recorded possibilities
             i-1 > nf && break # may happen when e.g. ϕ-node merges values with different types
             escape_field!(astate, args[i], AliasEscapes[i-1])
+            push!(AliasEscapes[i-1], -pc) # record def
         end
     else
         # this object has been used as array, but it is allocated as struct here (i.e. should throw)
@@ -928,7 +929,8 @@ end
 function escape_field!(astate::AnalysisState, @nospecialize(v), xf::FieldEscape)
     estate = astate.estate
     for xidx in xf
-        x = irval(xidx, estate)::SSAValue # TODO remove me once we implement ArgEscape
+        xidx < 0 && continue # ignore
+        x = SSAValue(xidx) # obviously this won't hold once we implement ArgEscape
         add_alias_change!(astate, v, x)
     end
 end
@@ -1124,11 +1126,11 @@ function escape_builtin!(::typeof(getfield), astate::AnalysisState, pc::Int, arg
         end
         if fidx !== nothing
             # the field is known precisely: propagate this escape information to the field
-            push!(AliasEscapes[fidx], iridx(SSAValue(pc), estate))
+            push!(AliasEscapes[fidx], pc) # record use
         else
             # the field isn't known precisely: propagate this escape information to all the fields
             for FieldEscape in AliasEscapes
-                push!(FieldEscape, iridx(SSAValue(pc), estate))
+                push!(FieldEscape, pc) # record use
             end
         end
         add_escape_change!(astate, obj, EscapeLattice(objinfo, AliasEscapes))
@@ -1199,10 +1201,12 @@ function escape_builtin!(::typeof(setfield!), astate::AnalysisState, pc::Int, ar
         if fidx !== nothing
             # the field is known precisely: propagate this escape information to the field
             escape_field!(astate, val, AliasEscapes[fidx])
+            push!(AliasEscapes[fidx], -pc) # record def
         else
             # the field isn't known precisely: propagate this escape information to all the fields
             for FieldEscape in AliasEscapes
                 escape_field!(astate, val, FieldEscape)
+                push!(FieldEscape, -pc) # record def
             end
         end
         # fields are known: propagate the escape information of this object ignoring field information
