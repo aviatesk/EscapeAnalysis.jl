@@ -42,7 +42,7 @@ end
 
 # XXX better to be IdSet{Int}?
 const FieldEscape = BitSet
-const FieldEscapes = Vector{BitSet}
+const FieldEscapes = Vector{FieldEscape}
 const ArrayEscapes = IdSet{Int}
 
 """

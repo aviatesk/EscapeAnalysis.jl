@@ -25,7 +25,7 @@ import InteractiveUtils: gen_call_with_extracted_types_and_kwargs
 Evaluates the arguments to the function call, determines its types, and then calls
 [`code_escapes`](@ref) on the resulting expression.
 As with `@code_typed` and its family, any of `code_escapes` keyword arguments can be given
-as the optional arguments like `@code_escpase interp=myinterp myfunc(myargs...)`.
+as the optional arguments like `@code_escapes interp=myinterp myfunc(myargs...)`.
 """
 macro code_escapes(ex0...)
     return gen_call_with_extracted_types_and_kwargs(__module__, :code_escapes, ex0)
@@ -36,7 +36,7 @@ end # @static if EA_AS_PKG
     code_escapes(f, argtypes=Tuple{}; [world], [interp]) -> result::EscapeResult
     code_escapes(tt::Type{<:Tuple}; [world], [interp]) -> result::EscapeResult
 
-Runs the escape analysis on optimized IR of a genefic function call with the given type signature.
+Runs the escape analysis on optimized IR of a generic function call with the given type signature.
 Note that the escape analysis runs after inlining, but before any other optimizations.
 
 ```julia
@@ -252,9 +252,7 @@ function run_passes_with_ea(interp::EscapeAnalyzer, ci::CodeInfo, sv::Optimizati
     @timeit "Inlining"  ir = ssa_inlining_pass!(ir, ir.linetable, sv.inlining, ci.propagate_inbounds)
     # @timeit "verify 2" verify_ir(ir)
     @timeit "compact 2" ir = compact!(ir)
-    nargs = let def = sv.linfo.def
-        isa(def, Method) ? Int(def.nargs) : 0
-    end
+    nargs = let def = sv.linfo.def; isa(def, Method) ? Int(def.nargs) : 0; end
     local state
     try
         @timeit "collect escape information" state = analyze_escapes(ir, nargs)
