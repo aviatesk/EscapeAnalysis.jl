@@ -141,6 +141,12 @@
         end
         @test has_return_escape(result.state[Argument(2)])
     end
+    let # :foreigncall
+        result = code_escapes((Any,)) do x
+            ccall(:some_ccall, Any, (Any,), x)
+        end
+        @test has_all_escape(result.state[Argument(2)])
+    end
 end
 
 let # simple allocation
