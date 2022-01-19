@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>EscapeAnalysis · EscapeAnalysis.jl</title><script data-outdated-warner src="assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.039/juliamono-regular.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.3/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.3/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.3/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.13.11/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL="."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="assets/documenter.js"></script><script src="siteinfo.js"></script><script src="../versions.js"></script><script src="../copy.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="assets/themeswap.js"></script></head><body><div id="documenter"><nav class="docs-sidebar"><div class="docs-package-name"><span class="docs-autofit"><a href>EscapeAnalysis.jl</a></span></div><form class="docs-search" action="search/"><input class="docs-search-query" id="documenter-search-query" name="q" type="text" placeholder="Search docs"/></form><ul class="docs-menu"><li class="is-active"><a class="tocitem" href>EscapeAnalysis</a><ul class="internal"><li><a class="tocitem" href="#Analysis-Design"><span>Analysis Design</span></a></li><li><a class="tocitem" href="#Analysis-Usage"><span>Analysis Usage</span></a></li></ul></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><nav class="breadcrumb"><ul class="is-hidden-mobile"><li class="is-active"><a href>EscapeAnalysis</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>EscapeAnalysis</a></li></ul></nav><div class="docs-right"><a class="docs-edit-link" href="https://github.com/aviatesk/EscapeAnalysis.jl/blob/master/docs/src/index.md" title="Edit on GitHub"><span class="docs-icon fab"></span><span class="docs-label is-hidden-touch">Edit on GitHub</span></a><a class="docs-settings-button fas fa-cog" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-sidebar-button fa fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a></div></header><article class="content" id="documenter-page"><p><a href="https://github.com/aviatesk/EscapeAnalysis.jl/actions/workflows/ci.yml"><img src="https://github.com/aviatesk/EscapeAnalysis.jl/actions/workflows/ci.yml/badge.svg" alt="CI"/></a> <a href="https://codecov.io/gh/aviatesk/EscapeAnalysis.jl"><img src="https://codecov.io/gh/aviatesk/EscapeAnalysis.jl/branch/master/graph/badge.svg?token=ADEKPZRUJH" alt="codecov"/></a> <a href="https://aviatesk.github.io/EscapeAnalysis.jl/dev/"><img src="https://img.shields.io/badge/docs-dev-blue.svg" alt/></a></p><p><code>EscapeAnalysis</code> is a simple module that collects escape information in <a href="@ref Julia-SSA-form-IR">Julia&#39;s SSA optimization IR</a> a.k.a. <code>IRCode</code>.</p><p>You can give a try to the escape analysis with the convenience entries that <code>EscapeAnalysis</code> exports for testing and debugging purposes:</p><article class="docstring"><header><a class="docstring-binding" id="EscapeAnalysis.EAUtils.code_escapes" href="#EscapeAnalysis.EAUtils.code_escapes"><code>EscapeAnalysis.EAUtils.code_escapes</code></a> — <span class="docstring-category">Function</span></header><section><div><pre><code class="language-julia hljs">code_escapes(f, argtypes=Tuple{}; [world], [interp]) -&gt; result::EscapeResult
+code_escapes(tt::Type{&lt;:Tuple}; [world], [interp]) -&gt; result::EscapeResult</code></pre><p>Runs the escape analysis on optimized IR of a generic function call with the given type signature. Note that the escape analysis runs after inlining, but before any other optimizations.</p><pre><code class="language-julia hljs">julia&gt; mutable struct SafeRef{T}
+           x::T
+       end
+
+julia&gt; Base.getindex(x::SafeRef) = x.x;
+
+julia&gt; Base.isassigned(x::SafeRef) = true;
+
+julia&gt; get′(x) = isassigned(x) ? x[] : throw(x);
+
+julia&gt; result = code_escapes((String,String,String)) do s1, s2, s3
+           r1 = Ref(s1)
+           r2 = Ref(s2)
+           r3 = SafeRef(s3)
+           try
+               s1 = get′(r1)
+               ret = sizeof(s1)
+           catch err
+               global g = err # will definitely escape `r1`
+           end
+           s2 = get′(r2)      # still `r2` doesn&#39;t escape fully
+           s3 = get′(r3)      # still `r2` doesn&#39;t escape fully
+           return s2, s3
+       end
+#3(X _2::String, ↑ _3::String, ↑ _4::String) in Main at REPL[7]:2
+2  X  1 ── %1  = %new(Base.RefValue{String}, _2)::Base.RefValue{String}   │╻╷╷ Ref
+3  *′ │    %2  = %new(Base.RefValue{String}, _3)::Base.RefValue{String}   │╻╷╷ Ref
+4  ✓′ └─── %3  = %new(SafeRef{String}, _4)::SafeRef{String}               │╻╷  SafeRef
+5  ◌  2 ── %4  = $(Expr(:enter, #8))                                      │
+   ✓′ │    %5  = ϒ (%3)::SafeRef{String}                                  │
+   *′ └─── %6  = ϒ (%2)::Base.RefValue{String}                            │
+6  ◌  3 ── %7  = Base.isdefined(%1, :x)::Bool                             │╻╷  get′
+   ◌  └───       goto #5 if not %7                                        ││
+   X  4 ──       Base.getfield(%1, :x)::String                            ││╻   getindex
+   ◌  └───       goto #6                                                  ││
+   ◌  5 ──       Main.throw(%1)::Union{}                                  ││
+   ◌  └───       unreachable                                              ││
+7  ◌  6 ──       nothing::typeof(Core.sizeof)                             │╻   sizeof
+   ◌  │          nothing::Int64                                           ││
+   ◌  └───       $(Expr(:leave, 1))                                       │
+   ◌  7 ──       goto #10                                                 │
+   ✓′ 8 ── %17 = φᶜ (%5)::SafeRef{String}                                 │
+   *′ │    %18 = φᶜ (%6)::Base.RefValue{String}                           │
+   ◌  └───       $(Expr(:leave, 1))                                       │
+   X  9 ── %20 = $(Expr(:the_exception))::Any                             │
+9  ◌  │          (Main.g = %20)::Any                                      │
+   ◌  └───       $(Expr(:pop_exception, :(%4)))::Any                      │
+11 ✓′ 10 ┄ %23 = φ (#7 =&gt; %3, #9 =&gt; %17)::SafeRef{String}                 │
+   *′ │    %24 = φ (#7 =&gt; %2, #9 =&gt; %18)::Base.RefValue{String}           │
+   ◌  │    %25 = Base.isdefined(%24, :x)::Bool                            ││╻   isassigned
+   ◌  └───       goto #12 if not %25                                      ││
+   ↑  11 ─ %27 = Base.getfield(%24, :x)::String                           │││╻   getproperty
+   ◌  └───       goto #13                                                 ││
+   ◌  12 ─       Main.throw(%24)::Union{}                                 ││
+   ◌  └───       unreachable                                              ││
+12 ↑  13 ─ %31 = Base.getfield(%23, :x)::String                           │╻╷╷ get′
+13 ↑  │    %32 = Core.tuple(%27, %31)::Tuple{String, String}              │
+   ◌  └───       return %32                                               │</code></pre><p>The symbols in the side of each call argument and SSA statements represents the following meaning:</p><ul><li><code>◌</code>: this value is not analyzed because escape information of it won&#39;t be used anyway (when the object is <code>isbitstype</code> for example)</li><li><code>✓</code>: this value never escapes (<code>has_no_escape(result.state[x])</code> holds)</li><li><code>↑</code>: this value can escape to the caller via return (<code>has_return_escape(result.state[x])</code> holds)</li><li><code>X</code>: this value can escape to somewhere the escape analysis can&#39;t reason about like escapes to a global memory (<code>has_all_escape(result.state[x])</code> holds)</li><li><code>*</code>: this value&#39;s escape state is between the <code>ReturnEscape</code> and <code>AllEscape</code> in the <code>EscapeLattice</code>, e.g. it has unhandled <code>ThrownEscape</code></li></ul><p>and additional <code>′</code> indicates that field analysis has been done successfully on that value.</p><p>For testing, escape information of each call argument and SSA value can be inspected programmatically as like:</p><pre><code class="language-julia hljs">julia&gt; result.state[Core.Argument(3)]
+ReturnEscape
+
+julia&gt; result.state[Core.SSAValue(3)]
+NoEscape′</code></pre></div><a class="docs-sourcelink" target="_blank" href="https://github.com/aviatesk/EscapeAnalysis.jl/blob/e3b7ba2d0d2a12b6185ab53c89beb1d6af438763/src/EAUtils.jl#L35-L119">source</a></section></article><article class="docstring"><header><a class="docstring-binding" id="EscapeAnalysis.EAUtils.@code_escapes" href="#EscapeAnalysis.EAUtils.@code_escapes"><code>EscapeAnalysis.EAUtils.@code_escapes</code></a> — <span class="docstring-category">Macro</span></header><section><div><pre><code class="language-julia hljs">@code_escapes [options...] f(args...)</code></pre><p>Evaluates the arguments to the function call, determines its types, and then calls <a href="#EscapeAnalysis.EAUtils.code_escapes"><code>code_escapes</code></a> on the resulting expression. As with <code>@code_typed</code> and its family, any of <code>code_escapes</code> keyword arguments can be given as the optional arguments like <code>@code_escapes interp=myinterp myfunc(myargs...)</code>.</p></div><a class="docs-sourcelink" target="_blank" href="https://github.com/aviatesk/EscapeAnalysis.jl/blob/e3b7ba2d0d2a12b6185ab53c89beb1d6af438763/src/EAUtils.jl#L22-L29">source</a></section></article><h2 id="Analysis-Design"><a class="docs-heading-anchor" href="#Analysis-Design">Analysis Design</a><a id="Analysis-Design-1"></a><a class="docs-heading-anchor-permalink" href="#Analysis-Design" title="Permalink"></a></h2><h3 id="Lattice-Design"><a class="docs-heading-anchor" href="#Lattice-Design">Lattice Design</a><a id="Lattice-Design-1"></a><a class="docs-heading-anchor-permalink" href="#Lattice-Design" title="Permalink"></a></h3><p><code>EscapeAnalysis</code> is implemented as a <a href="https://en.wikipedia.org/wiki/Data-flow_analysis">data-flow analysis</a> that works on a lattice called <code>x::EscapeLattice</code>, which is composed of the following properties:</p><ul><li><code>x.Analyzed::Bool</code>: not formally part of the lattice, only indicates <code>x</code> has not been analyzed or not</li><li><code>x.ReturnEscape::BitSet</code>: records SSA statements where <code>x</code> can escape to the caller via return</li><li><code>x.ThrownEscape::BitSet</code>: records SSA statements where <code>x</code> can be thrown as exception (used for the <a href="#EA-Exception-Handling">exception handling</a> described below)</li><li><code>x.AliasEscapes</code>: maintains all possible values that can be aliased to fields or array elements of <code>x</code> (used for the <a href="#EA-Alias-Analysis">alias analysis</a> described below)</li><li><code>x.ArgEscape::Int</code> (not implemented yet): indicates it will escape to the caller through <code>setfield!</code> on argument(s)</li></ul><p>These attributes can be combined to create a partial lattice that has a finite height, given the invariant that an input program has a finite number of statements, which is assured by Julia&#39;s semantics. The clever part of this lattice design is that it enables a simpler implementation of lattice operations by allowing them to handle each lattice property separately<sup class="footnote-reference"><a id="citeref-LatticeDesign" href="#footnote-LatticeDesign">[LatticeDesign]</a></sup>.</p><h3 id="Backward-Escape-Propagation"><a class="docs-heading-anchor" href="#Backward-Escape-Propagation">Backward Escape Propagation</a><a id="Backward-Escape-Propagation-1"></a><a class="docs-heading-anchor-permalink" href="#Backward-Escape-Propagation" title="Permalink"></a></h3><p>This escape analysis implementation is based on the data-flow algorithm described in the paper<sup class="footnote-reference"><a id="citeref-MM02" href="#footnote-MM02">[MM02]</a></sup>. The analysis works on the lattice of <code>EscapeLattice</code> and transitions lattice elements from the bottom to the top until every lattice element gets converged to a fixed point by maintaining a (conceptual) working set that contains program counters corresponding to remaining SSA statements to be analyzed. The analysis manages a single global state that tracks <code>EscapeLattice</code> of each argument and SSA statement, but also note that some flow-sensitivity is encoded as program counters recorded in <code>EscapeLattice</code>&#39;s <code>ReturnEscape</code> property, which can be combined with domination analysis later to reason about flow-sensitivity if necessary.</p><p>One distinctive design of this escape analysis is that it is fully <em>backward</em>, i.e. escape information flows <em>from usages to definitions</em>. For example, in the code snippet below, EA first analyzes the statement <code>return %1</code> and imposes <code>ReturnEscape</code> on <code>%1</code> (corresponding to <code>obj</code>), and then it analyzes <code>%1 = %new(Base.RefValue{String, _2}))</code> and propagates the <code>ReturnEscape</code> imposed on <code>%1</code> to the call argument <code>_2</code> (corresponding to <code>s</code>):</p><pre><code class="language-julia hljs">julia&gt; code_escapes((String,)) do s
+           obj = Ref(s)
+           return obj
+       end
+#1(↑ _2::String) in Main at REPL[2]:2
+2 ↑  1 ─ %1 = %new(Base.RefValue{String}, _2)::Base.RefValue{String}                │╻╷╷ Ref
+3 ◌  └──      return %1                                                             │</code></pre><p>The key observation here is that this backward analysis allows escape information to flow naturally along the use-def chain rather than control-flow<sup class="footnote-reference"><a id="citeref-BackandForth" href="#footnote-BackandForth">[BackandForth]</a></sup>. As a result this scheme enables a simple implementation of escape analysis, e.g. <code>PhiNode</code> for example can be handled simply by propagating escape information imposed on a <code>PhiNode</code> to its predecessor values:</p><pre><code class="language-julia hljs">julia&gt; code_escapes((Bool, String, String)) do cnd, s, t
+           if cnd
+               obj = Ref(s)
+           else
+               obj = Ref(t)
+           end
+           return obj
+       end
+  #3(↑ _2::Bool, ↑ _3::String, ↑ _4::String) in Main at REPL[3]:2
+2 ◌  1 ─      goto #3 if not _2                                                     │
+3 ↑  2 ─ %2 = %new(Base.RefValue{String}, _3)::Base.RefValue{String}                │╻╷╷ Ref
+  ◌  └──      goto #4                                                               │
+5 ↑  3 ─ %4 = %new(Base.RefValue{String}, _4)::Base.RefValue{String}                │╻╷╷ Ref
+7 ↑  4 ┄ %5 = φ (#2 =&gt; %2, #3 =&gt; %4)::Base.RefValue{String}                         │
+  ◌  └──      return %5                                                             │</code></pre><h3 id="EA-Alias-Analysis"><a class="docs-heading-anchor" href="#EA-Alias-Analysis">Alias Analysis</a><a id="EA-Alias-Analysis-1"></a><a class="docs-heading-anchor-permalink" href="#EA-Alias-Analysis" title="Permalink"></a></h3><p><code>EscapeAnalysis</code> implements a backward field analysis in order to reason about escapes imposed on object fields with certain accuracy, and <code>x::EscapeLattice</code>&#39;s <code>x.AliasEscapes</code> property exists for this purpose. It records all possible values that can be aliased to fields of <code>x</code> at &quot;usage&quot; sites, and then the escape information of that recorded values are propagated to the actual field values later at &quot;definition&quot; sites. More specifically, the analysis records a value that may be aliased to a field of object by analyzing <code>getfield</code> call, and then it propagates its escape information to the field when analyzing <code>%new(...)</code> expression or <code>setfield!</code> call<sup class="footnote-reference"><a id="citeref-Dynamism" href="#footnote-Dynamism">[Dynamism]</a></sup>.</p><pre><code class="language-julia hljs">julia&gt; mutable struct SafeRef{T}
+           x::T
+       end
+
+julia&gt; Base.getindex(x::SafeRef) = x.x;
+
+julia&gt; Base.setindex!(x::SafeRef, v) = x.x = v;
+
+julia&gt; code_escapes((String,)) do s
+           obj = SafeRef(&quot;init&quot;)
+           obj[] = s
+           v = obj[]
+           return v
+       end
+#5(↑ _2::String) in Main at REPL[7]:2
+2 ✓′ 1 ─ %1 = %new(SafeRef{String}, &quot;init&quot;)::SafeRef{String}                   │╻╷ SafeRef
+3 ◌  │        Base.setfield!(%1, :x, _2)::String                               │╻╷ setindex!
+4 ↑  │   %3 = Base.getfield(%1, :x)::String                                    │╻╷ getindex
+5 ◌  └──      return %3                                                        │</code></pre><p>In the example above, <code>ReturnEscape</code> imposed on <code>%3</code> (corresponding to <code>v</code>) is <em>not</em> directly propagated to <code>%1</code> (corresponding to <code>obj</code>) but rather that <code>ReturnEscape</code> is only propagated to <code>_2</code> (corresponding to <code>s</code>). Here <code>%3</code> is recorded in <code>%1</code>&#39;s <code>AliasEscapes</code> property as it can be aliased to the first field of <code>%1</code>, and then when analyzing <code>Base.setfield!(%1, :x, _2)::String</code>, that escape information is propagated to <code>_2</code> but not to <code>%1</code>.</p><p>So <code>EscapeAnalysis</code> tracks which IR elements can be aliased across a <code>getfield</code>-<code>%new</code>/<code>setfield!</code> chain in order to analyze escapes of object fields, but actually this alias analysis needs to be generalized to handle other IR elements as well. This is because in Julia IR the same object is sometimes represented by different IR elements and so we should make sure that those different IR elements that actually can represent the same object share the same escape information. IR elements that return the same object as their operand(s), such as <code>PiNode</code> and <code>typeassert</code>, can cause that IR-level aliasing and thus requires escape information imposed on any of such aliased values to be shared between them. More interestingly, it is also needed for correctly reasoning about mutations on <code>PhiNode</code>. Let&#39;s consider the following example:</p><pre><code class="language-julia hljs">julia&gt; code_escapes((Bool, String,)) do cond, x
+           if cond
+               ϕ2 = ϕ1 = SafeRef(&quot;foo&quot;)
+           else
+               ϕ2 = ϕ1 = SafeRef(&quot;bar&quot;)
+           end
+           ϕ2[] = x
+           y = ϕ1[]
+           return y
+       end
+#7(↑ _2::Bool, ↑ _3::String) in Main at REPL[8]:2
+2 ◌  1 ─      goto #3 if not _2                                                │
+3 ✓′ 2 ─ %2 = %new(SafeRef{String}, &quot;foo&quot;)::SafeRef{String}                    │╻╷ SafeRef
+  ◌  └──      goto #4                                                          │
+5 ✓′ 3 ─ %4 = %new(SafeRef{String}, &quot;bar&quot;)::SafeRef{String}                    │╻╷ SafeRef
+7 ✓′ 4 ┄ %5 = φ (#2 =&gt; %2, #3 =&gt; %4)::SafeRef{String}                          │
+  ✓′ │   %6 = φ (#2 =&gt; %2, #3 =&gt; %4)::SafeRef{String}                          │
+  ◌  │        Base.setfield!(%5, :x, _3)::String                               │╻  setindex!
+8 ↑  │   %8 = Base.getfield(%6, :x)::String                                    │╻╷ getindex
+9 ◌  └──      return %8                                                        │</code></pre><p><code>ϕ1 = %5</code> and <code>ϕ2 = %6</code> are aliased and thus <code>ReturnEscape</code> imposed on <code>%8 = Base.getfield(%6, :x)::String</code> (corresponding to <code>y = ϕ1[]</code>) needs to be propagated to <code>Base.setfield!(%5, :x, _3)::String</code> (corresponding to <code>ϕ2[] = x</code>). In order for such escape information to be propagated correctly, the analysis should recognize that the <em>predecessors</em> of <code>ϕ1</code> and <code>ϕ2</code> can be aliased as well and equalize their escape information.</p><p>One interesting property of such aliasing information is that it is not known at &quot;usage&quot; site but can only be derived at &quot;definition&quot; site (as aliasing is conceptually equivalent to assignment), and thus it doesn&#39;t naturally fit in a backward analysis. In order to efficiently propagate escape information between related values, EscapeAnalysis.jl uses an approach inspired by the escape analysis algorithm explained in an old JVM paper<sup class="footnote-reference"><a id="citeref-JVM05" href="#footnote-JVM05">[JVM05]</a></sup>. That is, in addition to managing escape lattice elements, the analysis also maintains an &quot;equi&quot;-alias set, a disjoint set of aliased arguments and SSA statements. The alias set manages values that can be aliased to each other and allows escape information imposed on any of such aliased values to be equalized between them.</p><p>Lastly, this scheme of alias/field analysis can also be generalized to analyze array operations. <code>EscapeAnalysis</code> currently reasons about escapes imposed on array elements using an imprecise version of the field analysis described above, where <code>AliasEscapes</code> doesn&#39;t try to track precise array index but rather simply records all possible values that can be aliased any elements of the array.</p><h3 id="EA-Exception-Handling"><a class="docs-heading-anchor" href="#EA-Exception-Handling">Exception Handling</a><a id="EA-Exception-Handling-1"></a><a class="docs-heading-anchor-permalink" href="#EA-Exception-Handling" title="Permalink"></a></h3><p>It would be also worth noting how <code>EscapeAnalysis</code> handles possible escapes via exceptions. Naively it seems enough to propagate escape information imposed on <code>:the_exception</code> object to all values that may be thrown in a corresponding <code>try</code> block. But there are actually several other ways to access to the exception object in Julia, such as <code>Base.current_exceptions</code> and manual catch of <code>rethrow</code>n object. For example, escape analysis needs to account for potential escape of <code>r</code> in the example below:</p><pre><code class="language-julia hljs">julia&gt; const Gx = Ref{Any}();
+
+julia&gt; @noinline function rethrow_escape!()
+           try
+               rethrow()
+           catch err
+               Gx[] = err
+           end
+       end;
+
+julia&gt; get′(x) = isassigned(x) ? x[] : throw(x);
+
+julia&gt; code_escapes() do
+           r = Ref{String}()
+           local t
+           try
+               t = get′(r)
+           catch err
+               t = typeof(err)   # `err` (which `r` aliases to) doesn&#39;t escape here
+               rethrow_escape!() # but `r` escapes here
+           end
+           return t
+       end
+#9() in Main at REPL[12]:2
+2  X  1 ── %1  = %new(Base.RefValue{String})::Base.RefValue{String}            │╻╷ Ref
+4  ◌  2 ── %2  = $(Expr(:enter, #8))                                           │
+5  ◌  3 ── %3  = Base.isdefined(%1, :x)::Bool                                  │╻╷ get′
+   ◌  └───       goto #5 if not %3                                             ││
+   ↑  4 ── %5  = Base.getfield(%1, :x)::String                                 ││╻  getindex
+   ◌  └───       goto #6                                                       ││
+   ◌  5 ──       Main.throw(%1)::Union{}                                       ││
+   ◌  └───       unreachable                                                   ││
+   ◌  6 ──       $(Expr(:leave, 1))                                            │
+   ◌  7 ──       goto #10                                                      │
+   ◌  8 ──       $(Expr(:leave, 1))                                            │
+   ◌  9 ── %12 = $(Expr(:the_exception))::Any                                  │
+7  ↑  │    %13 = Main.typeof(%12)::DataType                                    │
+8  ◌  │          invoke Main.rethrow_escape!()::Any                            │
+   ◌  └───       $(Expr(:pop_exception, :(%2)))::Any                           │
+10 ↑  10 ┄ %16 = φ (#7 =&gt; %5, #9 =&gt; %13)::Union{DataType, String}              │
+   ◌  └───       return %16                                                    │</code></pre><p>It requires a global analysis in order to correctly reason about all possible escapes via existing exception interfaces. For now we always propagate the topmost escape information to all potentially thrown objects conservatively, since such an additional analysis might not be worthwhile to do given that exception handling and error path usually don&#39;t need to be very performance sensitive, and also optimizations of error paths might be very ineffective anyway since they are often even &quot;unoptimized&quot; intentionally for latency reasons.</p><p><code>x::EscapeLattice</code>&#39;s <code>x.ThrownEscape</code> property records SSA statements where <code>x</code> can be thrown as an exception. Using this information <code>EscapeAnalysis</code> can propagate possible escapes via exceptions limitedly to only those may be thrown in each <code>try</code> region:</p><pre><code class="language-julia hljs">julia&gt; result = code_escapes((String,String)) do s1, s2
+           r1 = Ref(s1)
+           r2 = Ref(s2)
+           local ret
+           try
+               s1 = get′(r1)
+               ret = sizeof(s1)
+           catch err
+               global g = err # will definitely escape `r1`
+           end
+           s2 = get′(r2)      # still `r2` doesn&#39;t escape fully
+           return s2
+       end
+#11(X _2::String, ↑ _3::String) in Main at REPL[13]:2
+2  X  1 ── %1  = %new(Base.RefValue{String}, _2)::Base.RefValue{String}   │╻╷╷ Ref
+3  *′ └─── %2  = %new(Base.RefValue{String}, _3)::Base.RefValue{String}   │╻╷╷ Ref
+5  ◌  2 ── %3  = $(Expr(:enter, #8))                                      │
+   *′ └─── %4  = ϒ (%2)::Base.RefValue{String}                            │
+6  ◌  3 ── %5  = Base.isdefined(%1, :x)::Bool                             │╻╷  get′
+   ◌  └───       goto #5 if not %5                                        ││
+   X  4 ──       Base.getfield(%1, :x)::String                            ││╻   getindex
+   ◌  └───       goto #6                                                  ││
+   ◌  5 ──       Main.throw(%1)::Union{}                                  ││
+   ◌  └───       unreachable                                              ││
+7  ◌  6 ──       nothing::typeof(Core.sizeof)                             │╻   sizeof
+   ◌  │          nothing::Int64                                           ││
+   ◌  └───       $(Expr(:leave, 1))                                       │
+   ◌  7 ──       goto #10                                                 │
+   *′ 8 ── %15 = φᶜ (%4)::Base.RefValue{String}                           │
+   ◌  └───       $(Expr(:leave, 1))                                       │
+   X  9 ── %17 = $(Expr(:the_exception))::Any                             │
+9  ◌  │          (Main.g = %17)::Any                                      │
+   ◌  └───       $(Expr(:pop_exception, :(%3)))::Any                      │
+11 *′ 10 ┄ %20 = φ (#7 =&gt; %2, #9 =&gt; %15)::Base.RefValue{String}           │
+   ◌  │    %21 = Base.isdefined(%20, :x)::Bool                            ││╻   isassigned
+   ◌  └───       goto #12 if not %21                                      ││
+   ↑  11 ─ %23 = Base.getfield(%20, :x)::String                           │││╻   getproperty
+   ◌  └───       goto #13                                                 ││
+   ◌  12 ─       Main.throw(%20)::Union{}                                 ││
+   ◌  └───       unreachable                                              ││
+12 ◌  13 ─       return %23                                               │</code></pre><h2 id="Analysis-Usage"><a class="docs-heading-anchor" href="#Analysis-Usage">Analysis Usage</a><a id="Analysis-Usage-1"></a><a class="docs-heading-anchor-permalink" href="#Analysis-Usage" title="Permalink"></a></h2><p>When using <code>EscapeAnalysis</code> in Julia&#39;s high-level compilation pipeline, we can run <code>analyze_escapes(ir::IRCode) -&gt; estate::EscapeState</code> to analyze escape information of each SSA-IR element in <code>ir</code>.</p><p>Note that it should be most effective if <code>analyze_escapes</code> runs after inlining, as <code>EscapeAnalysis</code>&#39;s interprocedural escape information handling is limited at this moment.</p><p>Since the computational cost of <code>analyze_escapes</code> is not that cheap, it is more ideal if it runs once and succeeding optimization passes incrementally update     the escape information upon IR transformation.</p><article class="docstring"><header><a class="docstring-binding" id="EscapeAnalysis.analyze_escapes" href="#EscapeAnalysis.analyze_escapes"><code>EscapeAnalysis.analyze_escapes</code></a> — <span class="docstring-category">Function</span></header><section><div><pre><code class="language-julia hljs">analyze_escapes(ir::IRCode, nargs::Int) -&gt; estate::EscapeState</code></pre><p>Analyzes escape information in <code>ir</code>. <code>nargs</code> is the number of actual arguments of the analyzed call.</p></div><a class="docs-sourcelink" target="_blank" href="https://github.com/aviatesk/EscapeAnalysis.jl/blob/e3b7ba2d0d2a12b6185ab53c89beb1d6af438763/src/EscapeAnalysis.jl#L573-L578">source</a></section></article><article class="docstring"><header><a class="docstring-binding" id="EscapeAnalysis.EscapeState" href="#EscapeAnalysis.EscapeState"><code>EscapeAnalysis.EscapeState</code></a> — <span class="docstring-category">Type</span></header><section><div><pre><code class="language-julia hljs">estate::EscapeState</code></pre><p>Extended lattice that maps arguments and SSA values to escape information represented as <code>EscapeLattice</code>. Escape information imposed on SSA IR element <code>x</code> can be retrieved by <code>estate[x]</code>.</p></div><a class="docs-sourcelink" target="_blank" href="https://github.com/aviatesk/EscapeAnalysis.jl/blob/e3b7ba2d0d2a12b6185ab53c89beb1d6af438763/src/EscapeAnalysis.jl#L408-L413">source</a></section></article><article class="docstring"><header><a class="docstring-binding" id="EscapeAnalysis.cache_escapes!" href="#EscapeAnalysis.cache_escapes!"><code>EscapeAnalysis.cache_escapes!</code></a> — <span class="docstring-category">Function</span></header><section><div><pre><code class="language-julia hljs">cache_escapes!(linfo::MethodInstance, estate::EscapeState, _::IRCode)</code></pre><p>Transforms escape information of <code>estate</code> for interprocedural propagation, and caches it in a global cache that can then be looked up later when <code>linfo</code> callsite is seen again.</p></div><a class="docs-sourcelink" target="_blank" href="https://github.com/aviatesk/EscapeAnalysis.jl/blob/e3b7ba2d0d2a12b6185ab53c89beb1d6af438763/src/EscapeAnalysis.jl#L511-L517">source</a></section></article><section class="footnotes is-size-7"><ul><li class="footnote" id="footnote-LatticeDesign"><a class="tag is-link" href="#citeref-LatticeDesign">LatticeDesign</a>Our type inference implementation takes the alternative approach, where each lattice property is represented by a special lattice element type object. It turns out that it started to complicate implementations of the lattice operations mainly because it often requires conversion rules between each lattice element type object. And we are working on <a href="https://github.com/JuliaLang/julia/pull/42596">overhauling our type inference lattice implementation</a> with <code>EscapeLattice</code>-like lattice design.</li><li class="footnote" id="footnote-MM02"><a class="tag is-link" href="#citeref-MM02">MM02</a><em>A Graph-Free approach to Data-Flow Analysis</em>.      Markas Mohnen, 2002, April.      <a href="https://api.semanticscholar.org/CorpusID:28519618">https://api.semanticscholar.org/CorpusID:28519618</a>.</li><li class="footnote" id="footnote-BackandForth"><a class="tag is-link" href="#citeref-BackandForth">BackandForth</a>Our type inference algorithm in contrast is implemented as a forward analysis, because type information usually flows from &quot;definition&quot; to &quot;usage&quot; and it is more natural and effective to propagate such information in a forward way.</li><li class="footnote" id="footnote-Dynamism"><a class="tag is-link" href="#citeref-Dynamism">Dynamism</a>In some cases, however, object fields can&#39;t be analyzed precisely. For example, object may escape to somewhere <code>EscapeAnalysis</code> can&#39;t account for possible memory effects on it, or fields of the objects simply can&#39;t be known because of the lack of type information. In such cases <code>AliasEscapes</code> property is raised to the topmost element within its own lattice order, and it causes succeeding field analysis to be conservative and escape information imposed on fields of an unanalyzable object to be propagated to the object itself.</li><li class="footnote" id="footnote-JVM05"><a class="tag is-link" href="#citeref-JVM05">JVM05</a><em>Escape Analysis in the Context of Dynamic Compilation and Deoptimization</em>.       Thomas Kotzmann and Hanspeter Mössenböck, 2005, June.       <a href="https://dl.acm.org/doi/10.1145/1064979.1064996">https://dl.acm.org/doi/10.1145/1064979.1064996</a>.</li></ul></section></article><nav class="docs-footer"><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 0.27.12 on <span class="colophon-date" title="Wednesday 19 January 2022 17:43">Wednesday 19 January 2022</span>. Using Julia version 1.8.0-DEV.1342.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
