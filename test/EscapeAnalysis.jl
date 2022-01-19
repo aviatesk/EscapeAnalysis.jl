@@ -227,7 +227,8 @@ end
             nothing
         end
         i = only(findall(isnew, result.ir.stmts.inst))
-        @test has_no_escape(result.state[SSAValue(i)])
+        r = only(findall(isreturn, result.ir.stmts.inst))
+        @test !has_return_escape(result.state[SSAValue(i)], r)
 
         result = @eval M $code_escapes() do
             a = Ref("foo") # still should be "return escape"

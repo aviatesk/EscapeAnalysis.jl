@@ -646,14 +646,6 @@ function propagate_changes!(estate::EscapeState, changes::Changes)
     for change in changes
         if isa(change, EscapeChange)
             anychanged |= propagate_escape_change!(estate, change)
-            xidx, info = change
-            aliases = getaliases(xidx, estate)
-            if aliases !== nothing
-                for aidx in aliases
-                    morechange = EscapeChange(aidx, info)
-                    anychanged |= propagate_escape_change!(estate, morechange)
-                end
-            end
         else
             anychanged |= propagate_alias_change!(estate, change)
         end
@@ -661,10 +653,27 @@ function propagate_changes!(estate::EscapeState, changes::Changes)
     return anychanged
 end
 
-function propagate_escape_change!(estate::EscapeState, change::EscapeChange)
+propagate_escape_change!(estate::EscapeState, change::EscapeChange) =
+    propagate_escape_change!(⊔, estate, change)
+
+# allows this to work as lattice join as well as lattice meet
+function propagate_escape_change!(@nospecialize(op),
+    estate::EscapeState, change::EscapeChange)
     xidx, info = change
+    anychanged = _propagate_escape_change!(op, estate, xidx, info)
+    aliases = getaliases(xidx, estate)
+    if aliases !== nothing
+        for aidx in aliases
+            anychanged |= _propagate_escape_change!(op, estate, aidx, info)
+        end
+    end
+    return anychanged
+end
+
+function _propagate_escape_change!(@nospecialize(op),
+    estate::EscapeState, xidx::Int, info::EscapeLattice)
     old = estate.escapes[xidx]
-    new = old ⊔ info
+    new = op(old, info)
     if old ≠ new
         estate.escapes[xidx] = new
         return true
