@@ -296,7 +296,7 @@ function get_name_color(x::EscapeLattice, symbol::Bool = false)
         name, color = (getname(EA.NoEscape), "✓"), :green
     elseif EA.has_all_escape(x)
         name, color = (getname(EA.AllEscape), "X"), :red
-    elseif EA.NoEscape() ⊏ (EA.ignore_thrownescapes ∘ EA.ignore_aliasescapes)(x) ⊑ EA.AllReturnEscape()
+    elseif EA.NoEscape() ⊏ (EA.ignore_thrownescapes ∘ EA.ignore_aliasinfo)(x) ⊑ EA.AllReturnEscape()
         name = (getname(EA.ReturnEscape), "↑")
         color = EA.has_thrown_escape(x) ? :yellow : :cyan
     else

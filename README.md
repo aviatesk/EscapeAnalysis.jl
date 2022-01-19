@@ -22,7 +22,7 @@ that works on a lattice called `x::EscapeLattice`, which is composed of the foll
 - `x.ReturnEscape::BitSet`: records SSA statements where `x` can escape to the caller via return
 - `x.ThrownEscape::BitSet`: records SSA statements where `x` can be thrown as exception
   (used for the [exception handling](@ref EA-Exception-Handling) described below)
-- `x.AliasEscapes`: maintains all possible values that can be aliased to fields or array elements of `x`
+- `x.AliasInfo`: maintains all possible values that can be aliased to fields or array elements of `x`
   (used for the [alias analysis](@ref EA-Alias-Analysis) described below)
 - `x.ArgEscape::Int` (not implemented yet): indicates it will escape to the caller through
   `setfield!` on argument(s)
@@ -86,7 +86,7 @@ julia> code_escapes((Bool, String, String)) do cnd, s, t
 
 `EscapeAnalysis` implements a backward field analysis in order to reason about escapes
 imposed on object fields with certain accuracy,
-and `x::EscapeLattice`'s `x.AliasEscapes` property exists for this purpose.
+and `x::EscapeLattice`'s `x.AliasInfo` property exists for this purpose.
 It records all possible values that can be aliased to fields of `x` at "usage" sites,
 and then the escape information of that recorded values are propagated to the actual field values later at "definition" sites.
 More specifically, the analysis records a value that may be aliased to a field of object by analyzing `getfield` call,
@@ -114,7 +114,7 @@ julia> code_escapes((String,)) do s
 ```
 In the example above, `ReturnEscape` imposed on `%3` (corresponding to `v`) is _not_ directly
 propagated to `%1` (corresponding to `obj`) but rather that `ReturnEscape` is only propagated
-to `_2` (corresponding to `s`). Here `%3` is recorded in `%1`'s `AliasEscapes` property as
+to `_2` (corresponding to `s`). Here `%3` is recorded in `%1`'s `AliasInfo` property as
 it can be aliased to the first field of `%1`, and then when analyzing `Base.setfield!(%1, :x, _2)::String`,
 that escape information is propagated to `_2` but not to `%1`.
 
@@ -167,7 +167,7 @@ between them.
 
 Lastly, this scheme of alias/field analysis can also be generalized to analyze array operations.
 `EscapeAnalysis` currently reasons about escapes imposed on array elements using
-an imprecise version of the field analysis described above, where `AliasEscapes` doesn't
+an imprecise version of the field analysis described above, where `AliasInfo` doesn't
 try to track precise array index but rather simply records all possible values that can be
 aliased any elements of the array.
 
@@ -313,7 +313,7 @@ Core.Compiler.EscapeAnalysis.cache_escapes!
 [^Dynamism]: In some cases, however, object fields can't be analyzed precisely.
     For example, object may escape to somewhere `EscapeAnalysis` can't account for possible memory effects on it,
     or fields of the objects simply can't be known because of the lack of type information.
-    In such cases `AliasEscapes` property is raised to the topmost element within its own lattice order,
+    In such cases `AliasInfo` property is raised to the topmost element within its own lattice order,
     and it causes succeeding field analysis to be conservative and escape information imposed on
     fields of an unanalyzable object to be propagated to the object itself.
 
