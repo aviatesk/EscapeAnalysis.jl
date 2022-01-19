@@ -963,9 +963,13 @@ function escape_foreigncall!(astate::AnalysisState, pc::Int, args::Vector{Any})
     nargs = length(args)
     if nargs < 6
         # invalid foreigncall, just escape everything
-        return add_thrown_escapes!(astate, pc, args)
+        for i = 1:length(args)
+            add_escape_change!(astate, args[i], ⊤)
+        end
+        return
     end
-    foreigncall_nargs = length((args[3])::SimpleVector)
+    argtypes = args[3]::SimpleVector
+    nargs = length(argtypes)
     name = args[1]
     nn = normalize(name)
     if isa(nn, Symbol)
@@ -987,20 +991,34 @@ function escape_foreigncall!(astate::AnalysisState, pc::Int, args::Vector{Any})
         # end
     end
     # NOTE array allocations might have been proven as nothrow (https://github.com/JuliaLang/julia/pull/43565)
-    info = astate.ir.stmts[pc][:flag] & IR_FLAG_EFFECT_FREE ≠ 0 ?
-           EscapeLattice(NoEscape(), #=AliasEscapes=#true) :
-           EscapeLattice(ThrownEscape(pc), #=AliasEscapes=#true)
-    add_escape_change!(astate, name, info)
-    for i in 6:5+foreigncall_nargs
-        add_escape_change!(astate, args[i], info)
+    nothrow = astate.ir.stmts[pc][:flag] & IR_FLAG_EFFECT_FREE ≠ 0
+    if nothrow
+        name_info = NoEscape()
+    else
+        name_info = ThrownEscape(pc)
+    end
+    add_escape_change!(astate, name, name_info)
+    for i = 1:nargs
+        # we should escape this argument if it is directly called,
+        # otherwise just impose ThrownEscape if not nothrow
+        if argtypes[i] === Any
+            arg_info = ⊤
+        else
+            if nothrow
+                arg_info = NoEscape()
+            else
+                arg_info = ThrownEscape(pc)
+            end
+        end
+        add_escape_change!(astate, args[5+i], arg_info)
+    end
+    preserve_info = NoEscape() # TODO encode liveness
+    for i = (5+nargs):length(args)
+        add_escape_change!(astate, args[i], preserve_info)
     end
 end
 
 normalize(@nospecialize x) = isa(x, QuoteNode) ? x.value : x
-
-# NOTE error cases will be handled in `analyze_escapes` anyway, so we don't need to take care of them below
-# TODO implement more builtins, make them more accurate
-# TODO use `T_IFUNC`-like logic and don't not abuse dispatch ?
 
 function escape_call!(astate::AnalysisState, pc::Int, args::Vector{Any})
     ir = astate.ir
@@ -1015,7 +1033,7 @@ function escape_call!(astate::AnalysisState, pc::Int, args::Vector{Any})
             push!(argtypes, isexpr(arg, :call) ? Any : argextype(arg, ir))
         end
         intrinsic_nothrow(f, argtypes) || add_thrown_escapes!(astate, pc, args, 2)
-        return # TODO accounts for pointer operations
+        return # TODO accounts for pointer operations?
     end
     result = escape_builtin!(f, astate, pc, args)
     if result === missing
