@@ -194,6 +194,7 @@ can_elide_finalizer(x::EscapeLattice, pc::Int) =
 x::EscapeLattice == y::EscapeLattice = begin
     # fast pass: better to avoid top comparison
     x === y && return true
+    x.Analyzed === y.Analyzed || return false
     xr, yr = x.ReturnEscape, y.ReturnEscape
     if xr === TOP_RETURN_ESCAPE
         yr === TOP_RETURN_ESCAPE || return false
@@ -221,7 +222,7 @@ x::EscapeLattice == y::EscapeLattice = begin
         isa(yf, ArrayEscapes) || return false
         xf == yf || return false
     end
-    return x.Analyzed === y.Analyzed
+    return true
 end
 
 """
@@ -240,6 +241,7 @@ x::EscapeLattice ⊑ y::EscapeLattice = begin
     elseif y === ⊥
         return false # return x === ⊥
     end
+    x.Analyzed ≤ y.Analyzed || return false
     xr, yr = x.ReturnEscape, y.ReturnEscape
     if xr === TOP_RETURN_ESCAPE
         yr !== TOP_RETURN_ESCAPE && return false
@@ -273,7 +275,7 @@ x::EscapeLattice ⊑ y::EscapeLattice = begin
             yf === true || return false
         end
     end
-    return x.Analyzed ≤ y.Analyzed
+    return true
 end
 
 """
