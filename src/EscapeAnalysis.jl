@@ -122,12 +122,9 @@ struct EscapeLattice
 end
 
 # precomputed default values in order to eliminate computations at each callsite
-const BOT_RETURN_ESCAPE = BitSet()
+const BOT_RETURN_ESCAPE = const BOT_THROWN_ESCAPE = BitSet()
+const TOP_RETURN_ESCAPE = const TOP_THROWN_ESCAPE = BitSet(0:100_000)
 const ARG_RETURN_ESCAPE = BitSet(0)
-const TOP_RETURN_ESCAPE = BitSet(0:100_000)
-
-const BOT_THROWN_ESCAPE = BitSet()
-const TOP_THROWN_ESCAPE = BitSet(0:100_000)
 
 const BOT_ALIAS_ESCAPES = false
 const TOP_ALIAS_ESCAPES = true
