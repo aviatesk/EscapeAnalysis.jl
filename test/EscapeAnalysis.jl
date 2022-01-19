@@ -1098,7 +1098,7 @@ end
         i = only(findall(isnew, result.ir.stmts.inst))
         r = only(findall(isreturn, result.ir.stmts.inst))
         @test has_return_escape(result.state[Argument(2)], r) # a
-        @test is_load_forwardable(result.state[SSAValue(i)]) # obj
+        @test !is_load_forwardable(result.state[SSAValue(i)]) # obj
     end
     let result = code_escapes((String, String, Symbol)) do a, b, fld
             obj = SafeRefs(a, b)
@@ -1108,7 +1108,7 @@ end
         r = only(findall(isreturn, result.ir.stmts.inst))
         @test has_return_escape(result.state[Argument(2)], r) # a
         @test has_return_escape(result.state[Argument(3)], r) # b
-        @test is_load_forwardable(result.state[SSAValue(i)]) # obj
+        @test !is_load_forwardable(result.state[SSAValue(i)]) # obj
     end
     let result = code_escapes((String, String, Int)) do a, b, idx
             obj = SafeRefs(a, b)
@@ -1118,7 +1118,7 @@ end
         r = only(findall(isreturn, result.ir.stmts.inst))
         @test has_return_escape(result.state[Argument(2)], r) # a
         @test has_return_escape(result.state[Argument(3)], r) # b
-        @test is_load_forwardable(result.state[SSAValue(i)]) # obj
+        @test !is_load_forwardable(result.state[SSAValue(i)]) # obj
     end
     let result = code_escapes((String, String, Symbol)) do a, b, fld
             obj = SafeRefs("a", "b")
@@ -1129,7 +1129,7 @@ end
         r = only(findall(isreturn, result.ir.stmts.inst))
         @test has_return_escape(result.state[Argument(2)], r) # a
         @test !has_return_escape(result.state[Argument(3)], r) # b
-        @test is_load_forwardable(result.state[SSAValue(i)]) # obj
+        @test !is_load_forwardable(result.state[SSAValue(i)]) # obj
     end
     let result = code_escapes((String, Symbol)) do a, fld
             obj = SafeRefs("a", "b")
@@ -1139,7 +1139,7 @@ end
         i = only(findall(isnew, result.ir.stmts.inst))
         r = only(findall(isreturn, result.ir.stmts.inst))
         @test has_return_escape(result.state[Argument(2)], r) # a
-        @test is_load_forwardable(result.state[SSAValue(i)]) # obj
+        @test !is_load_forwardable(result.state[SSAValue(i)]) # obj
     end
     let result = code_escapes((String, String, Int)) do a, b, idx
             obj = SafeRefs("a", "b")
@@ -1150,7 +1150,7 @@ end
         r = only(findall(isreturn, result.ir.stmts.inst))
         @test has_return_escape(result.state[Argument(2)], r) # a
         @test !has_return_escape(result.state[Argument(3)], r) # b
-        @test is_load_forwardable(result.state[SSAValue(i)]) # obj
+        @test !is_load_forwardable(result.state[SSAValue(i)]) # obj
     end
 
     # interprocedural
@@ -1277,7 +1277,7 @@ end
             return mt, has_ambig[]
         end
         for i in findall(isnew, result.ir.stmts.inst)
-            @test !is_sroa_eligible(result.state[SSAValue(i)])
+            @test !is_load_forwardable(result.state[SSAValue(i)])
         end
     end
 end
