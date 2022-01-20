@@ -19,11 +19,12 @@ InteractiveUtils.@code_escapes
 `EscapeAnalysis` is implemented as a [data-flow analysis](https://en.wikipedia.org/wiki/Data-flow_analysis)
 that works on a lattice called `x::EscapeLattice`, which is composed of the following properties:
 - `x.Analyzed::Bool`: not formally part of the lattice, only indicates `x` has not been analyzed or not
-- `x.ReturnEscape::BitSet`: records SSA statements where `x` can escape to the caller via return
+- `x.ReturnEscape::Bool`: indicates `x` can escape to the caller via return
 - `x.ThrownEscape::BitSet`: records SSA statements where `x` can be thrown as exception
   (used for the [exception handling](@ref EA-Exception-Handling) described below)
 - `x.AliasInfo`: maintains all possible values that can be aliased to fields or array elements of `x`
   (used for the [alias analysis](@ref EA-Alias-Analysis) described below)
+- `x.Liveness::BitSet`: records SSA statement numbers where `x` should be live
 - `x.ArgEscape::Int` (not implemented yet): indicates it will escape to the caller through
   `setfield!` on argument(s)
 
@@ -40,7 +41,7 @@ bottom to the top until every lattice element gets converged to a fixed point by
 a (conceptual) working set that contains program counters corresponding to remaining SSA
 statements to be analyzed. The analysis manages a single global state that tracks
 `EscapeLattice` of each argument and SSA statement, but also note that some flow-sensitivity
-is encoded as program counters recorded in `EscapeLattice`'s `ReturnEscape` property,
+is encoded as program counters recorded in `EscapeLattice`'s `Liveness` property,
 which can be combined with domination analysis later to reason about flow-sensitivity if necessary.
 
 One distinctive design of this escape analysis is that it is fully _backward_,

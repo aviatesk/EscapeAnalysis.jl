@@ -3,6 +3,8 @@ baremodule EscapeAnalysis
 export
     analyze_escapes,
     cache_escapes!,
+    getaliases,
+    isaliased,
     has_no_escape,
     has_arg_escape,
     has_return_escape,
@@ -52,15 +54,17 @@ function merge_to_unindexable(info::AInfo, infos::Vector{AInfo})
 end
 merge_to_unindexable(infos::Vector{AInfo}) = merge_to_unindexable(AInfo(), infos)
 
+const LivenessSet = BitSet
+
 """
     x::EscapeLattice
 
 A lattice for escape information, which holds the following properties:
 - `x.Analyzed::Bool`: not formally part of the lattice, only indicates `x` has not been analyzed or not
-- `x.ReturnEscape::BitSet`: records SSA statements where `x` can escape to the caller via return
+- `x.ReturnEscape::Bool`: indicates `x` can escape to the caller via return
   where `0 ∈ x.ReturnEscape` has the special meaning that it's visible to the caller
   simply because it's passed as call argument
-- `x.ThrownEscape::BitSet`: records SSA statements where `x` can be thrown as exception:
+- `x.ThrownEscape::BitSet`: records SSA statements numbers where `x` can be thrown as exception:
   this information will be used by `escape_exception!` to propagate potential escapes via exception
 - `x.AliasInfo::Union{Indexable,Unindexable,Bool}`: maintains all possible values
   that can be aliased to fields or array elements of `x`:
@@ -70,6 +74,9 @@ A lattice for escape information, which holds the following properties:
     can't be known precisely
   * `x.AliasInfo::Indexable` records all the possible values that can be aliased to fields/elements of `x` with precise index information
   * `x.AliasInfo::Unindexable` records all the possible values that can be aliased to fields/elements of `x` without precise index information
+- `x.Liveness::BitSet`: records SSA statement numbers where `x` should be live, e.g.
+  to be used as call argument, to be returned to the caller, or preserved for `:foreigncall`.
+  `0 ∈ x.Liveness` has the special meaning that it's used as a call argument of the analyzed.
 - `x.ArgEscape::Int` (not implemented yet): indicates it will escape to the caller through
   `setfield!` on argument(s)
   * `-1` : no escape
@@ -90,16 +97,18 @@ An abstract state will be initialized with the bottom(-like) elements:
 """
 struct EscapeLattice
     Analyzed::Bool
-    ReturnEscape::BitSet
-    ThrownEscape::BitSet
+    ReturnEscape::Bool
+    ThrownEscape::LivenessSet
     AliasInfo #::Union{Indexable,Unindexable,Bool}
+    Liveness::LivenessSet
     # TODO: ArgEscape::Int
 
     function EscapeLattice(
         Analyzed::Bool,
-        ReturnEscape::BitSet,
-        ThrownEscape::BitSet,
+        ReturnEscape::Bool,
+        ThrownEscape::LivenessSet,
         AliasInfo#=::Union{Indexable,Unindexable,Bool}=#,
+        Liveness::LivenessSet,
         )
         @nospecialize AliasInfo
         return new(
@@ -107,6 +116,7 @@ struct EscapeLattice
             ReturnEscape,
             ThrownEscape,
             AliasInfo,
+            Liveness,
             )
     end
     function EscapeLattice(
@@ -115,8 +125,9 @@ struct EscapeLattice
         # in order to avoid allocating non-concrete `NamedTuple`s
         AliasInfo#=::Union{Indexable,Unindexable,Bool}=# = x.AliasInfo;
         Analyzed::Bool = x.Analyzed,
-        ReturnEscape::BitSet = x.ReturnEscape,
-        ThrownEscape::BitSet = x.ThrownEscape,
+        ReturnEscape::Bool = x.ReturnEscape,
+        ThrownEscape::LivenessSet = x.ThrownEscape,
+        Liveness::LivenessSet = x.Liveness,
         )
         @nospecialize AliasInfo
         return new(
@@ -124,35 +135,38 @@ struct EscapeLattice
             ReturnEscape,
             ThrownEscape,
             AliasInfo,
+            Liveness,
             )
     end
 end
 
 # precomputed default values in order to eliminate computations at each callsite
-const BOT_RETURN_ESCAPE = const BOT_THROWN_ESCAPE = BitSet()
-const TOP_RETURN_ESCAPE = const TOP_THROWN_ESCAPE = BitSet(0:100_000)
-const ARG_RETURN_ESCAPE = BitSet(0)
+const BOT_THROWN_ESCAPE = LivenessSet()
+const TOP_THROWN_ESCAPE = LivenessSet(1:100_000)
 
 const BOT_ALIAS_INFO = false
 const TOP_ALIAS_INFO = true
 
+const BOT_LIVENESS = LivenessSet()
+const TOP_LIVENESS = LivenessSet(0:100_000)
+const ARG_LIVENESS = LivenessSet(0)
+
 # the constructors
-NotAnalyzed() = EscapeLattice(false, BOT_RETURN_ESCAPE, BOT_THROWN_ESCAPE, BOT_ALIAS_INFO) # not formally part of the lattice
-NoEscape() = EscapeLattice(true, BOT_RETURN_ESCAPE, BOT_THROWN_ESCAPE, BOT_ALIAS_INFO)
-ArgEscape() = EscapeLattice(true, ARG_RETURN_ESCAPE, BOT_THROWN_ESCAPE, TOP_ALIAS_INFO) # TODO allow interprocedural alias analysis?
-ReturnEscape(pc::Int) = EscapeLattice(true, BitSet(pc), BOT_THROWN_ESCAPE, BOT_ALIAS_INFO)
-AllReturnEscape() = EscapeLattice(true, TOP_RETURN_ESCAPE, BOT_THROWN_ESCAPE, BOT_ALIAS_INFO)
-ThrownEscape(pc::Int) = EscapeLattice(true, BOT_RETURN_ESCAPE, BitSet(pc), BOT_ALIAS_INFO)
-ThrownEscape(pcs::BitSet) = EscapeLattice(true, BOT_RETURN_ESCAPE, pcs, BOT_ALIAS_INFO)
-AllEscape() = EscapeLattice(true, TOP_RETURN_ESCAPE, TOP_THROWN_ESCAPE, TOP_ALIAS_INFO)
+NotAnalyzed() = EscapeLattice(false, false, BOT_THROWN_ESCAPE, BOT_ALIAS_INFO, BOT_LIVENESS) # not formally part of the lattice
+NoEscape() = EscapeLattice(true, false, BOT_THROWN_ESCAPE, BOT_ALIAS_INFO, BOT_LIVENESS)
+ArgEscape() = EscapeLattice(true, false, BOT_THROWN_ESCAPE, TOP_ALIAS_INFO, ARG_LIVENESS) # TODO allow interprocedural alias analysis?
+ReturnEscape(pc::Int) = EscapeLattice(true, true, BOT_THROWN_ESCAPE, BOT_ALIAS_INFO, LivenessSet(pc))
+AllReturnEscape() = EscapeLattice(true, true, BOT_THROWN_ESCAPE, BOT_ALIAS_INFO, TOP_LIVENESS)
+ThrownEscape(pc::Int) = EscapeLattice(true, false, LivenessSet(pc), BOT_ALIAS_INFO, BOT_LIVENESS)
+AllEscape() = EscapeLattice(true, true, TOP_THROWN_ESCAPE, TOP_ALIAS_INFO, TOP_LIVENESS)
 
 const ⊥, ⊤ = NotAnalyzed(), AllEscape()
 
 # Convenience names for some ⊑ queries
-has_no_escape(x::EscapeLattice) = ignore_aliasinfo(x) ⊑ NoEscape()
-has_arg_escape(x::EscapeLattice) = 0 in x.ReturnEscape
-has_return_escape(x::EscapeLattice) = !isempty(x.ReturnEscape)
-has_return_escape(x::EscapeLattice, pc::Int) = pc in x.ReturnEscape
+has_no_escape(x::EscapeLattice) = !x.ReturnEscape && isempty(x.ThrownEscape)
+has_arg_escape(x::EscapeLattice) = 0 in x.Liveness
+has_return_escape(x::EscapeLattice) = x.ReturnEscape
+has_return_escape(x::EscapeLattice, pc::Int) = x.ReturnEscape && pc in x.Liveness
 has_thrown_escape(x::EscapeLattice) = !isempty(x.ThrownEscape)
 has_thrown_escape(x::EscapeLattice, pc::Int) = pc in x.ThrownEscape
 has_all_escape(x::EscapeLattice) = ⊤ ⊑ x
@@ -160,6 +174,7 @@ has_all_escape(x::EscapeLattice) = ⊤ ⊑ x
 # utility lattice constructors
 ignore_thrownescapes(x::EscapeLattice) = EscapeLattice(x; ThrownEscape=BOT_THROWN_ESCAPE)
 ignore_aliasinfo(x::EscapeLattice) = EscapeLattice(x, BOT_ALIAS_INFO)
+ignore_liveness(x::EscapeLattice) = EscapeLattice(x; Liveness=BOT_LIVENESS)
 
 # we need to make sure this `==` operator corresponds to lattice equality rather than object equality,
 # otherwise `propagate_changes` can't detect the convergence
@@ -167,14 +182,7 @@ x::EscapeLattice == y::EscapeLattice = begin
     # fast pass: better to avoid top comparison
     x === y && return true
     x.Analyzed === y.Analyzed || return false
-    xr, yr = x.ReturnEscape, y.ReturnEscape
-    if xr === TOP_RETURN_ESCAPE
-        yr === TOP_RETURN_ESCAPE || return false
-    elseif yr === TOP_RETURN_ESCAPE
-        return false # x.ReturnEscape === TOP_RETURN_ESCAPE
-    else
-        xr == yr || return false
-    end
+    x.ReturnEscape === y.ReturnEscape || return false
     xt, yt = x.ThrownEscape, y.ThrownEscape
     if xt === TOP_THROWN_ESCAPE
         yt === TOP_THROWN_ESCAPE || return false
@@ -196,6 +204,14 @@ x::EscapeLattice == y::EscapeLattice = begin
         xa.array === ya.array || return false
         xa.info == ya.info || return false
     end
+    xl, yl = x.Liveness, y.Liveness
+    if xl === TOP_LIVENESS
+        yl === TOP_LIVENESS || return false
+    elseif yl === TOP_LIVENESS
+        return false # x.Liveness === TOP_LIVENESS
+    else
+        xl == yl || return false
+    end
     return true
 end
 
@@ -216,12 +232,7 @@ x::EscapeLattice ⊑ y::EscapeLattice = begin
         return false # return x === ⊥
     end
     x.Analyzed ≤ y.Analyzed || return false
-    xr, yr = x.ReturnEscape, y.ReturnEscape
-    if xr === TOP_RETURN_ESCAPE
-        yr !== TOP_RETURN_ESCAPE && return false
-    elseif yr !== TOP_RETURN_ESCAPE
-        xr ⊆ yr || return false
-    end
+    x.ReturnEscape ≤ y.ReturnEscape || return false
     xt, yt = x.ThrownEscape, y.ThrownEscape
     if xt === TOP_THROWN_ESCAPE
         yt !== TOP_THROWN_ESCAPE && return false
@@ -259,6 +270,12 @@ x::EscapeLattice ⊑ y::EscapeLattice = begin
             ya === true || return false
         end
     end
+    xl, yl = x.Liveness, y.Liveness
+    if xl === TOP_LIVENESS
+        yl !== TOP_LIVENESS && return false
+    elseif yl !== TOP_LIVENESS
+        xl ⊆ yl || return false
+    end
     return true
 end
 
@@ -291,16 +308,6 @@ x::EscapeLattice ⊔ y::EscapeLattice = begin
         return y
     elseif y === ⊥
         return x
-    end
-    xr, yr = x.ReturnEscape, y.ReturnEscape
-    if xr === TOP_RETURN_ESCAPE || yr === TOP_RETURN_ESCAPE
-        ReturnEscape = TOP_RETURN_ESCAPE
-    elseif xr === BOT_RETURN_ESCAPE
-        ReturnEscape = yr
-    elseif yr === BOT_RETURN_ESCAPE
-        ReturnEscape = xr
-    else
-        ReturnEscape = xr ∪ yr
     end
     xt, yt = x.ThrownEscape, y.ThrownEscape
     if xt === TOP_THROWN_ESCAPE || yt === TOP_THROWN_ESCAPE
@@ -354,11 +361,22 @@ x::EscapeLattice ⊔ y::EscapeLattice = begin
             AliasInfo = true # handle conflicting case conservatively
         end
     end
+    xl, yl = x.Liveness, y.Liveness
+    if xl === TOP_LIVENESS || yl === TOP_LIVENESS
+        Liveness = TOP_LIVENESS
+    elseif xl === BOT_LIVENESS
+        Liveness = yl
+    elseif yl === BOT_LIVENESS
+        Liveness = xl
+    else
+        Liveness = xl ∪ yl
+    end
     return EscapeLattice(
         x.Analyzed | y.Analyzed,
-        ReturnEscape,
+        x.ReturnEscape | y.ReturnEscape,
         ThrownEscape,
         AliasInfo,
+        Liveness,
         )
 end
 
@@ -434,6 +452,12 @@ function irval(xidx::Int, estate::EscapeState)
     return x
 end
 
+function getaliases(x::Union{Argument,SSAValue}, estate::EscapeState)
+    xidx = iridx(x, estate)
+    aliases = getaliases(xidx, estate)
+    aliases === nothing && return nothing
+    return Union{Argument,SSAValue}[irval(aidx, estate) for aidx in aliases]
+end
 function getaliases(xidx::Int, estate::EscapeState)
     aliasset = estate.aliasset
     root = find_root!(aliasset, xidx)
@@ -452,6 +476,11 @@ function getaliases(xidx::Int, estate::EscapeState)
     end
 end
 
+isaliased(x::Union{Argument,SSAValue}, y::Union{Argument,SSAValue}, estate::EscapeState) =
+    isaliased(iridx(x, estate), iridx(y, estate), estate)
+isaliased(xidx::Int, yidx::Int, estate::EscapeState) =
+    in_same_set(estate.aliasset, xidx, yidx)
+
 """
     EscapeLatticeCache(x::EscapeLattice) -> x′::EscapeLatticeCache
 
@@ -464,9 +493,8 @@ struct EscapeLatticeCache
     ThrownEscape::Bool
     function EscapeLatticeCache(x::EscapeLattice)
         x === ⊤ && return new(true, true, true)
-        ReturnEscape = x.ReturnEscape === ARG_RETURN_ESCAPE ? false : true
-        ThrownEscape = isempty(x.ThrownEscape)              ? false : true
-        return new(false, ReturnEscape, ThrownEscape)
+        ThrownEscape = isempty(x.ThrownEscape) ? false : true
+        return new(false, x.ReturnEscape, ThrownEscape)
     end
 end
 
@@ -513,9 +541,20 @@ end
 
 __clear_escape_cache!() = empty!(GLOBAL_ESCAPE_CACHE)
 
-const EscapeChange = Pair{Int,EscapeLattice}
-const AliasChange  = Pair{Int,Int}
-const Changes      = Vector{Union{EscapeChange,AliasChange}}
+abstract type Change end
+struct EscapeChange <: Change
+    xidx::Int
+    xinfo::EscapeLattice
+end
+struct AliasChange <: Change
+    xidx::Int
+    yidx::Int
+end
+struct LivenessChange <: Change
+    xidx::Int
+    livepc::Int
+end
+const Changes = Vector{Change}
 
 struct AnalysisState
     ir::IRCode
@@ -644,7 +683,10 @@ function propagate_changes!(estate::EscapeState, changes::Changes)
     for change in changes
         if isa(change, EscapeChange)
             anychanged |= propagate_escape_change!(estate, change)
+        elseif isa(change, LivenessChange)
+            anychanged |= propagate_liveness_change!(estate, change)
         else
+            change = change::AliasChange
             anychanged |= propagate_alias_change!(estate, change)
         end
     end
@@ -657,12 +699,12 @@ end
 # allows this to work as lattice join as well as lattice meet
 @inline function propagate_escape_change!(@nospecialize(op),
     estate::EscapeState, change::EscapeChange)
-    xidx, info = change
-    anychanged = _propagate_escape_change!(op, estate, xidx, info)
+    (; xidx, xinfo) = change
+    anychanged = _propagate_escape_change!(op, estate, xidx, xinfo)
     aliases = getaliases(xidx, estate)
     if aliases !== nothing
         for aidx in aliases
-            anychanged |= _propagate_escape_change!(op, estate, aidx, info)
+            anychanged |= _propagate_escape_change!(op, estate, aidx, xinfo)
         end
     end
     return anychanged
@@ -679,23 +721,58 @@ end
     return false
 end
 
+# propagate Liveness changes separately in order to avoid constructing too many LivenessSet
+@inline function propagate_liveness_change!(estate::EscapeState, change::LivenessChange)
+    (; xidx, livepc) = change
+    info = estate.escapes[xidx]
+    Liveness = info.Liveness
+    Liveness === TOP_LIVENESS && return false
+    livepc in Liveness && return false
+    if Liveness === BOT_LIVENESS || Liveness === ARG_LIVENESS
+        # if this Liveness is a constant, we shouldn't modify it and propagate this change as a new EscapeLattice
+        Liveness = copy(Liveness)
+        push!(Liveness, livepc)
+        estate.escapes[xidx] = EscapeLattice(info; Liveness)
+        return true
+    else
+        # directly modify Liveness property in order to avoid excessive copies
+        push!(Liveness, livepc)
+        return true
+    end
+end
+
 @inline function propagate_alias_change!(estate::EscapeState, change::AliasChange)
-    xidx, yidx = change
+    (; xidx, yidx) = change
     xroot = find_root!(estate.aliasset, xidx)
     yroot = find_root!(estate.aliasset, yidx)
     if xroot ≠ yroot
         union!(estate.aliasset, xroot, yroot)
+        xinfo = estate.escapes[xidx]
+        yinfo = estate.escapes[yidx]
+        xyinfo = xinfo ⊔ yinfo
+        estate.escapes[xidx] = xyinfo
+        estate.escapes[yidx] = xyinfo
         return true
     end
     return false
 end
 
-function add_escape_change!(astate::AnalysisState, @nospecialize(x), info::EscapeLattice)
-    info === ⊥ && return nothing # performance optimization
+function add_escape_change!(astate::AnalysisState, @nospecialize(x), xinfo::EscapeLattice)
+    xinfo === ⊥ && return nothing # performance optimization
     xidx = iridx(x, astate.estate)
     if xidx !== nothing
         if !isbitstype(widenconst(argextype(x, astate.ir)))
-            push!(astate.changes, EscapeChange(xidx, info))
+            push!(astate.changes, EscapeChange(xidx, xinfo))
+        end
+    end
+    return nothing
+end
+
+function add_liveness_change!(astate::AnalysisState, @nospecialize(x), livepc::Int)
+    xidx = iridx(x, astate.estate)
+    if xidx !== nothing
+        if !isbitstype(widenconst(argextype(x, astate.ir)))
+            push!(astate.changes, LivenessChange(xidx, livepc))
         end
     end
     return nothing
@@ -710,13 +787,8 @@ function add_alias_change!(astate::AnalysisState, @nospecialize(x), @nospecializ
     estate = astate.estate
     xidx = iridx(x, estate)
     yidx = iridx(y, estate)
-    if xidx !== nothing && yidx !== nothing
-        pushfirst!(astate.changes, AliasChange(xidx, yidx)) # propagate `AliasChange` first for faster convergence
-        xinfo = estate.escapes[xidx]
-        yinfo = estate.escapes[yidx]
-        xyinfo = xinfo ⊔ yinfo
-        add_escape_change!(astate, x, xyinfo)
-        add_escape_change!(astate, y, xyinfo)
+    if xidx !== nothing && yidx !== nothing && !isaliased(xidx, yidx, astate.estate)
+        pushfirst!(astate.changes, AliasChange(xidx, yidx))
     end
     return nothing
 end
@@ -731,8 +803,11 @@ function escape_edges!(astate::AnalysisState, pc::Int, edges::Vector{Any})
     end
 end
 
-escape_val_ifdefined!(astate::AnalysisState, pc::Int, x) =
-    isdefined(x, :val) && escape_val!(astate, pc, x.val)
+function escape_val_ifdefined!(astate::AnalysisState, pc::Int, x)
+    if isdefined(x, :val)
+        escape_val!(astate, pc, x.val)
+    end
+end
 
 function escape_val!(astate::AnalysisState, pc::Int, @nospecialize(val))
     ret = SSAValue(pc)
@@ -845,7 +920,8 @@ function escape_invoke!(astate::AnalysisState, pc::Int, args::Vector{Any})
         end
     else
         argescapes = argescapes_from_cache(cache)
-        retinfo = astate.estate[SSAValue(pc)] # escape information imposed on the call statement
+        ret = SSAValue(pc)
+        retinfo = astate.estate[ret] # escape information imposed on the call statement
         method = linfo.def::Method
         nargs = Int(method.nargs)
         for i in 2:length(args)
@@ -857,7 +933,17 @@ function escape_invoke!(astate::AnalysisState, pc::Int, args::Vector{Any})
             end
             arginfo = argescapes[argi]
             info = from_interprocedural(arginfo, retinfo, pc)
-            add_escape_change!(astate, arg, info)
+            if arginfo.ReturnEscape
+                # if this argument can be "returned", in addition to propagating
+                # the escape information imposed on this call argument within the callee,
+                # we should also account for possible aliasing of this argument and the returned value
+                add_escape_change!(astate, arg, info)
+                add_alias_change!(astate, ret, arg)
+            else
+                # if this is simply passed as the call argument, we can just propagate
+                # the escape information imposed on this call argument within the callee
+                add_escape_change!(astate, arg, info)
+            end
         end
     end
 end
@@ -872,25 +958,16 @@ the return value and `pc` is the SSA statement number of the return value.
 function from_interprocedural(arginfo::EscapeLatticeCache, retinfo::EscapeLattice, pc::Int)
     arginfo.AllEscape && return ⊤
 
-    ThrownEscape = arginfo.ThrownEscape ? BitSet(pc) : BOT_THROWN_ESCAPE
+    ThrownEscape = arginfo.ThrownEscape ? LivenessSet(pc) : BOT_THROWN_ESCAPE
 
-    newarginfo = EscapeLattice(
-        #=Analyzed=#true, #=ReturnEscape=#BOT_RETURN_ESCAPE, ThrownEscape,
+    return EscapeLattice(
+        #=Analyzed=#true, #=ReturnEscape=#false, ThrownEscape,
         # FIXME implement interprocedural memory effect-analysis
         # currently, this essentially disables the entire field analysis
         # it might be okay from the SROA point of view, since we can't remove the allocation
         # as far as it's passed to a callee anyway, but still we may want some field analysis
         # for e.g. stack allocation or some other IPO optimizations
-        #=AliasInfo=#TOP_ALIAS_INFO)
-
-    if !arginfo.ReturnEscape
-        # if this is simply passed as the call argument, we can discard the `ReturnEscape`
-        # information and just propagate the other escape information
-        return newarginfo
-    end
-
-    # if this argument can be "returned", we have to merge its escape information with that imposed on the return value
-    return newarginfo ⊔ retinfo
+        #=AliasInfo=#TOP_ALIAS_INFO, #=Liveness=#LivenessSet(pc))
 end
 
 @noinline function unexpected_assignment!(ir::IRCode, pc::Int)
@@ -909,21 +986,27 @@ function escape_new!(astate::AnalysisState, pc::Int, args::Vector{Any})
         # fields are known precisely: propagate escape information imposed on recorded possibilities to the exact field values
         infos = AliasInfo.infos
         nf = length(infos)
+        objinfo = ignore_aliasinfo(objinfo)
         for i in 2:nargs
             i-1 > nf && break # may happen when e.g. ϕ-node merges values with different types
-            add_alias_escapes!(astate, args[i], infos[i-1])
+            arg = args[i]
+            add_alias_escapes!(astate, arg, infos[i-1])
             push!(infos[i-1], -pc) # record def
             # propagate the escape information of this object ignoring field information
-            add_escape_change!(astate, args[i], ignore_aliasinfo(objinfo))
+            add_escape_change!(astate, arg, objinfo)
+            add_liveness_change!(astate, arg, pc)
         end
     elseif isa(AliasInfo, Unindexable) && !AliasInfo.array
         # fields are known partially: propagate escape information imposed on recorded possibilities to all fields values
         info = AliasInfo.info
+        objinfo = ignore_aliasinfo(objinfo)
         for i in 2:nargs
-            add_alias_escapes!(astate, args[i], info)
+            arg = args[i]
+            add_alias_escapes!(astate, arg, info)
             push!(info, -pc) # record def
             # propagate the escape information of this object ignoring field information
-            add_escape_change!(astate, args[i], ignore_aliasinfo(objinfo))
+            add_escape_change!(astate, arg, objinfo)
+            add_liveness_change!(astate, arg, pc)
         end
     else
         # this object has been used as array, but it is allocated as struct here (i.e. should throw)
@@ -933,7 +1016,9 @@ function escape_new!(astate::AnalysisState, pc::Int, args::Vector{Any})
         # the fields couldn't be analyzed precisely: propagate the entire escape information
         # of this object to all its fields as the most conservative propagation
         for i in 2:nargs
-            add_escape_change!(astate, args[i], objinfo)
+            arg = args[i]
+            add_escape_change!(astate, arg, objinfo)
+            add_liveness_change!(astate, arg, pc)
         end
     end
     if !(getinst(astate.ir, pc)[:flag] & IR_FLAG_EFFECT_FREE ≠ 0)
@@ -958,8 +1043,27 @@ end
 
 function add_thrown_escapes!(astate::AnalysisState, pc::Int, args::Vector{Any},
     first_idx::Int = 1, last_idx::Int = length(args))
+    info = ThrownEscape(pc)
     for i in first_idx:last_idx
-        add_escape_change!(astate, args[i], ThrownEscape(pc))
+        add_escape_change!(astate, args[i], info)
+    end
+end
+
+function add_liveness_changes!(astate::AnalysisState, pc::Int, args::Vector{Any},
+    first_idx::Int = 1, last_idx::Int = length(args))
+    for i in first_idx:last_idx
+        arg = args[i]
+        add_liveness_change!(astate, arg, pc)
+    end
+end
+
+function add_fallback_changes!(astate::AnalysisState, pc::Int, args::Vector{Any},
+    first_idx::Int = 1, last_idx::Int = length(args))
+    info = ThrownEscape(pc)
+    for i in first_idx:last_idx
+        arg = args[i]
+        add_escape_change!(astate, arg, info)
+        add_liveness_change!(astate, arg, pc)
     end
 end
 
@@ -998,29 +1102,24 @@ function escape_foreigncall!(astate::AnalysisState, pc::Int, args::Vector{Any})
     end
     # NOTE array allocations might have been proven as nothrow (https://github.com/JuliaLang/julia/pull/43565)
     nothrow = astate.ir.stmts[pc][:flag] & IR_FLAG_EFFECT_FREE ≠ 0
-    if nothrow
-        name_info = NoEscape()
-    else
-        name_info = ThrownEscape(pc)
-    end
+    name_info = nothrow ? ⊥ : ThrownEscape(pc)
     add_escape_change!(astate, name, name_info)
+    add_liveness_change!(astate, name, pc)
     for i = 1:nargs
         # we should escape this argument if it is directly called,
         # otherwise just impose ThrownEscape if not nothrow
         if argtypes[i] === Any
             arg_info = ⊤
         else
-            if nothrow
-                arg_info = NoEscape()
-            else
-                arg_info = ThrownEscape(pc)
-            end
+            arg_info = nothrow ? ⊥ : ThrownEscape(pc)
         end
         add_escape_change!(astate, args[5+i], arg_info)
+        add_liveness_change!(astate, args[5+i], pc)
     end
-    preserve_info = NoEscape() # TODO encode liveness
     for i = (5+nargs):length(args)
-        add_escape_change!(astate, args[i], preserve_info)
+        arg = args[i]
+        add_escape_change!(astate, arg, ⊥)
+        add_liveness_change!(astate, arg, pc)
     end
 end
 
@@ -1038,7 +1137,11 @@ function escape_call!(astate::AnalysisState, pc::Int, args::Vector{Any})
             arg = args[i]
             push!(argtypes, isexpr(arg, :call) ? Any : argextype(arg, ir))
         end
-        intrinsic_nothrow(f, argtypes) || add_thrown_escapes!(astate, pc, args, 2)
+        if intrinsic_nothrow(f, argtypes)
+            add_liveness_changes!(astate, pc, args, 2)
+        else
+            add_fallback_changes!(astate, pc, args, 2)
+        end
         return # TODO accounts for pointer operations?
     end
     result = escape_builtin!(f, astate, pc, args)
@@ -1048,15 +1151,21 @@ function escape_call!(astate::AnalysisState, pc::Int, args::Vector{Any})
         for i in 2:length(args)
             add_escape_change!(astate, args[i], ⊤)
         end
+        add_escape_change!(astate, SSAValue(pc), ⊤)
         return
     elseif result === true
+        add_liveness_changes!(astate, pc, args, 2)
         return # ThrownEscape is already checked
-    end
-    # we escape statements with the `ThrownEscape` property using the effect-freeness
-    # computed by `stmt_effect_free` invoked within inlining
-    # TODO throwness ≠ "effect-free-ness"
-    if !(getinst(astate.ir, pc)[:flag] & IR_FLAG_EFFECT_FREE ≠ 0)
-        add_thrown_escapes!(astate, pc, args, 2)
+    else
+        # we escape statements with the `ThrownEscape` property using the effect-freeness
+        # computed by `stmt_effect_free` invoked within inlining
+        # TODO throwness ≠ "effect-free-ness"
+        if getinst(astate.ir, pc)[:flag] & IR_FLAG_EFFECT_FREE ≠ 0
+            add_liveness_changes!(astate, pc, args, 2)
+        else
+            add_fallback_changes!(astate, pc, args, 2)
+        end
+        return
     end
 end
 
@@ -1398,29 +1507,30 @@ end
 # but just ignore it since it doesn't capture anything
 function escape_array_resize!(boundserror::Bool, ninds::Int,
     astate::AnalysisState, pc::Int, args::Vector{Any})
-    length(args) ≥ 6+ninds || return add_thrown_escapes!(astate, pc, args)
+    length(args) ≥ 6+ninds || return add_fallback_changes!(astate, pc, args)
     ary = args[6]
     aryt = argextype(ary, astate.ir)
-    aryt ⊑ₜ Array || return add_thrown_escapes!(astate, pc, args)
+    aryt ⊑ₜ Array || return add_fallback_changes!(astate, pc, args)
     for i in 1:ninds
         ind = args[i+6]
         indt = argextype(ind, astate.ir)
-        indt ⊑ₜ Integer || return add_thrown_escapes!(astate, pc, args)
+        indt ⊑ₜ Integer || return add_fallback_changes!(astate, pc, args)
     end
     if boundserror
         # this array resizing can potentially throw `BoundsError`, impose it now
         add_escape_change!(astate, ary, ThrownEscape(pc))
     end
+    add_liveness_changes!(astate, pc, args, 6)
 end
 
 is_array_copy(name::Symbol) = name === :jl_array_copy
 
 # FIXME this implementation is very conservative, improve the accuracy and solve broken test cases
 function escape_array_copy!(astate::AnalysisState, pc::Int, args::Vector{Any})
-    length(args) ≥ 6 || return add_thrown_escapes!(astate, pc, args)
+    length(args) ≥ 6 || return add_fallback_changes!(astate, pc, args)
     ary = args[6]
     aryt = argextype(ary, astate.ir)
-    aryt ⊑ₜ Array || return add_thrown_escapes!(astate, pc, args)
+    aryt ⊑ₜ Array || return add_fallback_changes!(astate, pc, args)
     if isa(ary, SSAValue) || isa(ary, Argument)
         newary = SSAValue(pc)
         aryinfo = astate.estate[ary]
@@ -1428,6 +1538,7 @@ function escape_array_copy!(astate::AnalysisState, pc::Int, args::Vector{Any})
         add_escape_change!(astate, newary, aryinfo)
         add_escape_change!(astate, ary, newaryinfo)
     end
+    add_liveness_changes!(astate, pc, args, 6)
 end
 
 is_array_isassigned(name::Symbol) = name === :jl_array_isassigned
@@ -1436,6 +1547,7 @@ function escape_array_isassigned!(astate::AnalysisState, pc::Int, args::Vector{A
     if !array_isassigned_nothrow(args, astate.ir)
         add_thrown_escapes!(astate, pc, args)
     end
+    add_liveness_changes!(astate, pc, args, 6)
 end
 
 function array_isassigned_nothrow(args::Vector{Any}, src::IRCode)

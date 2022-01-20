@@ -959,6 +959,40 @@ end
     # --------------
 
     # alias via getfield & Expr(:new)
+    let result = code_escapes((String,)) do s
+            r = SafeRef(s)
+            return r[]
+        end
+        i = only(findall(isnew, result.ir.stmts.inst))
+        r = only(findall(isreturn, result.ir.stmts.inst))
+        val = (result.ir.stmts.inst[r]::ReturnNode).val::SSAValue
+        @test isaliased(Argument(2), val, result.state)
+        @test !isaliased(Argument(2), SSAValue(i), result.state)
+    end
+    let result = code_escapes((String,)) do s
+            r1 = SafeRef(s)
+            r2 = SafeRef(r1)
+            return r2[]
+        end
+        i1, i2 = findall(isnew, result.ir.stmts.inst)
+        r = only(findall(isreturn, result.ir.stmts.inst))
+        val = (result.ir.stmts.inst[r]::ReturnNode).val::SSAValue
+        @test !isaliased(SSAValue(i1), SSAValue(i2), result.state)
+        @test isaliased(SSAValue(i1), val, result.state)
+        @test !isaliased(SSAValue(i2), val, result.state)
+    end
+    let result = code_escapes((String,)) do s
+            r1 = SafeRef(s)
+            r2 = SafeRef(r1)
+            return r2[][]
+        end
+        r = only(findall(isreturn, result.ir.stmts.inst))
+        val = (result.ir.stmts.inst[r]::ReturnNode).val::SSAValue
+        @test isaliased(Argument(2), val, result.state)
+        for i in findall(isnew, result.ir.stmts.inst)
+            @test !isaliased(SSAValue(i), val, result.state)
+        end
+    end
     let result = @eval EATModule() begin
             const Rx = SafeRef("Rx")
             $code_escapes((String,)) do s
@@ -973,6 +1007,57 @@ end
         @test is_load_forwardable(result.state[SSAValue(i)])
     end
     # alias via getfield & setfield!
+    let result = code_escapes((String,)) do s
+            r = Ref{String}()
+            r[] = s
+            return r[]
+        end
+        i = only(findall(isnew, result.ir.stmts.inst))
+        r = only(findall(isreturn, result.ir.stmts.inst))
+        val = (result.ir.stmts.inst[r]::ReturnNode).val::SSAValue
+        @test isaliased(Argument(2), val, result.state)
+        @test !isaliased(Argument(2), SSAValue(i), result.state)
+    end
+    let result = code_escapes((String,)) do s
+            r1 = Ref(s)
+            r2 = Ref{Base.RefValue{String}}()
+            r2[] = r1
+            return r2[]
+        end
+        i1, i2 = findall(isnew, result.ir.stmts.inst)
+        r = only(findall(isreturn, result.ir.stmts.inst))
+        val = (result.ir.stmts.inst[r]::ReturnNode).val::SSAValue
+        @test !isaliased(SSAValue(i1), SSAValue(i2), result.state)
+        @test isaliased(SSAValue(i1), val, result.state)
+        @test !isaliased(SSAValue(i2), val, result.state)
+    end
+    let result = code_escapes((String,)) do s
+            r1 = Ref{String}()
+            r2 = Ref{Base.RefValue{String}}()
+            r2[] = r1
+            r1[] = s
+            return r2[][]
+        end
+        r = only(findall(isreturn, result.ir.stmts.inst))
+        val = (result.ir.stmts.inst[r]::ReturnNode).val::SSAValue
+        @test isaliased(Argument(2), val, result.state)
+        for i in findall(isnew, result.ir.stmts.inst)
+            @test !isaliased(SSAValue(i), val, result.state)
+        end
+        result = code_escapes((String,)) do s
+            r1 = Ref{String}()
+            r2 = Ref{Base.RefValue{String}}()
+            r1[] = s
+            r2[] = r1
+            return r2[][]
+        end
+        r = only(findall(isreturn, result.ir.stmts.inst))
+        val = (result.ir.stmts.inst[r]::ReturnNode).val::SSAValue
+        @test isaliased(Argument(2), val, result.state)
+        for i in findall(isnew, result.ir.stmts.inst)
+            @test !isaliased(SSAValue(i), val, result.state)
+        end
+    end
     let result = @eval EATModule() begin
             const Rx = SafeRef("Rx")
             $code_escapes((SafeRef{String}, String,)) do _rx, s
@@ -989,6 +1074,15 @@ end
     end
     # alias via typeassert
     let result = code_escapes((Any,)) do a
+            r = a::String
+            return r
+        end
+        r = only(findall(isreturn, result.ir.stmts.inst))
+        val = (result.ir.stmts.inst[r]::ReturnNode).val::SSAValue
+        @test has_return_escape(result.state[Argument(2)], r) # a
+        @test isaliased(Argument(2), val, result.state)       # a <-> r
+    end
+    let result = code_escapes((Any,)) do a
             global g
             (g::SafeRef{Any})[] = a
             nothing
@@ -996,6 +1090,18 @@ end
         @test has_all_escape(result.state[Argument(2)])
     end
     # alias via ifelse
+    let result = code_escapes((Bool,Any,Any)) do c, a, b
+            r = ifelse(c, a, b)
+            return r
+        end
+        r = only(findall(isreturn, result.ir.stmts.inst))
+        val = (result.ir.stmts.inst[r]::ReturnNode).val::SSAValue
+        @test has_return_escape(result.state[Argument(3)], r) # a
+        @test has_return_escape(result.state[Argument(4)], r) # b
+        @test !isaliased(Argument(2), val, result.state)      # c <!-> r
+        @test isaliased(Argument(3), val, result.state)       # a <-> r
+        @test isaliased(Argument(4), val, result.state)       # b <-> r
+    end
     let result = @eval EATModule() begin
             const Lx, Rx = SafeRef("Lx"), SafeRef("Rx")
             $code_escapes((Bool,String,)) do c, a
@@ -1017,7 +1123,9 @@ end
             return ϕ1[]
         end
         r = only(findall(isreturn, result.ir.stmts.inst))
+        val = (result.ir.stmts.inst[r]::ReturnNode).val::SSAValue
         @test has_return_escape(result.state[Argument(3)], r) # x
+        @test isaliased(Argument(3), val, result.state) # x
         for i in findall(isϕ, result.ir.stmts.inst)
             @test is_load_forwardable(result.state[SSAValue(i)])
         end
@@ -1035,7 +1143,9 @@ end
             return ϕ1[]
         end
         r = only(findall(isreturn, result.ir.stmts.inst))
+        val = (result.ir.stmts.inst[r]::ReturnNode).val::SSAValue
         @test has_return_escape(result.state[Argument(4)], r) # x
+        @test isaliased(Argument(4), val, result.state) # x
         for i in findall(isϕ, result.ir.stmts.inst)
             @test is_load_forwardable(result.state[SSAValue(i)])
         end
@@ -1044,6 +1154,17 @@ end
         end
     end
     # alias via π-node
+    let result = code_escapes((Any,)) do x
+            if isa(x, String)
+                return x
+            end
+            throw("error!")
+        end
+        r = only(findall(isreturn, result.ir.stmts.inst))
+        rval = (result.ir.stmts.inst[r]::ReturnNode).val::SSAValue
+        @test has_return_escape(result.state[Argument(2)], r) # x
+        @test isaliased(Argument(2), rval, result.state)
+    end
     let result = code_escapes((String,)) do x
             global g
             l = g
