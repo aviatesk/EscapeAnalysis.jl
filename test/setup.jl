@@ -66,17 +66,6 @@ function is_load_forwardable(x::EscapeAnalysis.EscapeLattice)
     return isa(AliasInfo, EscapeAnalysis.Indexable) && !AliasInfo.array
 end
 
-"""
-    can_elide_finalizer(x::EscapeLattice, pc::Int) -> Bool
-
-Queries the validity of the finalizer elision optimization at the return site of SSA statement `pc`,
-which inserts `finalize` call when the lifetime of interested object ends.
-Note that we don't need to take `x.ThrownEscape` into account because it would have never
-been thrown when the program execution reaches the `return` site.
-"""
-can_elide_finalizer(x::EscapeAnalysis.EscapeLattice, pc::Int) =
-    !(has_return_escape(x, 0) || has_return_escape(x, pc))
-
 let setup_ex = quote
         mutable struct SafeRef{T}
             x::T

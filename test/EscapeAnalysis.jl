@@ -1886,14 +1886,6 @@ end # @static if isdefined(Core, :ImmutableArray)
     end
 end
 
-@testset "finalizer elision" begin
-    @test can_elide_finalizer(EscapeAnalysis.NoEscape(), 1)
-    @test !can_elide_finalizer(EscapeAnalysis.ReturnEscape(1), 1)
-    @test can_elide_finalizer(EscapeAnalysis.ReturnEscape(1), 2)
-    @test !can_elide_finalizer(EscapeAnalysis.ArgumentReturnEscape(), 1)
-    @test can_elide_finalizer(EscapeAnalysis.ThrownEscape(1), 1)
-end
-
 # # TODO implement a finalizer elision pass
 # mutable struct WithFinalizer
 #     v
