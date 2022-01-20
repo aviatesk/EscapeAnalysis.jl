@@ -652,11 +652,11 @@ function propagate_changes!(estate::EscapeState, changes::Changes)
     return anychanged
 end
 
-propagate_escape_change!(estate::EscapeState, change::EscapeChange) =
+@inline propagate_escape_change!(estate::EscapeState, change::EscapeChange) =
     propagate_escape_change!(⊔, estate, change)
 
 # allows this to work as lattice join as well as lattice meet
-function propagate_escape_change!(@nospecialize(op),
+@inline function propagate_escape_change!(@nospecialize(op),
     estate::EscapeState, change::EscapeChange)
     xidx, info = change
     anychanged = _propagate_escape_change!(op, estate, xidx, info)
@@ -669,7 +669,7 @@ function propagate_escape_change!(@nospecialize(op),
     return anychanged
 end
 
-function _propagate_escape_change!(@nospecialize(op),
+@inline function _propagate_escape_change!(@nospecialize(op),
     estate::EscapeState, xidx::Int, info::EscapeLattice)
     old = estate.escapes[xidx]
     new = op(old, info)
@@ -680,7 +680,7 @@ function _propagate_escape_change!(@nospecialize(op),
     return false
 end
 
-function propagate_alias_change!(estate::EscapeState, change::AliasChange)
+@inline function propagate_alias_change!(estate::EscapeState, change::AliasChange)
     xidx, yidx = change
     xroot = find_root!(estate.aliasset, xidx)
     yroot = find_root!(estate.aliasset, yidx)
