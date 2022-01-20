@@ -8,9 +8,6 @@ export
     has_thrown_escape,
     has_all_escape
 
-# analysis
-# ========
-
 const _TOP_MOD = ccall(:jl_base_relative_to, Any, (Any,), EscapeAnalysis)::Module
 
 # imports
@@ -912,7 +909,7 @@ function escape_new!(astate::AnalysisState, pc::Int, args::Vector{Any})
         nf = length(infos)
         for i in 2:nargs
             i-1 > nf && break # may happen when e.g. ϕ-node merges values with different types
-            escape_field!(astate, args[i], infos[i-1])
+            add_alias_escapes!(astate, args[i], infos[i-1])
             push!(infos[i-1], -pc) # record def
             # propagate the escape information of this object ignoring field information
             add_escape_change!(astate, args[i], ignore_aliasinfo(objinfo))
@@ -921,7 +918,7 @@ function escape_new!(astate::AnalysisState, pc::Int, args::Vector{Any})
         # fields are known partially: propagate escape information imposed on recorded possibilities to all fields values
         info = AliasInfo.info
         for i in 2:nargs
-            escape_field!(astate, args[i], info)
+            add_alias_escapes!(astate, args[i], info)
             push!(info, -pc) # record def
             # propagate the escape information of this object ignoring field information
             add_escape_change!(astate, args[i], ignore_aliasinfo(objinfo))
@@ -942,11 +939,11 @@ function escape_new!(astate::AnalysisState, pc::Int, args::Vector{Any})
     end
 end
 
-function escape_field!(astate::AnalysisState, @nospecialize(v), xf::AInfo)
+function add_alias_escapes!(astate::AnalysisState, @nospecialize(v), ainfo::AInfo)
     estate = astate.estate
-    for xidx in xf
-        xidx < 0 && continue # ignore def
-        x = SSAValue(xidx) # obviously this won't be true once we implement ArgEscape
+    for aidx in ainfo
+        aidx < 0 && continue # ignore def
+        x = SSAValue(aidx) # obviously this won't be true once we implement ArgEscape
         add_alias_change!(astate, v, x)
     end
 end
@@ -1221,7 +1218,7 @@ function escape_builtin!(::typeof(setfield!), astate::AnalysisState, pc::Int, ar
         AliasInfo, fidx = reanalyze_fields(ir, AliasInfo, typ, args[3])
         isa(AliasInfo, Unindexable) && @goto escape_unindexable_def
         @label escape_indexable_def
-        escape_field!(astate, val, AliasInfo.infos[fidx])
+        add_alias_escapes!(astate, val, AliasInfo.infos[fidx])
         push!(AliasInfo.infos[fidx], -pc) # record def
         objinfo = EscapeLattice(objinfo, AliasInfo)
         add_escape_change!(astate, obj, objinfo)
@@ -1230,14 +1227,14 @@ function escape_builtin!(::typeof(setfield!), astate::AnalysisState, pc::Int, ar
     elseif isa(AliasInfo, Unindexable) && !AliasInfo.array
         info = AliasInfo.info
         @label escape_unindexable_def
-        escape_field!(astate, val, AliasInfo.info)
+        add_alias_escapes!(astate, val, AliasInfo.info)
         push!(AliasInfo.info, -pc) # record def
         objinfo = EscapeLattice(objinfo, AliasInfo)
         add_escape_change!(astate, obj, objinfo)
         # propagate the escape information of this object ignoring field information
         add_escape_change!(astate, val, ignore_aliasinfo(objinfo))
     else
-        # this object has been used as array, but it is "used" as struct here (i.e. should throw)
+        # this object has been used as array, but it is used as struct here (i.e. should throw)
         # update obj's field information and just handle this case conservatively
         objinfo = escape_unanalyzable_obj!(astate, obj, objinfo)
         @label conservative_propagation
@@ -1290,7 +1287,6 @@ function escape_builtin!(::typeof(arrayref), astate::AnalysisState, pc::Int, arg
     elseif isa(AliasInfo, Indexable) && AliasInfo.array
         throw("array index analysis unsupported")
     elseif isa(AliasInfo, Unindexable) && AliasInfo.array
-        # record the return value of this `arrayref` call as a possibility that imposes escape
         @label record_unindexable_use
         push!(AliasInfo.info, pc) # record use
         add_escape_change!(astate, ary, EscapeLattice(aryinfo, AliasInfo))
@@ -1344,13 +1340,13 @@ function escape_builtin!(::typeof(arrayset), astate::AnalysisState, pc::Int, arg
         throw("array index analysis unsupported")
     elseif isa(AliasInfo, Unindexable) && AliasInfo.array
         @label escape_unindexable_def
-        escape_elements!(astate, val, AliasInfo.info)
+        add_alias_escapes!(astate, val, AliasInfo.info)
         push!(AliasInfo.info, -pc) # record def
         add_escape_change!(astate, ary, EscapeLattice(aryinfo, AliasInfo))
         # propagate the escape information of this array ignoring elements information
         add_escape_change!(astate, val, ignore_aliasinfo(aryinfo))
     else
-        # this object has been used as struct, but it is "used" as array here (thus should throw)
+        # this object has been used as struct, but it is used as array here (thus should throw)
         # update ary's element information and just handle this case conservatively
         aryinfo = escape_unanalyzable_obj!(astate, ary, aryinfo)
         @label conservative_propagation
@@ -1360,15 +1356,6 @@ function escape_builtin!(::typeof(arrayset), astate::AnalysisState, pc::Int, arg
     ssainfo = estate[SSAValue(pc)]
     add_escape_change!(astate, ary, ssainfo)
     return true
-end
-
-function escape_elements!(astate::AnalysisState, @nospecialize(v), info::AInfo)
-    estate = astate.estate
-    for xidx in info
-        xidx < 0 && continue # ignore def
-        x = SSAValue(xidx) # obviously this won't be true once we implement ArgEscape
-        add_alias_change!(astate, v, x)
-    end
 end
 
 function escape_builtin!(::typeof(arraysize), astate::AnalysisState, pc::Int, args::Vector{Any})
