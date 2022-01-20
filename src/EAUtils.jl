@@ -304,7 +304,7 @@ function get_name_color(x::EscapeLattice, symbol::Bool = false)
         color = EA.has_thrown_escape(x) ? :yellow : :bold
     end
     name = symbol ? last(name) : first(name)
-    if name !== nothing && !isa(x.AliasEscapes, Bool)
+    if name !== nothing && !isa(x.AliasInfo, Bool)
         name = string(name, "′")
     end
     return name, color
