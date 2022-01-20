@@ -1165,17 +1165,17 @@ function escape_builtin!(::typeof(getfield), astate::AnalysisState, pc::Int, arg
         if isa(AliasInfo, Indexable)
             @goto record_indexable_use
         else
-            @goto record_unidexable_use
+            @goto record_unindexable_use
         end
     elseif isa(AliasInfo, Indexable) && !AliasInfo.array
         AliasInfo, fidx = reanalyze_fields(ir, AliasInfo, typ, args[3])
-        isa(AliasInfo, Unindexable) && @goto record_unidexable_use
+        isa(AliasInfo, Unindexable) && @goto record_unindexable_use
         @label record_indexable_use
         push!(AliasInfo.infos[fidx], pc) # record use
         objinfo = EscapeLattice(objinfo, AliasInfo)
         add_escape_change!(astate, obj, objinfo)
     elseif isa(AliasInfo, Unindexable) && !AliasInfo.array
-        @label record_unidexable_use
+        @label record_unindexable_use
         push!(AliasInfo.info, pc) # record use
         objinfo = EscapeLattice(objinfo, AliasInfo)
         add_escape_change!(astate, obj, objinfo)
@@ -1212,15 +1212,15 @@ function escape_builtin!(::typeof(setfield!), astate::AnalysisState, pc::Int, ar
         typ = widenconst(argextype(obj, ir))
         AliasInfo, fidx = analyze_fields(ir, typ, args[3])
         if isa(AliasInfo, Indexable)
-            @goto add_idexable_field_escapes
+            @goto escape_indexable_def
         else
-            @goto add_unidexable_field_escapes
+            @goto escape_unindexable_def
         end
     elseif isa(AliasInfo, Indexable) && !AliasInfo.array
         typ = widenconst(argextype(obj, ir))
         AliasInfo, fidx = reanalyze_fields(ir, AliasInfo, typ, args[3])
-        isa(AliasInfo, Unindexable) && @goto add_unidexable_field_escapes
-        @label add_idexable_field_escapes
+        isa(AliasInfo, Unindexable) && @goto escape_unindexable_def
+        @label escape_indexable_def
         escape_field!(astate, val, AliasInfo.infos[fidx])
         push!(AliasInfo.infos[fidx], -pc) # record def
         objinfo = EscapeLattice(objinfo, AliasInfo)
@@ -1229,7 +1229,7 @@ function escape_builtin!(::typeof(setfield!), astate::AnalysisState, pc::Int, ar
         add_escape_change!(astate, val, ignore_aliasinfo(objinfo))
     elseif isa(AliasInfo, Unindexable) && !AliasInfo.array
         info = AliasInfo.info
-        @label add_unidexable_field_escapes
+        @label escape_unindexable_def
         escape_field!(astate, val, AliasInfo.info)
         push!(AliasInfo.info, -pc) # record def
         objinfo = EscapeLattice(objinfo, AliasInfo)
@@ -1286,12 +1286,12 @@ function escape_builtin!(::typeof(arrayref), astate::AnalysisState, pc::Int, arg
         AliasInfo && @goto conservative_propagation
         # the elements of this array haven't been analyzed yet: set AliasInfo now
         AliasInfo = Unindexable(true, AInfo())
-        @goto record_element_escape
+        @goto record_unindexable_use
     elseif isa(AliasInfo, Indexable) && AliasInfo.array
         throw("array index analysis unsupported")
     elseif isa(AliasInfo, Unindexable) && AliasInfo.array
         # record the return value of this `arrayref` call as a possibility that imposes escape
-        @label record_element_escape
+        @label record_unindexable_use
         push!(AliasInfo.info, pc) # record use
         add_escape_change!(astate, ary, EscapeLattice(aryinfo, AliasInfo))
     else
@@ -1339,11 +1339,11 @@ function escape_builtin!(::typeof(arrayset), astate::AnalysisState, pc::Int, arg
         AliasInfo && @goto conservative_propagation
         # the elements of this array haven't been analyzed yet: set AliasInfo now
         AliasInfo = Unindexable(true, AInfo())
-        @goto add_ary_escape
+        @goto escape_unindexable_def
     elseif isa(AliasInfo, Indexable) && AliasInfo.array
         throw("array index analysis unsupported")
     elseif isa(AliasInfo, Unindexable) && AliasInfo.array
-        @label add_ary_escape
+        @label escape_unindexable_def
         escape_elements!(astate, val, AliasInfo.info)
         push!(AliasInfo.info, -pc) # record def
         add_escape_change!(astate, ary, EscapeLattice(aryinfo, AliasInfo))
