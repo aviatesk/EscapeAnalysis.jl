@@ -4,6 +4,7 @@ export
     analyze_escapes,
     cache_escapes!,
     has_no_escape,
+    has_arg_escape,
     has_return_escape,
     has_thrown_escape,
     has_all_escape
@@ -82,7 +83,7 @@ There are utility constructors to create common `EscapeLattice`s, e.g.,
 `analyze_escapes` will transition these elements from the bottom to the top,
 in the same direction as Julia's native type inference routine.
 An abstract state will be initialized with the bottom(-like) elements:
-- the call arguments are initialized as `ArgumentReturnEscape()`, because they're visible from a caller immediately
+- the call arguments are initialized as `ArgEscape()`, because they're visible from a caller immediately
 - the other states are initialized as `NotAnalyzed()`, which is a special lattice element that
   is slightly lower than `NoEscape`, but at the same time doesn't represent any meaning
   other than it's not analyzed yet (thus it's not formally part of the lattice).
@@ -138,8 +139,8 @@ const TOP_ALIAS_INFO = true
 # the constructors
 NotAnalyzed() = EscapeLattice(false, BOT_RETURN_ESCAPE, BOT_THROWN_ESCAPE, BOT_ALIAS_INFO) # not formally part of the lattice
 NoEscape() = EscapeLattice(true, BOT_RETURN_ESCAPE, BOT_THROWN_ESCAPE, BOT_ALIAS_INFO)
+ArgEscape() = EscapeLattice(true, ARG_RETURN_ESCAPE, BOT_THROWN_ESCAPE, TOP_ALIAS_INFO) # TODO allow interprocedural alias analysis?
 ReturnEscape(pc::Int) = EscapeLattice(true, BitSet(pc), BOT_THROWN_ESCAPE, BOT_ALIAS_INFO)
-ArgumentReturnEscape() = EscapeLattice(true, ARG_RETURN_ESCAPE, BOT_THROWN_ESCAPE, TOP_ALIAS_INFO) # TODO allow interprocedural field analysis?
 AllReturnEscape() = EscapeLattice(true, TOP_RETURN_ESCAPE, BOT_THROWN_ESCAPE, BOT_ALIAS_INFO)
 ThrownEscape(pc::Int) = EscapeLattice(true, BOT_RETURN_ESCAPE, BitSet(pc), BOT_ALIAS_INFO)
 ThrownEscape(pcs::BitSet) = EscapeLattice(true, BOT_RETURN_ESCAPE, pcs, BOT_ALIAS_INFO)
@@ -149,6 +150,7 @@ const ⊥, ⊤ = NotAnalyzed(), AllEscape()
 
 # Convenience names for some ⊑ queries
 has_no_escape(x::EscapeLattice) = ignore_aliasinfo(x) ⊑ NoEscape()
+has_arg_escape(x::EscapeLattice) = 0 in x.ReturnEscape
 has_return_escape(x::EscapeLattice) = !isempty(x.ReturnEscape)
 has_return_escape(x::EscapeLattice, pc::Int) = pc in x.ReturnEscape
 has_thrown_escape(x::EscapeLattice) = !isempty(x.ThrownEscape)
@@ -378,7 +380,7 @@ struct EscapeState
 end
 function EscapeState(nargs::Int, nstmts::Int)
     escapes = EscapeLattice[
-        1 ≤ i ≤ nargs ? ArgumentReturnEscape() : ⊥ for i in 1:(nargs+nstmts)]
+        1 ≤ i ≤ nargs ? ArgEscape() : ⊥ for i in 1:(nargs+nstmts)]
     aliaset = AliasSet(nargs+nstmts)
     return EscapeState(escapes, aliaset, nargs)
 end

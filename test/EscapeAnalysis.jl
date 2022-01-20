@@ -1,20 +1,19 @@
 @isdefined(EA_AS_PKG) || include(normpath(@__DIR__, "setup.jl"))
 
 @testset "basics" begin
-    let # simplest
+    let # arg return
         result = code_escapes((Any,)) do a # return to caller
             return nothing
         end
-        @test has_return_escape(result.state[Argument(2)])
-    end
-    let # return
+        @test has_arg_escape(result.state[Argument(2)])
+        # return
         result = code_escapes((Any,)) do a
             return a
         end
         i = only(findall(isreturn, result.ir.stmts.inst))
-        @test has_return_escape(result.state[Argument(1)], 0) # self
+        @test has_arg_escape(result.state[Argument(1)]) # self
         @test !has_return_escape(result.state[Argument(1)], i) # self
-        @test has_return_escape(result.state[Argument(2)], 0) # a
+        @test has_arg_escape(result.state[Argument(2)]) # a
         @test has_return_escape(result.state[Argument(2)], i) # a
     end
     let # global store
