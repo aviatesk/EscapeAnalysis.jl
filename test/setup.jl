@@ -7,7 +7,7 @@ else
     import Base: code_escapes
     import InteractiveUtils: @code_escapes
 end
-import Core: Argument, SSAValue
+import Core: Argument, SSAValue, ReturnNode
 
 @static if isdefined(Core.Compiler, :alloc_array_ndims)
     import Core.Compiler: alloc_array_ndims
