@@ -17,14 +17,13 @@ InteractiveUtils.@code_escapes
 ### Lattice Design
 
 `EscapeAnalysis` is implemented as a [data-flow analysis](https://en.wikipedia.org/wiki/Data-flow_analysis)
-that works on a lattice called `x::EscapeLattice`, which is composed of the following properties:
+that works on a lattice of `x::EscapeInfo`, which is composed of the following properties:
 - `x.Analyzed::Bool`: not formally part of the lattice, only indicates `x` has not been analyzed or not
-- `x.ReturnEscape::Bool`: indicates `x` can escape to the caller via return
+- `x.ReturnEscape::BitSet`: records SSA statements where `x` can escape to the caller via return
 - `x.ThrownEscape::BitSet`: records SSA statements where `x` can be thrown as exception
   (used for the [exception handling](@ref EA-Exception-Handling) described below)
 - `x.AliasInfo`: maintains all possible values that can be aliased to fields or array elements of `x`
   (used for the [alias analysis](@ref EA-Alias-Analysis) described below)
-- `x.Liveness::BitSet`: records SSA statement numbers where `x` should be live
 - `x.ArgEscape::Int` (not implemented yet): indicates it will escape to the caller through
   `setfield!` on argument(s)
 
@@ -36,12 +35,12 @@ lattice operations by allowing them to handle each lattice property separately[^
 ### Backward Escape Propagation
 
 This escape analysis implementation is based on the data-flow algorithm described in the paper[^MM02].
-The analysis works on the lattice of `EscapeLattice` and transitions lattice elements from the
+The analysis works on the lattice of `EscapeInfo` and transitions lattice elements from the
 bottom to the top until every lattice element gets converged to a fixed point by maintaining
 a (conceptual) working set that contains program counters corresponding to remaining SSA
 statements to be analyzed. The analysis manages a single global state that tracks
-`EscapeLattice` of each argument and SSA statement, but also note that some flow-sensitivity
-is encoded as program counters recorded in `EscapeLattice`'s `Liveness` property,
+`EscapeInfo` of each argument and SSA statement, but also note that some flow-sensitivity
+is encoded as program counters recorded in `EscapeInfo`'s `ReturnEscape` property,
 which can be combined with domination analysis later to reason about flow-sensitivity if necessary.
 
 One distinctive design of this escape analysis is that it is fully _backward_,
@@ -87,7 +86,7 @@ julia> code_escapes((Bool, String, String)) do cnd, s, t
 
 `EscapeAnalysis` implements a backward field analysis in order to reason about escapes
 imposed on object fields with certain accuracy,
-and `x::EscapeLattice`'s `x.AliasInfo` property exists for this purpose.
+and `x::EscapeInfo`'s `x.AliasInfo` property exists for this purpose.
 It records all possible values that can be aliased to fields of `x` at "usage" sites,
 and then the escape information of that recorded values are propagated to the actual field values later at "definition" sites.
 More specifically, the analysis records a value that may be aliased to a field of object by analyzing `getfield` call,
@@ -231,7 +230,7 @@ worthwhile to do given that exception handling and error path usually don't need
 very performance sensitive, and also optimizations of error paths might be very ineffective anyway
 since they are often even "unoptimized" intentionally for latency reasons.
 
-`x::EscapeLattice`'s `x.ThrownEscape` property records SSA statements where `x` can be thrown as an exception.
+`x::EscapeInfo`'s `x.ThrownEscape` property records SSA statements where `x` can be thrown as an exception.
 Using this information `EscapeAnalysis` can propagate possible escapes via exceptions limitedly
 to only those may be thrown in each `try` region:
 ```julia
@@ -301,7 +300,7 @@ Core.Compiler.EscapeAnalysis.cache_escapes!
     It turns out that it started to complicate implementations of the lattice operations
     mainly because it often requires conversion rules between each lattice element type object.
     And we are working on [overhauling our type inference lattice implementation](https://github.com/JuliaLang/julia/pull/42596)
-    with `EscapeLattice`-like lattice design.
+    with `EscapeInfo`-like lattice design.
 
 [^MM02]: _A Graph-Free approach to Data-Flow Analysis_.
          Markas Mohnen, 2002, April.

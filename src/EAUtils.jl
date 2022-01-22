@@ -105,7 +105,7 @@ The symbols in the side of each call argument and SSA statements represents the 
 - `✓`: this value never escapes (`has_no_escape(result.state[x])` holds)
 - `↑`: this value can escape to the caller via return (`has_return_escape(result.state[x])` holds)
 - `X`: this value can escape to somewhere the escape analysis can't reason about like escapes to a global memory (`has_all_escape(result.state[x])` holds)
-- `*`: this value's escape state is between the `ReturnEscape` and `AllEscape` in the `EscapeLattice`, e.g. it has unhandled `ThrownEscape`
+- `*`: this value's escape state is between the `ReturnEscape` and `AllEscape` in the `EscapeInfo`, e.g. it has unhandled `ThrownEscape`
 and additional `′` indicates that field analysis has been done successfully on that value.
 
 For testing, escape information of each call argument and SSA value can be inspected programmatically as like:
@@ -283,12 +283,12 @@ end
 
 import Core: Argument, SSAValue
 import .CC: widenconst, singleton_type
-import .EA: EscapeLattice, EscapeState, ⊑, ⊏
+import .EA: EscapeInfo, EscapeState, ⊑, ⊏
 
 # in order to run a whole analysis from ground zero (e.g. for benchmarking, etc.)
 __clear_caches!() = (__clear_code_cache!(); EA.__clear_escape_cache!())
 
-function get_name_color(x::EscapeLattice, symbol::Bool = false)
+function get_name_color(x::EscapeInfo, symbol::Bool = false)
     getname(x) = string(nameof(x))
     if x === EA.⊥
         name, color = (getname(EA.NotAnalyzed), "◌"), :plain
@@ -311,7 +311,7 @@ function get_name_color(x::EscapeLattice, symbol::Bool = false)
 end
 
 # pcs = sprint(show, collect(x.EscapeSites); context=:limit=>true)
-function Base.show(io::IO, x::EscapeLattice)
+function Base.show(io::IO, x::EscapeInfo)
     name, color = get_name_color(x)
     if isnothing(name)
         Base.@invoke show(io::IO, x::Any)
@@ -319,7 +319,7 @@ function Base.show(io::IO, x::EscapeLattice)
         printstyled(io, name; color)
     end
 end
-function Base.show(io::IO, ::MIME"application/prs.juno.inline", x::EscapeLattice)
+function Base.show(io::IO, ::MIME"application/prs.juno.inline", x::EscapeInfo)
     name, color = get_name_color(x)
     if isnothing(name)
         return x # use fancy tree-view

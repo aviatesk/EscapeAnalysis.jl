@@ -54,11 +54,11 @@ end
 iscall(pred::Function, @nospecialize(x)) = Meta.isexpr(x, :call) && pred(x.args[1])
 
 """
-    is_load_forwardable(x::EscapeLattice) -> Bool
+    is_load_forwardable(x::EscapeInfo) -> Bool
 
 Queries if `x` is elibigle for store-to-load forwarding optimization.
 """
-function is_load_forwardable(x::EscapeAnalysis.EscapeLattice)
+function is_load_forwardable(x::EscapeAnalysis.EscapeInfo)
     AliasInfo = x.AliasInfo
     AliasInfo === false && return true # allows this query to work for immutables since we don't impose escape on them
     # NOTE technically we also need to check `!has_thrown_escape(x)` here as well,
