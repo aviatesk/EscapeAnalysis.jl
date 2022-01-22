@@ -292,6 +292,7 @@ it is more ideal if it runs once and succeeding optimization passes incrementall
 ```@docs
 Core.Compiler.EscapeAnalysis.analyze_escapes
 Core.Compiler.EscapeAnalysis.EscapeState
+Core.Compiler.EscapeAnalysis.EscapeInfo
 Core.Compiler.EscapeAnalysis.cache_escapes!
 ```
 

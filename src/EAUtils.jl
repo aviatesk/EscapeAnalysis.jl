@@ -105,8 +105,8 @@ The symbols in the side of each call argument and SSA statements represents the 
 - `✓`: this value never escapes (`has_no_escape(result.state[x])` holds)
 - `↑`: this value can escape to the caller via return (`has_return_escape(result.state[x])` holds)
 - `X`: this value can escape to somewhere the escape analysis can't reason about like escapes to a global memory (`has_all_escape(result.state[x])` holds)
-- `*`: this value's escape state is between the `ReturnEscape` and `AllEscape` in the `EscapeInfo`, e.g. it has unhandled `ThrownEscape`
-and additional `′` indicates that field analysis has been done successfully on that value.
+- `*`: this value's escape state is between the `ReturnEscape` and `AllEscape` in the lattice of [`EscapeInfo`](@ref), e.g. it has unhandled `ThrownEscape`
+- `′`: this value has additional field/aliasing information in its `AliasInfo` property
 
 For testing, escape information of each call argument and SSA value can be inspected programmatically as like:
 ```julia
