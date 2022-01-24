@@ -349,6 +349,12 @@ Base.show(io::IO, result::EscapeResult) = print_with_info(io, result.ir, result.
 @eval Base.iterate(res::EscapeResult, state=1) =
     return state > $(fieldcount(EscapeResult)) ? nothing : (getfield(res, state), state+1)
 
+@static if isdefined(EscapeAnalysis, :EscapeCache)
+    import EscapeAnalysis: EscapeCache
+    Base.show(io::IO, cached::EscapeCache) =
+        show(io, EscapeResult(cached.ir, cached.state, nothing))
+end
+
 # adapted from https://github.com/JuliaDebug/LoweredCodeUtils.jl/blob/4612349432447e868cf9285f647108f43bd0a11c/src/codeedges.jl#L881-L897
 function print_with_info(io::IO,
     ir::IRCode, state::EscapeState, linfo::Union{Nothing,MethodInstance})
