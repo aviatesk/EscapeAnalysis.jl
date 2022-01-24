@@ -289,7 +289,7 @@ end
 
 import Core: Argument, SSAValue
 import .CC: widenconst, singleton_type
-import .EA: EscapeInfo, EscapeState, ⊑, ⊏
+import .EA: EscapeInfo, EscapeState
 
 # in order to run a whole analysis from ground zero (e.g. for benchmarking, etc.)
 __clear_caches!() = (__clear_code_cache!(); EA.__clear_escape_cache!())
