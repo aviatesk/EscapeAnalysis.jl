@@ -1109,28 +1109,30 @@ function escape_new!(astate::AnalysisState, pc::Int, args::Vector{Any})
         # fields are known precisely: propagate escape information imposed on recorded possibilities to the exact field values
         infos = AliasInfo.infos
         nf = length(infos)
-        objinfo = ignore_aliasinfo(objinfo)
+        objinfo′ = ignore_aliasinfo(objinfo)
         for i in 2:nargs
             i-1 > nf && break # may happen when e.g. ϕ-node merges values with different types
             arg = args[i]
             add_alias_escapes!(astate, arg, infos[i-1])
             push!(infos[i-1], -pc) # record def
             # propagate the escape information of this object ignoring field information
-            add_escape_change!(astate, arg, objinfo)
+            add_escape_change!(astate, arg, objinfo′)
             add_liveness_change!(astate, arg, pc)
         end
+        add_escape_change!(astate, obj, EscapeInfo(objinfo, AliasInfo)) # update with new AliasInfo
     elseif isa(AliasInfo, Unindexable) && !AliasInfo.array
         # fields are known partially: propagate escape information imposed on recorded possibilities to all fields values
         info = AliasInfo.info
-        objinfo = ignore_aliasinfo(objinfo)
+        objinfo′ = ignore_aliasinfo(objinfo)
         for i in 2:nargs
             arg = args[i]
             add_alias_escapes!(astate, arg, info)
             push!(info, -pc) # record def
             # propagate the escape information of this object ignoring field information
-            add_escape_change!(astate, arg, objinfo)
+            add_escape_change!(astate, arg, objinfo′)
             add_liveness_change!(astate, arg, pc)
         end
+        add_escape_change!(astate, obj, EscapeInfo(objinfo, AliasInfo)) # update with new AliasInfo
     else
         # this object has been used as array, but it is allocated as struct here (i.e. should throw)
         # update obj's field information and just handle this case conservatively
@@ -1407,13 +1409,11 @@ function escape_builtin!(::typeof(getfield), astate::AnalysisState, pc::Int, arg
         isa(AliasInfo, Unindexable) && @goto record_unindexable_use
         @label record_indexable_use
         push!(AliasInfo.infos[fidx], pc) # record use
-        objinfo = EscapeInfo(objinfo, AliasInfo)
-        add_escape_change!(astate, obj, objinfo)
+        add_escape_change!(astate, obj, EscapeInfo(objinfo, AliasInfo)) # update with new AliasInfo
     elseif isa(AliasInfo, Unindexable) && !AliasInfo.array
         @label record_unindexable_use
         push!(AliasInfo.info, pc) # record use
-        objinfo = EscapeInfo(objinfo, AliasInfo)
-        add_escape_change!(astate, obj, objinfo)
+        add_escape_change!(astate, obj, EscapeInfo(objinfo, AliasInfo)) # update with new AliasInfo
     else
         # this object has been used as array, but it is used as struct here (i.e. should throw)
         # update obj's field information and just handle this case conservatively
@@ -1459,7 +1459,7 @@ function escape_builtin!(::typeof(setfield!), astate::AnalysisState, pc::Int, ar
         add_alias_escapes!(astate, val, AliasInfo.infos[fidx])
         push!(AliasInfo.infos[fidx], -pc) # record def
         objinfo = EscapeInfo(objinfo, AliasInfo)
-        add_escape_change!(astate, obj, objinfo)
+        add_escape_change!(astate, obj, objinfo) # update with new AliasInfo
         # propagate the escape information of this object ignoring field information
         add_escape_change!(astate, val, ignore_aliasinfo(objinfo))
     elseif isa(AliasInfo, Unindexable) && !AliasInfo.array
@@ -1468,7 +1468,7 @@ function escape_builtin!(::typeof(setfield!), astate::AnalysisState, pc::Int, ar
         add_alias_escapes!(astate, val, AliasInfo.info)
         push!(AliasInfo.info, -pc) # record def
         objinfo = EscapeInfo(objinfo, AliasInfo)
-        add_escape_change!(astate, obj, objinfo)
+        add_escape_change!(astate, obj, objinfo) # update with new AliasInfo
         # propagate the escape information of this object ignoring field information
         add_escape_change!(astate, val, ignore_aliasinfo(objinfo))
     else
