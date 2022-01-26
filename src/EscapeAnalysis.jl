@@ -936,6 +936,8 @@ function compute_frameinfo(ir::IRCode)
             end
             arrayinfo[idx] = dims
         elseif arrayinfo !== nothing
+            # TODO this super limited alias analysis is able to handle only very simple cases
+            # this should be replaced with a proper forward dimension analysis
             if isa(stmt, PhiNode)
                 values = stmt.values
                 local dims = nothing
@@ -945,12 +947,13 @@ function compute_frameinfo(ir::IRCode)
                         if isa(val, SSAValue) && haskey(arrayinfo, val.id)
                             if dims === nothing
                                 dims = arrayinfo[val.id]
-                            elseif dims ≠ arrayinfo[val.id]
-                                dims = nothing
-                                break
+                                continue
+                            elseif dims == arrayinfo[val.id]
+                                continue
                             end
                         end
                     end
+                    @goto next_stmt
                 end
                 if dims !== nothing
                     arrayinfo[idx] = dims
