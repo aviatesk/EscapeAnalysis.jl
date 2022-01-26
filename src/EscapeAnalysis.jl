@@ -809,11 +809,6 @@ end
     yroot = find_root!(estate.aliasset, yidx)
     if xroot ≠ yroot
         union!(estate.aliasset, xroot, yroot)
-        xinfo = estate.escapes[xidx]
-        yinfo = estate.escapes[yidx]
-        xyinfo = xinfo ⊔ₑ yinfo
-        estate.escapes[xidx] = xyinfo
-        estate.escapes[yidx] = xyinfo
         return true
     end
     return false
@@ -851,6 +846,10 @@ function add_alias_change!(astate::AnalysisState, @nospecialize(x), @nospecializ
     yidx = iridx(y, estate)
     if xidx !== nothing && yidx !== nothing && !isaliased(xidx, yidx, astate.estate)
         pushfirst!(astate.changes, AliasChange(xidx, yidx))
+        # add new escape change here so that it's shared among the expanded `aliasset`
+        xinfo = estate.escapes[xidx]
+        yinfo = estate.escapes[yidx]
+        add_escape_change!(astate, x, xinfo ⊔ₑ yinfo)
     end
     return nothing
 end
