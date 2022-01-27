@@ -763,6 +763,7 @@ end
     estate::EscapeState, change::EscapeChange)
     (; xidx, xinfo) = change
     anychanged = _propagate_escape_change!(op, estate, xidx, xinfo)
+    # COMBAK is there a more efficient method of escape information equalization on aliasset?
     aliases = getaliases(xidx, estate)
     if aliases !== nothing
         for aidx in aliases
@@ -846,7 +847,7 @@ function add_alias_change!(astate::AnalysisState, @nospecialize(x), @nospecializ
     yidx = iridx(y, estate)
     if xidx !== nothing && yidx !== nothing && !isaliased(xidx, yidx, astate.estate)
         pushfirst!(astate.changes, AliasChange(xidx, yidx))
-        # add new escape change here so that it's shared among the expanded `aliasset`
+        # add new escape change here so that it's shared among the expanded `aliasset` in `propagate_escape_change!`
         xinfo = estate.escapes[xidx]
         yinfo = estate.escapes[yidx]
         add_escape_change!(astate, x, xinfo ⊔ₑ yinfo)
@@ -1068,6 +1069,8 @@ function escape_invoke!(astate::AnalysisState, pc::Int, args::Vector{Any})
                 add_escape_change!(astate, arg, info)
             end
         end
+        # we should disable the alias analysis on this newly introduced object
+        add_escape_change!(astate, ret, EscapeInfo(retinfo, true))
     end
 end
 
@@ -1419,11 +1422,9 @@ function escape_builtin!(::typeof(getfield), astate::AnalysisState, pc::Int, arg
         # update obj's field information and just handle this case conservatively
         objinfo = escape_unanalyzable_obj!(astate, obj, objinfo)
         @label conservative_propagation
-        # the field couldn't be analyzed precisely: propagate the escape information
-        # imposed on the return value of this `getfield` call to the object itself
-        # as the most conservative propagation
-        ssainfo = estate[SSAValue(pc)]
-        add_escape_change!(astate, obj, ssainfo)
+        # at the extreme case, a field of `obj` may point to `obj` itself
+        # so add the alias change here as the most conservative propagation
+        add_alias_change!(astate, obj, SSAValue(pc))
     end
     return false
 end
@@ -1546,8 +1547,9 @@ function escape_builtin!(::typeof(arrayref), astate::AnalysisState, pc::Int, arg
         # update ary's element information and just handle this case conservatively
         aryinfo = escape_unanalyzable_obj!(astate, ary, aryinfo)
         @label conservative_propagation
-        ssainfo = estate[SSAValue(pc)]
-        add_escape_change!(astate, ary, ssainfo)
+        # at the extreme case, an element of `ary` may point to `ary` itself
+        # so add the alias change here as the most conservative propagation
+        add_alias_change!(astate, ary, SSAValue(pc))
     end
     return true
 end
