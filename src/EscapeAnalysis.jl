@@ -83,14 +83,14 @@ const LivenessSet = BitSet
 A lattice for escape information, which holds the following properties:
 - `x.Analyzed::Bool`: not formally part of the lattice, only indicates `x` has not been analyzed or not
 - `x.ReturnEscape::Bool`: indicates `x` can escape to the caller via return
-- `x.ThrownEscape::BitSet`: records SSA statements numbers where `x` can be thrown as exception:
+- `x.ThrownEscape::BitSet`: records SSA statement numbers where `x` can be thrown as exception:
   * `isempty(x.ThrownEscape)`: `x` will never be thrown in this call frame (the bottom)
   * `pc ∈ x.ThrownEscape`: `x` may be thrown at the SSA statement at `pc`
   * `-1 ∈ x.ThrownEscape`: `x` may be thrown at arbitrary points of this call frame (the top)
   This information will be used by `escape_exception!` to propagate potential escapes via exception.
-- `x.AliasInfo::Union{IndexableFields,Unindexable,Bool}`: maintains all possible values
+- `x.AliasInfo::Union{Bool,IndexableFields,IndexableElements,Unindexable}`: maintains all possible values
   that can be aliased to fields or array elements of `x`:
-  * `x.AliasInfo === false` indicates the fields/elements of `x` isn't analyzed yet
+  * `x.AliasInfo === false` indicates the fields/elements of `x` aren't analyzed yet
   * `x.AliasInfo === true` indicates the fields/elements of `x` can't be analyzed,
     e.g. the type of `x` is not known or is not concrete and thus its fields/elements
     can't be known precisely
@@ -453,7 +453,7 @@ x::EscapeInfo ⊔ₑ y::EscapeInfo = begin
 end
 
 # TODO setup a more effient struct for cache
-# which can discard escape information on SSS values and arguments that don't join dispatch signature
+# which can discard escape information on SSA values and arguments that don't join dispatch signature
 
 const AliasSet = IntDisjointSet{Int}
 
