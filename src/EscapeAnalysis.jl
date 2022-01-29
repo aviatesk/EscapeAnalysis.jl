@@ -104,11 +104,6 @@ A lattice for escape information, which holds the following properties:
     analyzed call frame (and thus it's visible from the caller immediately).
   * `pc ∈ x.Liveness`: `x` may be used at the SSA statement at `pc`
   * `-1 ∈ x.Liveness`: `x` may be used at arbitrary points of this call frame (the top)
-- `x.ArgEscape::Int` (not implemented yet): indicates it will escape to the caller through
-  `setfield!` on argument(s)
-  * `-1` : no escape
-  * `0` : unknown or multiple
-  * `n` : through argument N
 
 There are utility constructors to create common `EscapeInfo`s, e.g.,
 - `NoEscape()`: the bottom(-like) element of this lattice, meaning it won't escape to anywhere
@@ -184,7 +179,7 @@ const ARG_LIVENESS = LivenessSet(0)
 # the constructors
 NotAnalyzed() = EscapeInfo(false, false, BOT_THROWN_ESCAPE, false, BOT_LIVENESS) # not formally part of the lattice
 NoEscape() = EscapeInfo(true, false, BOT_THROWN_ESCAPE, false, BOT_LIVENESS)
-ArgEscape() = EscapeInfo(true, false, BOT_THROWN_ESCAPE, true, ARG_LIVENESS) # TODO allow interprocedural alias analysis?
+ArgEscape() = EscapeInfo(true, false, BOT_THROWN_ESCAPE, true, ARG_LIVENESS)
 ReturnEscape(pc::Int) = EscapeInfo(true, true, BOT_THROWN_ESCAPE, false, LivenessSet(pc))
 AllReturnEscape() = EscapeInfo(true, true, BOT_THROWN_ESCAPE, false, TOP_LIVENESS)
 ThrownEscape(pc::Int) = EscapeInfo(true, false, LivenessSet(pc), false, BOT_LIVENESS)
@@ -474,8 +469,8 @@ end
 function EscapeState(nargs::Int, nstmts::Int, arrayinfo::Union{Nothing,ArrayInfo})
     escapes = EscapeInfo[
         1 ≤ i ≤ nargs ? ArgEscape() : ⊥ for i in 1:(nargs+nstmts)]
-    aliaset = AliasSet(nargs+nstmts)
-    return EscapeState(escapes, aliaset, nargs, arrayinfo)
+    aliasset = AliasSet(nargs+nstmts)
+    return EscapeState(escapes, aliasset, nargs, arrayinfo)
 end
 function getindex(estate::EscapeState, @nospecialize(x))
     xidx = iridx(x, estate)
@@ -564,10 +559,11 @@ struct ArgEscapeInfo
     AllEscape::Bool
     ReturnEscape::Bool
     ThrownEscape::Bool
-    function ArgEscapeInfo(x::EscapeInfo)
-        x === ⊤ && return new(true, true, true)
+    ArgAliasing::Union{Nothing,Vector{Int}}
+    function ArgEscapeInfo(x::EscapeInfo, ArgAliasing::Union{Nothing,Vector{Int}})
+        x === ⊤ && return new(true, true, true, nothing)
         ThrownEscape = isempty(x.ThrownEscape) ? false : true
-        return new(false, x.ReturnEscape, ThrownEscape)
+        return new(false, x.ReturnEscape, ThrownEscape, ArgAliasing)
     end
 end
 
@@ -605,9 +601,21 @@ else
 end
 
 function to_interprocedural(estate::EscapeState)
-    cache = Vector{ArgEscapeInfo}(undef, estate.nargs)
-    for i = 1:estate.nargs
-        cache[i] = ArgEscapeInfo(estate.escapes[i])
+    nargs = estate.nargs
+    cache = Vector{ArgEscapeInfo}(undef, nargs)
+    for i = 1:nargs
+        info = estate.escapes[i]
+        @assert isa(info.AliasInfo, Bool)
+        ArgAliasing = nothing
+        for j = (i+1):nargs
+            if isaliased(i, j, estate)
+                if ArgAliasing === nothing
+                    ArgAliasing = Int[]
+                end
+                push!(ArgAliasing, j)
+            end
+        end
+        cache[i] = ArgEscapeInfo(info, ArgAliasing)
     end
     return cache
 end
@@ -620,6 +628,10 @@ struct EscapeChange <: Change
     xinfo::EscapeInfo
 end
 struct AliasChange <: Change
+    xidx::Int
+    yidx::Int
+end
+struct ArgAliasChange <: Change
     xidx::Int
     yidx::Int
 end
@@ -813,11 +825,13 @@ end
 end
 
 @inline function propagate_alias_change!(estate::EscapeState, change::AliasChange)
+    anychange = false
     (; xidx, yidx) = change
-    xroot = find_root!(estate.aliasset, xidx)
-    yroot = find_root!(estate.aliasset, yidx)
+    aliasset = estate.aliasset
+    xroot = find_root!(aliasset, xidx)
+    yroot = find_root!(aliasset, yidx)
     if xroot ≠ yroot
-        union!(estate.aliasset, xroot, yroot)
+        union!(aliasset, xroot, yroot)
         return true
     end
     return false
@@ -1075,6 +1089,12 @@ function escape_invoke!(astate::AnalysisState, pc::Int, args::Vector{Any})
                 # if this is simply passed as the call argument, we can just propagate
                 # the escape information imposed on this call argument within the callee
                 add_escape_change!(astate, arg, info)
+            end
+            ArgAliasing = arginfo.ArgAliasing
+            if ArgAliasing !== nothing
+                for j in ArgAliasing
+                    add_alias_change!(astate, arg, args[j+1])
+                end
             end
         end
         # we should disable the alias analysis on this newly introduced object
@@ -1485,9 +1505,9 @@ function escape_builtin!(::typeof(setfield!), astate::AnalysisState, pc::Int, ar
         # update obj's field information and just handle this case conservatively
         objinfo = escape_unanalyzable_obj!(astate, obj, objinfo)
         @label conservative_propagation
-        # the field couldn't be analyzed: propagate the entire escape information
-        # of this object to the value being assigned as the most conservative propagation
-        add_escape_change!(astate, val, objinfo)
+        # the field couldn't be analyzed: alias this object to the value being assigned
+        # as the most conservative propagation (as required for ArgAliasing)
+        add_alias_change!(astate, val, obj)
     end
     # also propagate escape information imposed on the return value of this `setfield!`
     ssainfo = estate[SSAValue(pc)]
@@ -1627,7 +1647,7 @@ function escape_builtin!(::typeof(arrayset), astate::AnalysisState, pc::Int, arg
         # update ary's element information and just handle this case conservatively
         aryinfo = escape_unanalyzable_obj!(astate, ary, aryinfo)
         @label conservative_propagation
-        add_escape_change!(astate, val, aryinfo)
+        add_alias_change!(astate, val, ary)
     end
     # also propagate escape information imposed on the return value of this `arrayset`
     ssainfo = estate[SSAValue(pc)]
