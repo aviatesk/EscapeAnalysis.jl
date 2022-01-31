@@ -170,7 +170,7 @@ import .CC:
 import Core:
     CodeInstance, MethodInstance, CodeInfo
 import .CC:
-    OptimizationState, IRCode
+    InferenceResult, OptimizationState, IRCode
 import .EA:
     analyze_escapes, cache_escapes!
 
@@ -246,9 +246,9 @@ function invalidate_cache!(replaced, max_world, depth = 0)
     return nothing
 end
 
-function CC.optimize(interp::EscapeAnalyzer, opt::OptimizationState, params::OptimizationParams, @nospecialize(result))
+function CC.optimize(interp::EscapeAnalyzer, opt::OptimizationState, params::OptimizationParams, caller::InferenceResult)
     ir = run_passes_with_ea(interp, opt.src, opt)
-    return CC.finish(interp, opt, params, ir, result)
+    return CC.finish(interp, opt, params, ir, caller)
 end
 
 function run_passes_with_ea(interp::EscapeAnalyzer, ci::CodeInfo, sv::OptimizationState)
