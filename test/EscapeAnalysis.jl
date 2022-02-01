@@ -1338,7 +1338,7 @@ end
         @test_broken !has_all_escape(result.state[Argument(2)])
     end
 
-    # ArgAliasing
+    # aliasing between arguments
     let result = @eval EATModule() begin
             @noinline setxy!(x, y) = x[] = y
             $code_escapes((String,)) do y
@@ -1366,6 +1366,15 @@ end
         @test has_return_escape(result.state[SSAValue(i1)], r)
         @test !has_return_escape(result.state[SSAValue(i2)], r)
         @test has_return_escape(result.state[Argument(2)], r) # y
+    end
+    let result = @eval EATModule() begin
+            @noinline mysetindex!(x, a) = x[1] = a
+            const Ax = Vector{Any}(undef, 1)
+            $code_escapes((String,)) do s
+                mysetindex!(Ax, s)
+            end
+        end
+        @test has_all_escape(result.state[Argument(2)]) # s
     end
 
     # TODO flow-sensitivity?
