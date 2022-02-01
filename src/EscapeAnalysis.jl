@@ -18,19 +18,23 @@ import ._TOP_MOD: ==, getindex, setindex!
 # usings
 import Core:
     MethodInstance, Const, Argument, SSAValue, PiNode, PhiNode, UpsilonNode, PhiCNode,
-    ReturnNode, GotoNode, GotoIfNot, SimpleVector, sizeof, ifelse, arrayset, arrayref,
-    arraysize
+    ReturnNode, GotoNode, GotoIfNot, SimpleVector, MethodMatch,
+    sizeof, ifelse, arrayset, arrayref, arraysize
 import ._TOP_MOD:     # Base definitions
     @__MODULE__, @eval, @assert, @specialize, @nospecialize, @inbounds, @inline, @noinline,
     @label, @goto, !, !==, !=, ≠, +, -, *, ≤, <, ≥, >, &, |, include, error, missing, copy,
     Vector, BitSet, IdDict, IdSet, UnitRange, Csize_t, ∪, ⊆, ∩, :, ∈, ∉, in, length, get,
     first, last, haskey, keys, get!, isempty, isassigned, pop!, push!, pushfirst!, empty!,
-    delete!, max, min
+    delete!, max, min, enumerate
 import Core.Compiler: # Core.Compiler specific definitions
-    isbitstype, isexpr, is_meta_expr_head, println,
-    IRCode, IR_FLAG_EFFECT_FREE, widenconst, argextype, singleton_type, fieldcount_noerror,
-    try_compute_field, try_compute_fieldidx, hasintersect, ⊑, intrinsic_nothrow,
-    array_builtin_common_typecheck, arrayset_typecheck, setfield!_nothrow, alloc_array_ndims
+    Bottom, InferenceResult, IRCode, Instruction, Signature,
+    MethodResultPure, MethodMatchInfo, UnionSplitInfo, ConstCallInfo, InvokeCallInfo,
+    isbitstype, isexpr, is_meta_expr_head, println, widenconst, argextype, singleton_type,
+    fieldcount_noerror, try_compute_field, try_compute_fieldidx, hasintersect, ⊑,
+    intrinsic_nothrow, array_builtin_common_typecheck, arrayset_typecheck,
+    setfield!_nothrow, alloc_array_ndims, call_sig, argtypes_to_type, is_builtin,
+    is_return_type, istopfunction, validate_sparams, specialize_method, stmt_effect_free,
+    check_effect_free!, invoke_rewrite, IR_FLAG_EFFECT_FREE
 
 if _TOP_MOD !== Core.Compiler
     include(@__MODULE__, "disjoint_set.jl")
@@ -584,17 +588,17 @@ if _TOP_MOD !== Core.Compiler
         ir::IRCode         # preserved just for debugging purpose
     end
     const GLOBAL_ESCAPE_CACHE = IdDict{MethodInstance,EscapeCache}()
-    function cache_escapes!(linfo::MethodInstance, estate::EscapeState, cacheir::IRCode)
+    function cache_escapes!(caller::InferenceResult, estate::EscapeState, cacheir::IRCode)
         cache = EscapeCache(to_interprocedural(estate), estate, cacheir)
-        GLOBAL_ESCAPE_CACHE[linfo] = cache
+        LOCAL_ESCAPE_CACHE[caller] = cache
         return cache
     end
     argescapes_from_cache(cache::EscapeCache) = cache.cache
 else
     const GLOBAL_ESCAPE_CACHE = IdDict{MethodInstance,Vector{ArgEscapeInfo}}()
-    function cache_escapes!(linfo::MethodInstance, estate::EscapeState, _::IRCode)
+    function cache_escapes!(caller::InferenceResult, estate::EscapeState, _::IRCode)
         cache = to_interprocedural(estate)
-        GLOBAL_ESCAPE_CACHE[linfo] = cache
+        LOCAL_ESCAPE_CACHE[caller] = cache
         return cache
     end
     argescapes_from_cache(cache::Vector{ArgEscapeInfo}) = cache
@@ -619,6 +623,9 @@ function to_interprocedural(estate::EscapeState)
     end
     return cache
 end
+
+# HACK this local cache should be integrated with InferenceResult
+const LOCAL_ESCAPE_CACHE = IdDict{InferenceResult,EscapeCache}()
 
 __clear_escape_cache!() = empty!(GLOBAL_ESCAPE_CACHE)
 
@@ -662,11 +669,11 @@ end
 Analyzes escape information in `ir`.
 `nargs` is the number of actual arguments of the analyzed call.
 """
-function analyze_escapes(ir::IRCode, nargs::Int)
+function analyze_escapes(ir::IRCode, nargs::Int, preinlining::Bool)
     stmts = ir.stmts
     nstmts = length(stmts) + length(ir.new_nodes.stmts)
 
-    tryregions, arrayinfo = compute_frameinfo(ir)
+    tryregions, arrayinfo, callinfo = compute_frameinfo(ir, preinlining)
     estate = EscapeState(nargs, nstmts, arrayinfo)
     changes = Changes() # keeps changes that happen at current statement
     astate = AnalysisState(ir, estate, changes)
@@ -682,7 +689,11 @@ function analyze_escapes(ir::IRCode, nargs::Int)
             if isa(stmt, Expr)
                 head = stmt.head
                 if head === :call
-                    escape_call!(astate, pc, stmt.args)
+                    if callinfo !== nothing
+                        escape_call!(astate, pc, stmt.args, callinfo)
+                    else
+                        escape_call!(astate, pc, stmt.args)
+                    end
                 elseif head === :invoke
                     escape_invoke!(astate, pc, stmt.args)
                 elseif head === :new || head === :splatnew
@@ -756,7 +767,7 @@ function analyze_escapes(ir::IRCode, nargs::Int)
     #     println("[EA] excessive iteration count found ", debug_itr_counter, " (", singleton_type(ir.argtypes[1]), ")")
     # end
 
-    return estate
+    return estate, callinfo
 end
 
 # propagate changes, and check convergence
@@ -914,12 +925,24 @@ end
 # a preparatory linear scan to find:
 # - regions in which potential throws will be caught
 # - array allocations whose dimensions are known precisely (with some very simple alias analysis)
-function compute_frameinfo(ir::IRCode)
-    tryregions, arrayinfo = nothing, nothing
+function compute_frameinfo(ir::IRCode, preinlining::Bool)
     nstmts, nnewnodes = length(ir.stmts), length(ir.new_nodes.stmts)
+    tryregions, arrayinfo = nothing, nothing
+    if preinlining
+        callinfo = Vector{Any}(undef, nstmts+nnewnodes)
+    else
+        callinfo = nothing
+    end
     for idx in 1:nstmts+nnewnodes
-        stmt = getinst(ir, idx)[:inst]
-        if isexpr(stmt, :enter)
+        inst = getinst(ir, idx)
+        stmt = inst[:inst]
+        if preinlining
+            # TODO don't call `check_effect_free!` in the inlinear
+            check_effect_free!(ir, idx, stmt, inst[:type])
+        end
+        if callinfo !== nothing && isexpr(stmt, :call)
+            callinfo[idx] = resolve_call(ir, stmt, inst[:info])
+        elseif isexpr(stmt, :enter)
             @assert idx ≤ nstmts "try/catch inside new_nodes unsupported"
             tryregions === nothing && (tryregions = UnitRange{Int}[])
             leave_block = stmt.args[1]::Int
@@ -992,7 +1015,168 @@ function compute_frameinfo(ir::IRCode)
         end
         @label next_stmt
     end
-    return tryregions, arrayinfo
+    return tryregions, arrayinfo, callinfo
+end
+
+const Linfo = Union{MethodInstance,InferenceResult}
+struct CallInfo
+    linfos::Vector{Linfo}
+    fully_covered::Bool
+end
+
+# TODO many duplications with the inlining analysis code, factor them out
+function resolve_call(ir::IRCode, stmt::Expr, @nospecialize(info))
+    sig = call_sig(ir, stmt)
+    if sig === nothing
+        return missing
+    end
+    # TODO handle _apply_iterate
+    if is_builtin(sig) && sig.f !== invoke
+        return false
+    end
+    # handling corresponding to late_inline_special_case!
+    (; f, argtypes) = sig
+    if length(argtypes) == 3 && istopfunction(f, :!==)
+        return true
+    elseif length(argtypes) == 3 && istopfunction(f, :(>:))
+        return true
+    elseif f === TypeVar && 2 ≤ length(argtypes) ≤ 4 && (argtypes[2] ⊑ Symbol)
+        return true
+    elseif f === UnionAll && length(argtypes) == 3 && (argtypes[2] ⊑ TypeVar)
+        return true
+    elseif is_return_type(f)
+        return true
+    end
+    if info isa MethodResultPure
+        return true
+    elseif info === false
+        return missing
+    end
+    # TODO handle OpaqueClosureCallInfo
+    if sig.f === invoke
+        isa(info, InvokeCallInfo) || return missing
+        return analyze_invoke_call(sig, info)
+    elseif isa(info, ConstCallInfo)
+        return analyze_const_call(sig, info)
+    elseif isa(info, MethodMatchInfo)
+        infos = MethodMatchInfo[info]
+    elseif isa(info, UnionSplitInfo)
+        infos = info.matches
+    else # isa(info, ReturnTypeCallInfo), etc.
+        return info
+    end
+    return analyze_call(sig, infos)
+end
+
+function analyze_invoke_call(sig::Signature, info::InvokeCallInfo)
+    match = info.match
+    if !match.fully_covers
+        # TODO: We could union split out the signature check and continue on
+        return missing
+    end
+    result = info.result
+    if isa(result, InferenceResult)
+        return CallInfo(Linfo[result], true)
+    else
+        argtypes = invoke_rewrite(sig.argtypes)
+        mi = analyze_match(match, length(argtypes))
+        mi === nothing && return missing
+        return CallInfo(Linfo[mi], true)
+    end
+end
+
+function analyze_const_call(sig::Signature, cinfo::ConstCallInfo)
+    linfos = Linfo[]
+    (; call, results) = cinfo
+    infos = isa(call, MethodMatchInfo) ? MethodMatchInfo[call] : call.matches
+    local fully_covered = true # required to account for potential escape via MethodError
+    local signature_union = Bottom
+    local j = 0
+    for i in 1:length(infos)
+        meth = infos[i].results
+        if meth.ambig
+            # Too many applicable methods
+            # Or there is a (partial?) ambiguity
+            return missing
+        end
+        nmatch = Core.Compiler.length(meth)
+        if nmatch == 0 # No applicable methods
+            # mark this call may potentially throw, and the try next union split
+            fully_covered = false
+            continue
+        end
+        for i = 1:nmatch
+            j += 1
+            result = results[j]
+            if result === nothing
+                match = Core.Compiler.getindex(meth, i)
+                mi = analyze_match(match, length(sig.argtypes))
+                mi === nothing && return missing
+                push!(linfos, mi)
+                signature_union = Union{signature_union, match.spec_types}
+            else
+                push!(linfos, result)
+                signature_union = Union{signature_union, result.linfo.specTypes}
+            end
+        end
+    end
+    if fully_covered
+        atype = argtypes_to_type(sig.argtypes)
+        fully_covered &= atype <: signature_union
+    end
+    return CallInfo(linfos, fully_covered)
+end
+
+function analyze_call(sig::Signature, infos::Vector{MethodMatchInfo})
+    linfos = Linfo[]
+    local fully_covered = true # required to account for potential escape via MethodError
+    local signature_union = Bottom
+    for i in 1:length(infos)
+        meth = infos[i].results
+        if meth.ambig
+            # Too many applicable methods
+            # Or there is a (partial?) ambiguity
+            return missing
+        end
+        nmatch = Core.Compiler.length(meth)
+        if nmatch == 0 # No applicable methods
+            # mark this call may potentially throw, and the try next union split
+            fully_covered = false
+            continue
+        end
+        for i = 1:nmatch
+            match = Core.Compiler.getindex(meth, i)
+            mi = analyze_match(match, length(sig.argtypes))
+            mi === nothing && return missing
+            push!(linfos, mi)
+            signature_union = Union{signature_union, match.spec_types}
+        end
+    end
+    if fully_covered
+        atype = argtypes_to_type(sig.argtypes)
+        fully_covered &= atype <: signature_union
+    end
+    return CallInfo(linfos, fully_covered)
+end
+
+function analyze_match(match::MethodMatch, npassedargs::Int)
+    method = match.method
+    na = Int(method.nargs)
+    if na != npassedargs && !(na > 0 && method.isva)
+        # we have a method match only because an earlier
+        # inference step shortened our call args list, even
+        # though we have too many arguments to actually
+        # call this function
+        return nothing
+    end
+
+    # Bail out if any static parameters are left as TypeVar
+    # COMBAK is this needed for escape analysis?
+    validate_sparams(match.sparams) || return nothing
+
+    # See if there exists a specialization for this method signature
+    mi = specialize_method(match; preexisting=true) # Union{Nothing, MethodInstance}
+    return mi
 end
 
 """
@@ -1059,9 +1243,18 @@ function escape_exception!(astate::AnalysisState, tryregions::Vector{UnitRange{I
     end
 end
 
-function escape_invoke!(astate::AnalysisState, pc::Int, args::Vector{Any})
-    linfo = first(args)::MethodInstance
-    cache = get(GLOBAL_ESCAPE_CACHE, linfo, nothing)
+# escape statically-resolved call, i.e. `Expr(:invoke, ::MethodInstance, ...)`
+escape_invoke!(astate::AnalysisState, pc::Int, args::Vector{Any}) =
+    escape_invoke!(astate, pc, args, first(args)::MethodInstance, 2)
+
+function escape_invoke!(astate::AnalysisState, pc::Int, args::Vector{Any},
+    linfo::Linfo, first_idx::Int, last_idx::Int = length(args))
+    if isa(linfo, InferenceResult)
+        cache = get(LOCAL_ESCAPE_CACHE, linfo, nothing)
+        linfo = linfo.linfo
+    else
+        cache = get(GLOBAL_ESCAPE_CACHE, linfo, nothing)
+    end
     if cache === nothing
         add_conservative_changes!(astate, pc, args, 2)
     else
@@ -1070,14 +1263,14 @@ function escape_invoke!(astate::AnalysisState, pc::Int, args::Vector{Any})
         retinfo = astate.estate[ret] # escape information imposed on the call statement
         method = linfo.def::Method
         nargs = Int(method.nargs)
-        for i in 2:length(args)
-            arg = args[i]
-            if i-1 ≤ nargs
-                argi = i-1
-            else # handle isva signature: COMBAK will this be invalid once we take alias information into account ?
-                argi = nargs
+        for (i, argidx) in enumerate(first_idx:last_idx)
+            arg = args[argidx]
+            if i > nargs
+                # handle isva signature
+                # COMBAK will this be invalid once we take alias information into account?
+                i = nargs
             end
-            arginfo = argescapes[argi]
+            arginfo = argescapes[i]
             info = from_interprocedural(arginfo, retinfo, pc)
             if arginfo.ReturnEscape
                 # if this argument can be "returned", in addition to propagating
@@ -1093,7 +1286,7 @@ function escape_invoke!(astate::AnalysisState, pc::Int, args::Vector{Any})
             ArgAliasing = arginfo.ArgAliasing
             if ArgAliasing !== nothing
                 for j in ArgAliasing
-                    add_alias_change!(astate, arg, args[j+1])
+                    add_alias_change!(astate, arg, args[j-(first_idx-1)])
                 end
             end
         end
@@ -1177,10 +1370,12 @@ function escape_new!(astate::AnalysisState, pc::Int, args::Vector{Any})
             add_liveness_change!(astate, arg, pc)
         end
     end
-    if !(getinst(astate.ir, pc)[:flag] & IR_FLAG_EFFECT_FREE ≠ 0)
+    if !is_effect_free(astate.ir, pc)
         add_thrown_escapes!(astate, pc, args)
     end
 end
+
+is_effect_free(ir::IRCode, pc::Int) = getinst(ir, pc)[:flag] & IR_FLAG_EFFECT_FREE ≠ 0
 
 function add_alias_escapes!(astate::AnalysisState, @nospecialize(v), ainfo::AInfo)
     estate = astate.estate
@@ -1264,7 +1459,7 @@ function escape_foreigncall!(astate::AnalysisState, pc::Int, args::Vector{Any})
         # end
     end
     # NOTE array allocations might have been proven as nothrow (https://github.com/JuliaLang/julia/pull/43565)
-    nothrow = astate.ir.stmts[pc][:flag] & IR_FLAG_EFFECT_FREE ≠ 0
+    nothrow = is_effect_free(astate.ir, pc)
     name_info = nothrow ? ⊥ : ThrownEscape(pc)
     add_escape_change!(astate, name, name_info)
     add_liveness_change!(astate, name, pc)
@@ -1288,6 +1483,30 @@ end
 
 normalize(@nospecialize x) = isa(x, QuoteNode) ? x.value : x
 
+function escape_call!(astate::AnalysisState, pc::Int, args::Vector{Any}, callinfo::Vector{Any})
+    info = callinfo[pc]
+    if info === missing
+        # if this call couldn't be analyzed, escape it conservatively
+        add_conservative_changes!(astate, pc, args)
+        return
+    elseif isa(info, Bool)
+        info && return # known to be no escape
+        # now cascade to the builtin handling
+        escape_call!(astate, pc, args)
+        return
+    elseif isa(info, CallInfo)
+        for linfo in info.linfos
+            escape_invoke!(astate, pc, args, linfo, 1)
+        end
+        # if this call signature isn't fully convered, there is a potential escape via MethodError
+        info.fully_covered || add_thrown_escapes!(astate, pc, args)
+        return
+    else
+        println("[unhandled] ", typeof(info))
+        add_conservative_changes!(astate, pc, args)
+    end
+end
+
 function escape_call!(astate::AnalysisState, pc::Int, args::Vector{Any})
     ir = astate.ir
     ft = argextype(first(args), ir, ir.sptypes, ir.argtypes)
@@ -1309,8 +1528,7 @@ function escape_call!(astate::AnalysisState, pc::Int, args::Vector{Any})
     end
     result = escape_builtin!(f, astate, pc, args)
     if result === missing
-        # if this call hasn't been handled by any of pre-defined handlers,
-        # we escape this call conservatively
+        # if this call hasn't been handled by any of pre-defined handlers, escape it conservatively
         add_conservative_changes!(astate, pc, args)
         return
     elseif result === true
@@ -1320,7 +1538,7 @@ function escape_call!(astate::AnalysisState, pc::Int, args::Vector{Any})
         # we escape statements with the `ThrownEscape` property using the effect-freeness
         # computed by `stmt_effect_free` invoked within inlining
         # TODO throwness ≠ "effect-free-ness"
-        if getinst(astate.ir, pc)[:flag] & IR_FLAG_EFFECT_FREE ≠ 0
+        if is_effect_free(astate.ir, pc)
             add_liveness_changes!(astate, pc, args, 2)
         else
             add_fallback_changes!(astate, pc, args, 2)
