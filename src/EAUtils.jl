@@ -1,25 +1,17 @@
-const EA_AS_PKG = Symbol(@__MODULE__) !== :Base # develop EA as an external package
-
 module EAUtils
 
-import ..EA_AS_PKG
-if EA_AS_PKG
-    import ..EscapeAnalysis
-else
-    import Core.Compiler.EscapeAnalysis: EscapeAnalysis
-    Base.getindex(estate::EscapeAnalysis.EscapeState, @nospecialize(x)) =
-        Core.Compiler.getindex(estate, x)
-end
+export code_escapes, @code_escapes, __clear_cache!
+
+import ..EscapeAnalysis
 const EA = EscapeAnalysis
 const CC = Core.Compiler
 
 # entries
 # -------
 
-@static if EA_AS_PKG
 import InteractiveUtils: gen_call_with_extracted_types_and_kwargs
 
-@doc """
+"""
     @code_escapes [options...] f(args...)
 
 Evaluates the arguments to the function call, determines its types, and then calls
@@ -30,7 +22,6 @@ as the optional arguments like `@code_escapes debuginfo=:source myfunc(myargs...
 macro code_escapes(ex0...)
     return gen_call_with_extracted_types_and_kwargs(__module__, :code_escapes, ex0)
 end
-end # @static if EA_AS_PKG
 
 """
     code_escapes(f, argtypes=Tuple{}; [world], [interp], [debuginfo]) -> result::EscapeResult
@@ -129,11 +120,13 @@ function code_escapes(@nospecialize(args...);
                       debuginfo::Symbol = :none,
                       optimize::Bool = true)
     interp = EscapeAnalyzer(interp, optimize)
-    empty!(EA.LOCAL_ESCAPE_CACHE)
+    empty!(LOCAL_ESCAPE_CACHE)
     results = code_typed(args...; optimize=true, world, interp)
     isone(length(results)) || throw(ArgumentError("`code_escapes` only supports single analysis result"))
     return EscapeResult(interp.ir, interp.state, interp.linfo, debuginfo===:source)
 end
+
+__clear_cache!() = (empty!(GLOBAL_ESCAPE_CACHE); empty!(GLOBAL_CODE_CACHE))
 
 # AbstractInterpreter
 # -------------------
@@ -174,7 +167,7 @@ import Core:
 import .CC:
     InferenceResult, OptimizationState, IRCode, copy as cccopy
 import .EA:
-    analyze_escapes, cache_escapes!
+    analyze_escapes, cache_escapes!, LOCAL_ESCAPE_CACHE, GLOBAL_ESCAPE_CACHE
 
 mutable struct EscapeAnalyzer{State} <: AbstractInterpreter
     native::NativeInterpreter
@@ -184,10 +177,6 @@ mutable struct EscapeAnalyzer{State} <: AbstractInterpreter
     linfo::MethodInstance
     EscapeAnalyzer(native::NativeInterpreter, optimize::Bool) =
         new{EscapeState}(native, optimize)
-end
-
-@static if isdefined(EA, :EscapeCache)
-    import .EA: EscapeCache
 end
 
 CC.InferenceParams(interp::EscapeAnalyzer)    = InferenceParams(interp.native)
@@ -207,7 +196,6 @@ CC.verbose_stmt_info(interp::EscapeAnalyzer) = verbose_stmt_info(interp.native)
 CC.get_inference_cache(interp::EscapeAnalyzer) = get_inference_cache(interp.native)
 
 const GLOBAL_CODE_CACHE = IdDict{MethodInstance,CodeInstance}()
-__clear_code_cache!() = empty!(GLOBAL_CODE_CACHE)
 
 function CC.code_cache(interp::EscapeAnalyzer)
     worlds = WorldRange(get_world_counter(interp))
@@ -261,7 +249,7 @@ function CC.optimize(interp::EscapeAnalyzer,
 end
 
 function CC.cache_result!(interp::EscapeAnalyzer, caller::InferenceResult)
-    EA.GLOBAL_ESCAPE_CACHE[caller.linfo] = EA.LOCAL_ESCAPE_CACHE[caller]
+    GLOBAL_ESCAPE_CACHE[caller.linfo] = LOCAL_ESCAPE_CACHE[caller]
     return Base.@invoke CC.cache_result!(interp::AbstractInterpreter, caller::InferenceResult)
 end
 
@@ -275,7 +263,7 @@ function run_passes_with_ea(interp::EscapeAnalyzer, ci::CodeInfo, sv::Optimizati
     local state
     try
         @timeit "[IPO EA]" state, callinfo = analyze_escapes(ir, nargs, true)
-        # Core.eval(Main, :(callinfo = $callinfo; ir = $(cccopy(ir))))
+        Core.eval(Main, :(callinfo = $callinfo; ir = $(cccopy(ir))))
     catch err
         @error "error happened within [IPO EA], insepct `Main.ir` and `Main.nargs`"
         @eval Main (ir = $ir; nargs = $nargs)
@@ -320,7 +308,7 @@ end
 
 import Core: Argument, SSAValue
 import .CC: widenconst, singleton_type
-import .EA: EscapeInfo, EscapeState
+import .EA: EscapeInfo, EscapeState, EscapeCache
 
 # in order to run a whole analysis from ground zero (e.g. for benchmarking, etc.)
 __clear_caches!() = (__clear_code_cache!(); EA.__clear_escape_cache!())
@@ -384,10 +372,8 @@ Base.show(io::IO, result::EscapeResult) = print_with_info(io, result)
 @eval Base.iterate(res::EscapeResult, state=1) =
     return state > $(fieldcount(EscapeResult)) ? nothing : (getfield(res, state), state+1)
 
-@static if @isdefined(EscapeCache)
-    Base.show(io::IO, cached::EscapeCache) =
-        show(io, EscapeResult(cached.ir, cached.state, nothing))
-end
+Base.show(io::IO, cached::EscapeCache) =
+    show(io, EscapeResult(cached.ir, cached.state, nothing))
 
 # adapted from https://github.com/JuliaDebug/LoweredCodeUtils.jl/blob/4612349432447e868cf9285f647108f43bd0a11c/src/codeedges.jl#L881-L897
 function print_with_info(io::IO, (; ir, state, linfo, source)::EscapeResult)

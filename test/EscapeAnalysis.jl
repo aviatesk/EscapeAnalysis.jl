@@ -1,4 +1,4 @@
-@isdefined(EA_AS_PKG) || include(normpath(@__DIR__, "setup.jl"))
+include(normpath(@__DIR__, "setup.jl"))
 
 @testset "basics" begin
     let # arg return
@@ -2443,7 +2443,7 @@ end
 # code quality test
 # =================
 
-@static @isdefined(EA_AS_PKG) && @testset "code quality" begin
+@testset "code quality" begin
     using JET
 
     # assert that our main routine are free from (unnecessary) runtime dispatches

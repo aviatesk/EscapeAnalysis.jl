@@ -5,11 +5,50 @@
 `EscapeAnalysis` is a simple compiler utility module to analyze escape information in
 [Julia's SSA-form IR](@ref Julia-SSA-form-IR) a.k.a. `IRCode`.
 
-You can give a try to the escape analysis with the convenience entries that
-`EscapeAnalysis` exports for testing and debugging purposes:
-```@docs
-Base.code_escapes
-InteractiveUtils.@code_escapes
+You can give a try to the escape analysis by loading the `EAUtils.jl` utility script that
+define the convenience entries `code_escapes` and `@code_escapes` for testing and debugging purposes:
+```@repl EAUtils
+include(normpath(Sys.BINDIR::String, "..", "share", "julia", "test", "testhelpers", "EAUtils.jl"))
+using EAUtils
+
+mutable struct SafeRef{T}
+    x::T
+end
+Base.getindex(x::SafeRef) = x.x;
+Base.setindex!(x::SafeRef, v) = x.x = v;
+Base.isassigned(x::SafeRef) = true;
+get′(x) = isassigned(x) ? x[] : throw(x);
+
+result = code_escapes((String,String,String,String)) do s1, s2, s3, s4
+    r1 = Ref(s1)
+    r2 = Ref(s2)
+    r3 = SafeRef(s3)
+    try
+        s1 = get′(r1)
+        ret = sizeof(s1)
+    catch err
+        global g = err # will definitely escape `r1`
+    end
+    s2 = get′(r2)      # still `r2` doesn't escape fully
+    s3 = get′(r3)      # still `r3` doesn't escape fully
+    s4 = sizeof(s4)    # the argument `s4` doesn't escape here
+    return s2, s3, s4
+end
+```
+
+The symbols in the side of each call argument and SSA statements represents the following meaning:
+- `◌` (plain): this value is not analyzed because escape information of it won't be used anyway (when the object is `isbitstype` for example)
+- `✓` (green or cyan): this value never escapes (`has_no_escape(result.state[x])` holds), colored blue if it has arg escape also (`has_arg_escape(result.state[x])` holds)
+- `↑` (blue or yellow): this value can escape to the caller via return (`has_return_escape(result.state[x])` holds), colored yellow if it has unhandled thrown escape also (`has_thrown_escape(result.state[x])` holds)
+- `X` (red): this value can escape to somewhere the escape analysis can't reason about like escapes to a global memory (`has_all_escape(result.state[x])` holds)
+- `*` (bold): this value's escape state is between the `ReturnEscape` and `AllEscape` in the partial order of [`EscapeInfo`](@ref Core.Compiler.EscapeAnalysis.EscapeInfo), colored yellow if it has unhandled thrown escape also (`has_thrown_escape(result.state[x])` holds)
+- `′`: this value has additional object field / array element information in its `AliasInfo` property
+
+Escape information of each call argument and SSA value can be inspected programmatically as like:
+```@repl EAUtils
+result.state[Core.Argument(3)] # get EscapeInfo of `s2`
+
+result.state[Core.SSAValue(3)] # get EscapeInfo of `r3`
 ```
 
 ## Analysis Design
@@ -92,14 +131,6 @@ and then the escape information of that recorded values are propagated to the ac
 More specifically, the analysis records a value that may be aliased to a field of object by analyzing `getfield` call,
 and then it propagates its escape information to the field when analyzing `%new(...)` expression or `setfield!` call[^Dynamism].
 ```julia
-julia> mutable struct SafeRef{T}
-           x::T
-       end
-
-julia> Base.getindex(x::SafeRef) = x.x;
-
-julia> Base.setindex!(x::SafeRef, v) = x.x = v;
-
 julia> code_escapes((String,)) do s
            obj = SafeRef("init")
            obj[] = s

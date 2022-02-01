@@ -1,30 +1,5 @@
-using Test
-if @isdefined(EA_AS_PKG)
-    import EscapeAnalysis: code_escapes, @code_escapes
-    using EscapeAnalysis
-else
-    using Core.Compiler.EscapeAnalysis
-    import Base: code_escapes
-    import InteractiveUtils: @code_escapes
-end
+using EscapeAnalysis, Test
 import Core: Argument, SSAValue, ReturnNode
-
-@static if isdefined(Core.Compiler, :alloc_array_ndims)
-    import Core.Compiler: alloc_array_ndims
-else
-    function alloc_array_ndims(name::Symbol)
-        if name === :jl_alloc_array_1d
-            return 1
-        elseif name === :jl_alloc_array_2d
-            return 2
-        elseif name === :jl_alloc_array_3d
-            return 3
-        elseif name === :jl_new_array
-            return 0
-        end
-        return nothing
-    end
-end
 
 isT(T) = (@nospecialize x) -> x === T
 issubT(T) = (@nospecialize x) -> x <: T
@@ -40,15 +15,14 @@ function with_normalized_name(@nospecialize(f), @nospecialize(x))
     end
     return false
 end
-isarrayalloc(@nospecialize x) = with_normalized_name(nn->!isnothing(alloc_array_ndims(nn)), x)
+isarrayalloc(@nospecialize x) = with_normalized_name(nn->!isnothing(Core.Compiler.alloc_array_ndims(nn)), x)
 isarrayresize(@nospecialize x) = with_normalized_name(nn->!isnothing(EscapeAnalysis.array_resize_info(nn)), x)
 isarraycopy(@nospecialize x) = with_normalized_name(nn->EscapeAnalysis.is_array_copy(nn), x)
 import Core.Compiler: argextype, singleton_type
-const EMPTY_SPTYPES = Any[]
 iscall(y) = @nospecialize(x) -> iscall(y, x)
 function iscall((ir, f), @nospecialize(x))
     return iscall(x) do @nospecialize x
-        Core.Compiler.singleton_type(Core.Compiler.argextype(x, ir, EMPTY_SPTYPES)) === f
+        singleton_type(Core.Compiler.argextype(x, ir, Any[])) === f
     end
 end
 iscall(pred::Function, @nospecialize(x)) = Meta.isexpr(x, :call) && pred(x.args[1])

@@ -6,8 +6,8 @@ let
         s = let s = read(normpath(@__DIR__, "..", "README.md"), String)
             s = replace(s,
                 "Core.Compiler.EscapeAnalysis." => "EscapeAnalysis.",
-                "Base.code_escapes" => "EscapeAnalysis.EAUtils.code_escapes",
-                "InteractiveUtils.@code_escapes" => "EscapeAnalysis.EAUtils.@code_escapes",
+                r"include\(.+\)" => "",
+                "using EAUtils" => "using EscapeAnalysis",
                 )
             write(README_PATH, s)
         end

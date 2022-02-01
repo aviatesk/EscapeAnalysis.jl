@@ -36,11 +36,7 @@ import Core.Compiler: # Core.Compiler specific definitions
     is_return_type, istopfunction, validate_sparams, specialize_method, stmt_effect_free,
     check_effect_free!, invoke_rewrite, IR_FLAG_EFFECT_FREE
 
-if _TOP_MOD !== Core.Compiler
-    include(@__MODULE__, "disjoint_set.jl")
-else
-    include(@__MODULE__, "compiler/ssair/EscapeAnalysis/disjoint_set.jl")
-end
+include(@__MODULE__, "disjoint_set.jl")
 
 const AInfo = BitSet # XXX better to be IdSet{Int}?
 struct IndexableFields
@@ -564,11 +560,19 @@ struct ArgEscapeInfo
     ReturnEscape::Bool
     ThrownEscape::Bool
     ArgAliasing::Union{Nothing,Vector{Int}}
-    function ArgEscapeInfo(x::EscapeInfo, ArgAliasing::Union{Nothing,Vector{Int}})
-        x === ⊤ && return new(true, true, true, nothing)
-        ThrownEscape = isempty(x.ThrownEscape) ? false : true
-        return new(false, x.ReturnEscape, ThrownEscape, ArgAliasing)
-    end
+end
+
+function ArgEscapeInfo(x::EscapeInfo, ArgAliasing::Union{Nothing,Vector{Int}})
+    x === ⊤ && return ArgEscapeInfo(true, true, true, nothing)
+    ThrownEscape = isempty(x.ThrownEscape) ? false : true
+    return ArgEscapeInfo(false, x.ReturnEscape, ThrownEscape, ArgAliasing)
+end
+
+# when working outside of Core.Compiler, cache as much as information for later inspection and debugging
+struct EscapeCache
+    cache::Vector{ArgEscapeInfo}
+    state::EscapeState # preserved just for debugging purpose
+    ir::IRCode         # preserved just for debugging purpose
 end
 
 """
@@ -578,30 +582,10 @@ Transforms escape information of `estate` for interprocedural propagation,
 and caches it in a global cache that can then be looked up later when
 `linfo` callsite is seen again.
 """
-function cache_escapes! end
-
-# when working outside of Core.Compiler, cache as much as information for later inspection and debugging
-if _TOP_MOD !== Core.Compiler
-    struct EscapeCache
-        cache::Vector{ArgEscapeInfo}
-        state::EscapeState # preserved just for debugging purpose
-        ir::IRCode         # preserved just for debugging purpose
-    end
-    const GLOBAL_ESCAPE_CACHE = IdDict{MethodInstance,EscapeCache}()
-    function cache_escapes!(caller::InferenceResult, estate::EscapeState, cacheir::IRCode)
-        cache = EscapeCache(to_interprocedural(estate), estate, cacheir)
-        LOCAL_ESCAPE_CACHE[caller] = cache
-        return cache
-    end
-    argescapes_from_cache(cache::EscapeCache) = cache.cache
-else
-    const GLOBAL_ESCAPE_CACHE = IdDict{MethodInstance,Vector{ArgEscapeInfo}}()
-    function cache_escapes!(caller::InferenceResult, estate::EscapeState, _::IRCode)
-        cache = to_interprocedural(estate)
-        LOCAL_ESCAPE_CACHE[caller] = cache
-        return cache
-    end
-    argescapes_from_cache(cache::Vector{ArgEscapeInfo}) = cache
+function cache_escapes!(caller::InferenceResult, estate::EscapeState, cacheir::IRCode)
+    cache = EscapeCache(to_interprocedural(estate), estate, cacheir)
+    LOCAL_ESCAPE_CACHE[caller] = cache
+    return cache
 end
 
 function to_interprocedural(estate::EscapeState)
@@ -624,10 +608,8 @@ function to_interprocedural(estate::EscapeState)
     return cache
 end
 
-# HACK this local cache should be integrated with InferenceResult
 const LOCAL_ESCAPE_CACHE = IdDict{InferenceResult,EscapeCache}()
-
-__clear_escape_cache!() = empty!(GLOBAL_ESCAPE_CACHE)
+const GLOBAL_ESCAPE_CACHE = IdDict{MethodInstance,EscapeCache}()
 
 abstract type Change end
 struct EscapeChange <: Change
@@ -1063,7 +1045,7 @@ function resolve_call(ir::IRCode, stmt::Expr, @nospecialize(info))
     elseif isa(info, UnionSplitInfo)
         infos = info.matches
     else # isa(info, ReturnTypeCallInfo), etc.
-        return info
+        return missing
     end
     return analyze_call(sig, infos)
 end
@@ -1258,7 +1240,7 @@ function escape_invoke!(astate::AnalysisState, pc::Int, args::Vector{Any},
     if cache === nothing
         add_conservative_changes!(astate, pc, args, 2)
     else
-        argescapes = argescapes_from_cache(cache)
+        argescapes = cache.cache
         ret = SSAValue(pc)
         retinfo = astate.estate[ret] # escape information imposed on the call statement
         method = linfo.def::Method
@@ -1485,11 +1467,7 @@ normalize(@nospecialize x) = isa(x, QuoteNode) ? x.value : x
 
 function escape_call!(astate::AnalysisState, pc::Int, args::Vector{Any}, callinfo::Vector{Any})
     info = callinfo[pc]
-    if info === missing
-        # if this call couldn't be analyzed, escape it conservatively
-        add_conservative_changes!(astate, pc, args)
-        return
-    elseif isa(info, Bool)
+    if isa(info, Bool)
         info && return # known to be no escape
         # now cascade to the builtin handling
         escape_call!(astate, pc, args)
@@ -1502,7 +1480,8 @@ function escape_call!(astate::AnalysisState, pc::Int, args::Vector{Any}, callinf
         info.fully_covered || add_thrown_escapes!(astate, pc, args)
         return
     else
-        println("[unhandled] ", typeof(info))
+        @assert info === missing
+        # if this call couldn't be analyzed, escape it conservatively
         add_conservative_changes!(astate, pc, args)
     end
 end
@@ -2044,10 +2023,8 @@ end
 end # if isdefined(Core, :ImmutableArray)
 
 # NOTE define fancy package utilities when developing EA as an external package
-if _TOP_MOD !== Core.Compiler
-    include(@__MODULE__, "EAUtils.jl")
-    using .EAUtils: code_escapes, @code_escapes
-    export code_escapes, @code_escapes
-end
+include(@__MODULE__, "EAUtils.jl")
+using .EAUtils
+export code_escapes, @code_escapes, __clear_cache!
 
 end # baremodule EscapeAnalysis
