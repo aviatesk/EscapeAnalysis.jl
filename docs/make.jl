@@ -3,7 +3,7 @@ using EscapeAnalysis, Documenter
 let
     local README_PATH = normpath(@__DIR__, "src", "index.md")
     try
-        s = let s = read(normpath(@__DIR__, "..", "README.md"), String)
+        let s = read(normpath(@__DIR__, "..", "README.md"), String)
             s = replace(s,
                 "Core.Compiler.EscapeAnalysis." => "EscapeAnalysis.",
                 r"include\(.+\)" => "",

@@ -2330,7 +2330,7 @@ union_escape!(x::SafeRef) = nothing
 union_escape!(x::SafeRefs) = nothing
 Base.@constprop :aggressive function conditional_escape!(cnd, x)
     cnd && global_escape!(x)
-    return cnd # XXX `cnd` needs to be returned (see https://github.com/JuliaLang/julia/pull/44001)
+    return nothing
 end
 
 # MethodMatchInfo -- global cache
