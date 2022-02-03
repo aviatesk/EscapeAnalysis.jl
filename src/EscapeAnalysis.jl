@@ -8,6 +8,7 @@ export
     has_arg_escape,
     has_return_escape,
     has_thrown_escape,
+    has_finalizer_escape,
     has_all_escape
 
 const _TOP_MOD = ccall(:jl_base_relative_to, Any, (Any,), EscapeAnalysis)::Module
@@ -126,6 +127,7 @@ struct EscapeInfo
     Analyzed::Bool
     ReturnEscape::Bool
     ThrownEscape::LivenessSet
+    FinalizerEscape::Bool
     AliasInfo #::Union{IndexableFields,IndexableElements,Unindexable,Bool}
     Liveness::LivenessSet
 
@@ -133,6 +135,7 @@ struct EscapeInfo
         Analyzed::Bool,
         ReturnEscape::Bool,
         ThrownEscape::LivenessSet,
+        FinalizerEscape::Bool,
         AliasInfo#=::Union{IndexableFields,IndexableElements,Unindexable,Bool}=#,
         Liveness::LivenessSet,
         )
@@ -141,6 +144,7 @@ struct EscapeInfo
             Analyzed,
             ReturnEscape,
             ThrownEscape,
+            FinalizerEscape,
             AliasInfo,
             Liveness,
             )
@@ -153,6 +157,7 @@ struct EscapeInfo
         Analyzed::Bool = x.Analyzed,
         ReturnEscape::Bool = x.ReturnEscape,
         ThrownEscape::LivenessSet = x.ThrownEscape,
+        FinalizerEscape::Bool = x.FinalizerEscape,
         Liveness::LivenessSet = x.Liveness,
         )
         @nospecialize AliasInfo
@@ -160,6 +165,7 @@ struct EscapeInfo
             Analyzed,
             ReturnEscape,
             ThrownEscape,
+            FinalizerEscape,
             AliasInfo,
             Liveness,
             )
@@ -180,23 +186,26 @@ const TOP_LIVENESS = LivenessSet(-1:0)
 const ARG_LIVENESS = LivenessSet(0)
 
 # the constructors
-NotAnalyzed() = EscapeInfo(false, false, BOT_THROWN_ESCAPE, false, BOT_LIVENESS) # not formally part of the lattice
-NoEscape() = EscapeInfo(true, false, BOT_THROWN_ESCAPE, false, BOT_LIVENESS)
-ArgEscape() = EscapeInfo(true, false, BOT_THROWN_ESCAPE, true, ARG_LIVENESS)
-ReturnEscape(pc::Int) = EscapeInfo(true, true, BOT_THROWN_ESCAPE, false, LivenessSet(pc))
-AllReturnEscape() = EscapeInfo(true, true, BOT_THROWN_ESCAPE, false, TOP_LIVENESS)
-ThrownEscape(pc::Int) = EscapeInfo(true, false, LivenessSet(pc), false, BOT_LIVENESS)
-AllEscape() = EscapeInfo(true, true, TOP_THROWN_ESCAPE, true, TOP_LIVENESS)
+NotAnalyzed() = EscapeInfo(false, false, BOT_THROWN_ESCAPE, false, false, BOT_LIVENESS) # not formally part of the lattice
+NoEscape() = EscapeInfo(true, false, BOT_THROWN_ESCAPE, false, false, BOT_LIVENESS)
+ArgEscape() = EscapeInfo(true, false, BOT_THROWN_ESCAPE, false, true, ARG_LIVENESS)
+ReturnEscape(pc::Int) = EscapeInfo(true, true, BOT_THROWN_ESCAPE, false, false, LivenessSet(pc))
+AllReturnEscape() = EscapeInfo(true, true, BOT_THROWN_ESCAPE, false, false, TOP_LIVENESS)
+ThrownEscape(pc::Int) = EscapeInfo(true, false, LivenessSet(pc), false, false, BOT_LIVENESS)
+FinalizerEscape(pc::Int) = EscapeInfo(true, false, BOT_THROWN_ESCAPE, true, false, LivenessSet(pc))
+AllEscape() = EscapeInfo(true, true, TOP_THROWN_ESCAPE, true, true, TOP_LIVENESS)
 
 const ⊥, ⊤ = NotAnalyzed(), AllEscape()
 
 # Convenience names for some ⊑ₑ queries
-has_no_escape(x::EscapeInfo) = !x.ReturnEscape && isempty(x.ThrownEscape) && 0 ∉ x.Liveness
+has_no_escape(x::EscapeInfo) = !x.ReturnEscape && isempty(x.ThrownEscape) && !x.FinalizerEscape && 0 ∉ x.Liveness
 has_arg_escape(x::EscapeInfo) = 0 in x.Liveness
 has_return_escape(x::EscapeInfo) = x.ReturnEscape
 has_return_escape(x::EscapeInfo, pc::Int) = x.ReturnEscape && (-1 ∈ x.Liveness || pc in x.Liveness)
 has_thrown_escape(x::EscapeInfo) = !isempty(x.ThrownEscape)
-has_thrown_escape(x::EscapeInfo, pc::Int) = -1 ∈ x.ThrownEscape  || pc in x.ThrownEscape
+has_thrown_escape(x::EscapeInfo, pc::Int) = -1 ∈ x.ThrownEscape || pc in x.ThrownEscape
+has_finalizer_escape(x::EscapeInfo) = x.FinalizerEscape
+has_finalizer_escape(x::EscapeInfo, pc::Int) = x.FinalizerEscape && (-1 ∈ x.Liveness || pc in x.Liveness)
 has_all_escape(x::EscapeInfo) = ⊤ ⊑ₑ x
 
 # utility lattice constructors
@@ -220,6 +229,7 @@ x::EscapeInfo == y::EscapeInfo = begin
     else
         xt == yt || return false
     end
+    x.FinalizerEscape === y.FinalizerEscape || return false
     xa, ya = x.AliasInfo, y.AliasInfo
     if isa(xa, Bool)
         xa === ya || return false
@@ -270,6 +280,7 @@ x::EscapeInfo ⊑ₑ y::EscapeInfo = begin
     elseif yt !== TOP_THROWN_ESCAPE
         xt ⊆ yt || return false
     end
+    x.FinalizerEscape ≤ y.FinalizerEscape || return false
     xa, ya = x.AliasInfo, y.AliasInfo
     if isa(xa, Bool)
         xa && ya !== true && return false
@@ -445,6 +456,7 @@ x::EscapeInfo ⊔ₑ y::EscapeInfo = begin
         x.Analyzed | y.Analyzed,
         x.ReturnEscape | y.ReturnEscape,
         ThrownEscape,
+        x.FinalizerEscape | y.FinalizerEscape,
         AliasInfo,
         Liveness,
         )
@@ -559,12 +571,13 @@ struct ArgEscapeInfo
     AllEscape::Bool
     ReturnEscape::Bool
     ThrownEscape::Bool
+    FinalizerEscape::Bool
     ArgAliasing::Union{Nothing,Vector{Int}}
 end
 function ArgEscapeInfo(x::EscapeInfo, ArgAliasing::Union{Nothing,Vector{Int}})
-    x === ⊤ && return ArgEscapeInfo(true, true, true, nothing)
+    x === ⊤ && return ArgEscapeInfo(true, true, true, true, nothing)
     ThrownEscape = isempty(x.ThrownEscape) ? false : true
-    return ArgEscapeInfo(false, x.ReturnEscape, ThrownEscape, ArgAliasing)
+    return ArgEscapeInfo(false, x.ReturnEscape, ThrownEscape, x.FinalizerEscape, ArgAliasing)
 end
 
 function to_interprocedural(estate::EscapeState)
@@ -1293,7 +1306,7 @@ function from_interprocedural(arginfo::ArgEscapeInfo, retinfo::EscapeInfo, pc::I
         # it might be okay from the SROA point of view, since we can't remove the allocation
         # as far as it's passed to a callee anyway, but still we may want some field analysis
         # for e.g. stack allocation or some other IPO optimizations
-        #=AliasInfo=#true, #=Liveness=#LivenessSet(pc))
+        #=FinalizerEscape=#false, #=AliasInfo=#true, #=Liveness=#LivenessSet(pc))
 end
 
 @noinline function unexpected_assignment!(ir::IRCode, pc::Int)
@@ -1432,10 +1445,10 @@ function escape_foreigncall!(astate::AnalysisState, pc::Int, args::Vector{Any})
         elseif is_array_isassigned(nn)
             escape_array_isassigned!(astate, pc, args)
             return
+        elseif is_finalizer(nn)
+            escape_finalizer!(astate, pc, args)
+            return
         end
-        # if nn === :jl_gc_add_finalizer_th
-        #     # TODO add `FinalizerEscape` ?
-        # end
     end
     # NOTE array allocations might have been proven as nothrow (https://github.com/JuliaLang/julia/pull/43565)
     nothrow = is_effect_free(astate.ir, pc)
@@ -1984,6 +1997,17 @@ function array_isassigned_nothrow(args::Vector{Any}, src::IRCode)
     idxtype = argextype(args[7], src)
     idxtype ⊑ Csize_t || return false
     return true
+end
+
+is_finalizer(name::Symbol) = name === :jl_gc_add_finalizer_th
+
+function escape_finalizer!(astate::AnalysisState, pc::Int, args::Vector{Any})
+    length(args) ≥ 8 || return add_fallback_changes!(astate, pc, args)
+    obj = args[7]
+    func = args[8]
+    # TODO: We need to analyze func
+    add_escape_change!(astate, obj, FinalizerEscape(pc))
+    add_liveness_changes!(astate, pc, args, 6)
 end
 
 # # COMBAK do we want to enable this (and also backport this to Base for array allocations?)
