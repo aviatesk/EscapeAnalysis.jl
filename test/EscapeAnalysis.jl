@@ -2454,7 +2454,7 @@ end
         return true
     end
     target_modules = (EscapeAnalysis,)
-    interp = EscapeAnalysis.EAUtils.EscapeAnalyzer(Core.Compiler.NativeInterpreter(), true)
+    interp = EscapeAnalysis.EAUtils.EscapeAnalyzer(Core.Compiler.NativeInterpreter(), Tuple{}, true)
     getargescapes = EscapeAnalysis.EAUtils.getargescapes(interp)
     sig = Tuple{typeof(analyze_escapes), Core.Compiler.IRCode, Int, Bool, typeof(getargescapes)}
     test_opt(sig;

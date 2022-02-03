@@ -9,6 +9,7 @@ const EA = EscapeAnalysis
 # entries
 # -------
 
+import Base: unwrap_unionall, rewrap_unionall
 import InteractiveUtils: gen_call_with_extracted_types_and_kwargs
 
 """
@@ -25,7 +26,6 @@ end
 
 """
     code_escapes(f, argtypes=Tuple{}; [debuginfo::Symbol = :none], [optimize::Bool = true]) -> result::EscapeResult
-    code_escapes(tt::Type{<:Tuple}; [debuginfo::Symbol = :none], [optimize::Bool = true]) -> result::EscapeResult
 
 Runs the escape analysis on optimized IR of a generic function call with the given type signature.
 
@@ -37,13 +37,20 @@ Runs the escape analysis on optimized IR of a generic function call with the giv
 - `debuginfo::Symbol = :none`:
   controls the amount of code metadata present in the output, possible options are `:none` or `:source`.
 """
-function code_escapes(@nospecialize(args...);
+function code_escapes(@nospecialize(f), @nospecialize(types=Base.default_tt(f));
                       world::UInt = get_world_counter(),
                       interp::Core.Compiler.AbstractInterpreter = Core.Compiler.NativeInterpreter(world),
                       debuginfo::Symbol = :none,
                       optimize::Bool = true)
-    interp = EscapeAnalyzer(interp, optimize)
-    results = code_typed(args...; optimize=true, world, interp)
+    ft = Core.Typeof(f)
+    if isa(types, Type)
+        u = unwrap_unionall(types)
+        tt = rewrap_unionall(Tuple{ft, u.parameters...}, types)
+    else
+        tt = Tuple{ft, types...}
+    end
+    interp = EscapeAnalyzer(interp, tt, optimize)
+    results = Base.code_typed_by_type(tt; optimize=true, world, interp)
     isone(length(results)) || throw(ArgumentError("`code_escapes` only supports single analysis result"))
     return EscapeResult(interp.ir, interp.state, interp.linfo, debuginfo===:source)
 end
@@ -80,12 +87,13 @@ end
 mutable struct EscapeAnalyzer{State} <: AbstractInterpreter
     native::NativeInterpreter
     cache::IdDict{InferenceResult,EscapeCache}
+    entry_tt
     optimize::Bool
     ir::IRCode
     state::State
     linfo::MethodInstance
-    EscapeAnalyzer(native::NativeInterpreter, optimize::Bool) =
-        new{EscapeState}(native, IdDict{InferenceResult,EscapeCache}(), optimize)
+    EscapeAnalyzer(native::NativeInterpreter, @nospecialize(tt), optimize::Bool) =
+        new{EscapeState}(native, IdDict{InferenceResult,EscapeCache}(), tt, optimize)
 end
 
 CC.InferenceParams(interp::EscapeAnalyzer)    = InferenceParams(interp.native)
@@ -207,7 +215,7 @@ function run_passes_with_ea(interp::EscapeAnalyzer, ci::CodeInfo, sv::Optimizati
         @eval Main (ir = $ir; nargs = $nargs)
         rethrow(err)
     end
-    if !interp.optimize
+    if caller.linfo.specTypes === interp.entry_tt && !interp.optimize
         # return back the result
         interp.ir = cccopy(ir)
         interp.state = state
@@ -223,7 +231,7 @@ function run_passes_with_ea(interp::EscapeAnalyzer, ci::CodeInfo, sv::Optimizati
         @eval Main (ir = $ir; nargs = $nargs)
         rethrow(err)
     end
-    if interp.optimize
+    if caller.linfo.specTypes === interp.entry_tt && interp.optimize
         # return back the result
         interp.ir = cccopy(ir)
         interp.state = state
