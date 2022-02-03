@@ -2334,84 +2334,76 @@ Base.@constprop :aggressive function conditional_escape!(cnd, x)
 end
 
 # MethodMatchInfo -- global cache
-let result = code_escapes((String,); optimize=false) do x
+let result = code_escapes((SafeRef{String},); optimize=false) do x
         return noescape(x)
     end
     @test has_no_escape(ignore_argescape(result.state[Argument(2)]))
 end
-let result = code_escapes((String,); optimize=false) do x
+let result = code_escapes((SafeRef{String},); optimize=false) do x
         identity(x)
         return nothing
     end
     @test has_no_escape(ignore_argescape(result.state[Argument(2)]))
 end
-let result = code_escapes((String,); optimize=false) do x
+let result = code_escapes((SafeRef{String},); optimize=false) do x
         return identity(x)
     end
     r = only(findall(isreturn, result.ir.stmts.inst))
     @test has_return_escape(result.state[Argument(2)], r)
 end
-let result = code_escapes((String,); optimize=false) do x
+let result = code_escapes((SafeRef{String},); optimize=false) do x
         return Ref(x)
     end
     r = only(findall(isreturn, result.ir.stmts.inst))
     @test has_return_escape(result.state[Argument(2)], r)
 end
-let result = code_escapes((String,); optimize=false) do x
-        r = Ref{String}()
+let result = code_escapes((SafeRef{String},); optimize=false) do x
+        r = Ref{SafeRef{String}}()
         r[] = x
         return r
     end
     r = only(findall(isreturn, result.ir.stmts.inst))
     @test has_return_escape(result.state[Argument(2)], r)
 end
-let result = code_escapes((String,); optimize=false) do x
+let result = code_escapes((SafeRef{String},); optimize=false) do x
         global_escape!(x)
     end
     @test has_all_escape(result.state[Argument(2)])
 end
 # UnionSplitInfo
-let result = code_escapes((Bool,String); optimize=false) do c, s
+let result = code_escapes((Bool,Vector{Any}); optimize=false) do c, s
         x = c ? s : SafeRef(s)
         union_escape!(x)
     end
     @test has_all_escape(result.state[Argument(3)]) # s
 end
-let result = code_escapes((Bool,String); optimize=false) do c, s
+let result = code_escapes((Bool,Vector{Any}); optimize=false) do c, s
         x = c ? SafeRef(s) : SafeRefs(s, s)
         union_escape!(x)
     end
     @test has_no_escape(ignore_argescape(result.state[Argument(2)]))
 end
 # ConstCallInfo -- local cache
-let result = code_escapes((String,); optimize=false) do x
+let result = code_escapes((SafeRef{String},); optimize=false) do x
         return conditional_escape!(false, x)
     end
     @test has_no_escape(ignore_argescape(result.state[Argument(2)]))
 end
 # InvokeCallInfo
-let result = code_escapes((String,); optimize=false) do x
+let result = code_escapes((SafeRef{String},); optimize=false) do x
         return Base.@invoke noescape(x::Any)
     end
     @test has_no_escape(ignore_argescape(result.state[Argument(2)]))
 end
-let result = code_escapes((String,); optimize=false) do x
+let result = code_escapes((SafeRef{String},); optimize=false) do x
         return Base.@invoke conditional_escape!(false::Any, x::Any)
     end
     @test has_no_escape(ignore_argescape(result.state[Argument(2)]))
 end
 
 # ThrownEscape via potential MethodError
-identity_if_string(x::String) = nothing
-let result = code_escapes((Any,); optimize=false) do x
-        identity_if_string(x)
-    end
-    i = only(findall(iscall((result.ir, identity_if_string)), result.ir.stmts.inst))
-    r = only(findall(isreturn, result.ir.stmts.inst))
-    @test has_thrown_escape(result.state[Argument(2)], i)
-    @test !has_return_escape(result.state[Argument(2)], r)
-end
-let result = code_escapes((String,); optimize=false) do x
+identity_if_string(x::SafeRef) = nothing
+let result = code_escapes((SafeRef{String},); optimize=false) do x
         identity_if_string(x)
     end
     i = only(findall(iscall((result.ir, identity_if_string)), result.ir.stmts.inst))
@@ -2419,7 +2411,15 @@ let result = code_escapes((String,); optimize=false) do x
     @test !has_thrown_escape(result.state[Argument(2)], i)
     @test !has_return_escape(result.state[Argument(2)], r)
 end
-let result = code_escapes((String,); optimize=false) do x
+let result = code_escapes((Union{SafeRef{String},Vector{String}},); optimize=false) do x
+        identity_if_string(x)
+    end
+    i = only(findall(iscall((result.ir, identity_if_string)), result.ir.stmts.inst))
+    r = only(findall(isreturn, result.ir.stmts.inst))
+    @test has_thrown_escape(result.state[Argument(2)], i)
+    @test !has_return_escape(result.state[Argument(2)], r)
+end
+let result = code_escapes((SafeRef{String},); optimize=false) do x
         try
             identity_if_string(x)
         catch err
@@ -2429,7 +2429,7 @@ let result = code_escapes((String,); optimize=false) do x
     end
     @test !has_all_escape(result.state[Argument(2)])
 end
-let result = code_escapes((Any,); optimize=false) do x
+let result = code_escapes((Union{SafeRef{String},Vector{String}},); optimize=false) do x
         try
             identity_if_string(x)
         catch err
