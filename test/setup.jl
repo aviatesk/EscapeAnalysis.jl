@@ -1,5 +1,6 @@
-using EscapeAnalysis, Test
+using Test, EscapeAnalysis
 import Core: Argument, SSAValue, ReturnNode
+const EA = EscapeAnalysis
 
 isT(T) = (@nospecialize x) -> x === T
 issubT(T) = (@nospecialize x) -> x <: T
@@ -10,14 +11,14 @@ isϕ(@nospecialize x) = isa(x, Core.PhiNode)
 function with_normalized_name(@nospecialize(f), @nospecialize(x))
     if Meta.isexpr(x, :foreigncall)
         name = x.args[1]
-        nn = EscapeAnalysis.normalize(name)
+        nn = EA.normalize(name)
         return isa(nn, Symbol) && f(nn)
     end
     return false
 end
 isarrayalloc(@nospecialize x) = with_normalized_name(nn->!isnothing(Core.Compiler.alloc_array_ndims(nn)), x)
-isarrayresize(@nospecialize x) = with_normalized_name(nn->!isnothing(EscapeAnalysis.array_resize_info(nn)), x)
-isarraycopy(@nospecialize x) = with_normalized_name(nn->EscapeAnalysis.is_array_copy(nn), x)
+isarrayresize(@nospecialize x) = with_normalized_name(nn->!isnothing(EA.array_resize_info(nn)), x)
+isarraycopy(@nospecialize x) = with_normalized_name(nn->EA.is_array_copy(nn), x)
 import Core.Compiler: argextype, singleton_type
 iscall(y) = @nospecialize(x) -> iscall(y, x)
 function iscall((ir, f), @nospecialize(x))
@@ -37,12 +38,12 @@ isinvoke(pred::Function, @nospecialize(x)) = Meta.isexpr(x, :invoke) && pred(x.a
 
 Queries if `x` is elibigle for store-to-load forwarding optimization.
 """
-function is_load_forwardable(x::EscapeAnalysis.EscapeInfo)
+function is_load_forwardable(x::EA.EscapeInfo)
     AliasInfo = x.AliasInfo
     AliasInfo === false && return true # allows this query to work for immutables since we don't impose escape on them
     # NOTE technically we also need to check `!has_thrown_escape(x)` here as well,
     # but we can also do equivalent check during forwarding
-    return isa(AliasInfo, EscapeAnalysis.IndexableFields) || isa(AliasInfo, EscapeAnalysis.IndexableElements)
+    return isa(AliasInfo, EA.IndexableFields) || isa(AliasInfo, EA.IndexableElements)
 end
 
 let setup_ex = quote

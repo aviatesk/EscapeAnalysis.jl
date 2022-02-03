@@ -18,14 +18,14 @@ import ._TOP_MOD: ==, getindex, setindex!
 # usings
 import Core:
     MethodInstance, Const, Argument, SSAValue, PiNode, PhiNode, UpsilonNode, PhiCNode,
-    ReturnNode, GotoNode, GotoIfNot, SimpleVector, MethodMatch,
+    ReturnNode, GotoNode, GotoIfNot, SimpleVector, MethodMatch, CodeInstance,
     sizeof, ifelse, arrayset, arrayref, arraysize
 import ._TOP_MOD:     # Base definitions
     @__MODULE__, @eval, @assert, @specialize, @nospecialize, @inbounds, @inline, @noinline,
     @label, @goto, !, !==, !=, ≠, +, -, *, ≤, <, ≥, >, &, |, include, error, missing, copy,
-    Vector, BitSet, IdDict, IdSet, UnitRange, Csize_t, ∪, ⊆, ∩, :, ∈, ∉, in, length, get,
-    first, last, haskey, keys, get!, isempty, isassigned, pop!, push!, pushfirst!, empty!,
-    delete!, max, min, enumerate
+    Vector, BitSet, IdDict, IdSet, UnitRange, Csize_t, Callable, ∪, ⊆, ∩, :, ∈, ∉,
+    in, length, get, first, last, haskey, keys, get!, isempty, isassigned,
+    pop!, push!, pushfirst!, empty!, delete!, max, min, enumerate
 import Core.Compiler: # Core.Compiler specific definitions
     Bottom, InferenceResult, IRCode, Instruction, Signature,
     MethodResultPure, MethodMatchInfo, UnionSplitInfo, ConstCallInfo, InvokeCallInfo,
@@ -36,7 +36,11 @@ import Core.Compiler: # Core.Compiler specific definitions
     is_return_type, istopfunction, validate_sparams, specialize_method, stmt_effect_free,
     check_effect_free!, invoke_rewrite, IR_FLAG_EFFECT_FREE
 
-include(@__MODULE__, "disjoint_set.jl")
+if _TOP_MOD === Core.Compiler
+    include(@__MODULE__, "compiler/ssair/EscapeAnalysis/disjoint_set.jl")
+else
+    include(@__MODULE__, "disjoint_set.jl")
+end
 
 const AInfo = BitSet # XXX better to be IdSet{Int}?
 struct IndexableFields
@@ -124,7 +128,6 @@ struct EscapeInfo
     ThrownEscape::LivenessSet
     AliasInfo #::Union{IndexableFields,IndexableElements,Unindexable,Bool}
     Liveness::LivenessSet
-    # TODO: ArgEscape::Int
 
     function EscapeInfo(
         Analyzed::Bool,
@@ -447,9 +450,6 @@ x::EscapeInfo ⊔ₑ y::EscapeInfo = begin
         )
 end
 
-# TODO setup a more effient struct for cache
-# which can discard escape information on SSA values and arguments that don't join dispatch signature
-
 const AliasSet = IntDisjointSet{Int}
 
 const ArrayInfo = IdDict{Int,Vector{Int}}
@@ -561,36 +561,15 @@ struct ArgEscapeInfo
     ThrownEscape::Bool
     ArgAliasing::Union{Nothing,Vector{Int}}
 end
-
 function ArgEscapeInfo(x::EscapeInfo, ArgAliasing::Union{Nothing,Vector{Int}})
     x === ⊤ && return ArgEscapeInfo(true, true, true, nothing)
     ThrownEscape = isempty(x.ThrownEscape) ? false : true
     return ArgEscapeInfo(false, x.ReturnEscape, ThrownEscape, ArgAliasing)
 end
 
-# when working outside of Core.Compiler, cache as much as information for later inspection and debugging
-struct EscapeCache
-    cache::Vector{ArgEscapeInfo}
-    state::EscapeState # preserved just for debugging purpose
-    ir::IRCode         # preserved just for debugging purpose
-end
-
-"""
-    cache_escapes!(linfo::MethodInstance, estate::EscapeState, _::IRCode)
-
-Transforms escape information of `estate` for interprocedural propagation,
-and caches it in a global cache that can then be looked up later when
-`linfo` callsite is seen again.
-"""
-function cache_escapes!(caller::InferenceResult, estate::EscapeState, cacheir::IRCode)
-    cache = EscapeCache(to_interprocedural(estate), estate, cacheir)
-    LOCAL_ESCAPE_CACHE[caller] = cache
-    return cache
-end
-
 function to_interprocedural(estate::EscapeState)
     nargs = estate.nargs
-    cache = Vector{ArgEscapeInfo}(undef, nargs)
+    argescapes = Vector{ArgEscapeInfo}(undef, nargs)
     for i = 1:nargs
         info = estate.escapes[i]
         @assert isa(info.AliasInfo, Bool)
@@ -603,13 +582,10 @@ function to_interprocedural(estate::EscapeState)
                 push!(ArgAliasing, j)
             end
         end
-        cache[i] = ArgEscapeInfo(info, ArgAliasing)
+        argescapes[i] = ArgEscapeInfo(info, ArgAliasing)
     end
-    return cache
+    return argescapes
 end
-
-const LOCAL_ESCAPE_CACHE = IdDict{InferenceResult,EscapeCache}()
-const GLOBAL_ESCAPE_CACHE = IdDict{MethodInstance,EscapeCache}()
 
 abstract type Change end
 struct EscapeChange <: Change
@@ -630,10 +606,11 @@ struct LivenessChange <: Change
 end
 const Changes = Vector{Change}
 
-struct AnalysisState
+struct AnalysisState{T<:Callable}
     ir::IRCode
     estate::EscapeState
     changes::Changes
+    getargescapes::T
 end
 
 function getinst(ir::IRCode, idx::Int)
@@ -646,19 +623,22 @@ function getinst(ir::IRCode, idx::Int)
 end
 
 """
-    analyze_escapes(ir::IRCode, nargs::Int) -> estate::EscapeState
+    analyze_escapes(ir::IRCode, nargs::Int, call_resolved::Bool, getargescapes::Callable)
+        -> estate::EscapeState
 
-Analyzes escape information in `ir`.
-`nargs` is the number of actual arguments of the analyzed call.
+Analyzes escape information in `ir`:
+- `nargs`: the number of actual arguments of the analyzed call
+- `call_resolved`: if interprocedural calls are already resolved by `ssa_inlining_pass!`
+- `getargescapes(::Union{InferenceResult,MethodInstance})`: retrieves argument escape cache
 """
-function analyze_escapes(ir::IRCode, nargs::Int, preinlining::Bool)
+function analyze_escapes(ir::IRCode, nargs::Int, call_resolved::Bool, getargescapes::T) where T<:Callable
     stmts = ir.stmts
     nstmts = length(stmts) + length(ir.new_nodes.stmts)
 
-    tryregions, arrayinfo, callinfo = compute_frameinfo(ir, preinlining)
+    tryregions, arrayinfo, callinfo = compute_frameinfo(ir, call_resolved)
     estate = EscapeState(nargs, nstmts, arrayinfo)
     changes = Changes() # keeps changes that happen at current statement
-    astate = AnalysisState(ir, estate, changes)
+    astate = AnalysisState(ir, estate, changes, getargescapes)
 
     local debug_itr_counter = 0
     while true
@@ -749,7 +729,7 @@ function analyze_escapes(ir::IRCode, nargs::Int, preinlining::Bool)
     #     println("[EA] excessive iteration count found ", debug_itr_counter, " (", singleton_type(ir.argtypes[1]), ")")
     # end
 
-    return estate, callinfo
+    return estate
 end
 
 # propagate changes, and check convergence
@@ -907,10 +887,10 @@ end
 # a preparatory linear scan to find:
 # - regions in which potential throws will be caught
 # - array allocations whose dimensions are known precisely (with some very simple alias analysis)
-function compute_frameinfo(ir::IRCode, preinlining::Bool)
+function compute_frameinfo(ir::IRCode, call_resolved::Bool)
     nstmts, nnewnodes = length(ir.stmts), length(ir.new_nodes.stmts)
     tryregions, arrayinfo = nothing, nothing
-    if preinlining
+    if !call_resolved
         callinfo = Vector{Any}(undef, nstmts+nnewnodes)
     else
         callinfo = nothing
@@ -918,7 +898,7 @@ function compute_frameinfo(ir::IRCode, preinlining::Bool)
     for idx in 1:nstmts+nnewnodes
         inst = getinst(ir, idx)
         stmt = inst[:inst]
-        if preinlining
+        if !call_resolved
             # TODO don't call `check_effect_free!` in the inlinear
             check_effect_free!(ir, idx, stmt, inst[:type])
         end
@@ -1232,49 +1212,49 @@ escape_invoke!(astate::AnalysisState, pc::Int, args::Vector{Any}) =
 function escape_invoke!(astate::AnalysisState, pc::Int, args::Vector{Any},
     linfo::Linfo, first_idx::Int, last_idx::Int = length(args))
     if isa(linfo, InferenceResult)
-        cache = get(LOCAL_ESCAPE_CACHE, linfo, nothing)
+        argescapes = astate.getargescapes(linfo)
         linfo = linfo.linfo
     else
-        cache = get(GLOBAL_ESCAPE_CACHE, linfo, nothing)
+        argescapes = astate.getargescapes(linfo)
     end
-    if cache === nothing
-        add_conservative_changes!(astate, pc, args, 2)
+    if argescapes === nothing
+        return add_conservative_changes!(astate, pc, args, 2)
     else
-        argescapes = cache.cache
-        ret = SSAValue(pc)
-        retinfo = astate.estate[ret] # escape information imposed on the call statement
-        method = linfo.def::Method
-        nargs = Int(method.nargs)
-        for (i, argidx) in enumerate(first_idx:last_idx)
-            arg = args[argidx]
-            if i > nargs
-                # handle isva signature
-                # COMBAK will this be invalid once we take alias information into account?
-                i = nargs
-            end
-            arginfo = argescapes[i]
-            info = from_interprocedural(arginfo, retinfo, pc)
-            if arginfo.ReturnEscape
-                # if this argument can be "returned", in addition to propagating
-                # the escape information imposed on this call argument within the callee,
-                # we should also account for possible aliasing of this argument and the returned value
-                add_escape_change!(astate, arg, info)
-                add_alias_change!(astate, ret, arg)
-            else
-                # if this is simply passed as the call argument, we can just propagate
-                # the escape information imposed on this call argument within the callee
-                add_escape_change!(astate, arg, info)
-            end
-            ArgAliasing = arginfo.ArgAliasing
-            if ArgAliasing !== nothing
-                for j in ArgAliasing
-                    add_alias_change!(astate, arg, args[j-(first_idx-1)])
-                end
+        argescapes = argescapes::Vector{ArgEscapeInfo}
+    end
+    ret = SSAValue(pc)
+    retinfo = astate.estate[ret] # escape information imposed on the call statement
+    method = linfo.def::Method
+    nargs = Int(method.nargs)
+    for (i, argidx) in enumerate(first_idx:last_idx)
+        arg = args[argidx]
+        if i > nargs
+            # handle isva signature
+            # COMBAK will this be invalid once we take alias information into account?
+            i = nargs
+        end
+        arginfo = argescapes[i]
+        info = from_interprocedural(arginfo, retinfo, pc)
+        if arginfo.ReturnEscape
+            # if this argument can be "returned", in addition to propagating
+            # the escape information imposed on this call argument within the callee,
+            # we should also account for possible aliasing of this argument and the returned value
+            add_escape_change!(astate, arg, info)
+            add_alias_change!(astate, ret, arg)
+        else
+            # if this is simply passed as the call argument, we can just propagate
+            # the escape information imposed on this call argument within the callee
+            add_escape_change!(astate, arg, info)
+        end
+        ArgAliasing = arginfo.ArgAliasing
+        if ArgAliasing !== nothing
+            for j in ArgAliasing
+                add_alias_change!(astate, arg, args[j-(first_idx-1)])
             end
         end
-        # we should disable the alias analysis on this newly introduced object
-        add_escape_change!(astate, ret, EscapeInfo(retinfo, true))
     end
+    # we should disable the alias analysis on this newly introduced object
+    add_escape_change!(astate, ret, EscapeInfo(retinfo, true))
 end
 
 """
@@ -1735,7 +1715,6 @@ function escape_builtin!(::typeof(arrayref), astate::AnalysisState, pc::Int, arg
     # can be referenced here: directly propagate the escape information imposed on the return
     # value of this `arrayref` call to the array itself as the most conservative propagation
     # but also with updated index information
-    # TODO enable index analysis when constant values are available?
     estate = astate.estate
     if isa(ary, SSAValue) || isa(ary, Argument)
         aryinfo = estate[ary]
@@ -1799,7 +1778,6 @@ function escape_builtin!(::typeof(arrayset), astate::AnalysisState, pc::Int, arg
     # we don't track precise index information about this array and won't record what value
     # is being assigned here: directly propagate the escape information of this array to
     # the value being assigned as the most conservative propagation
-    # TODO enable index analysis when constant values are available?
     estate = astate.estate
     if isa(ary, SSAValue) || isa(ary, Argument)
         aryinfo = estate[ary]
@@ -2022,9 +2000,11 @@ end
 
 end # if isdefined(Core, :ImmutableArray)
 
-# NOTE define fancy package utilities when developing EA as an external package
-include(@__MODULE__, "EAUtils.jl")
-using .EAUtils
-export code_escapes, @code_escapes, __clear_cache!
+if _TOP_MOD !== Core.Compiler
+    # NOTE define fancy package utilities when developing EA as an external package
+    include(@__MODULE__, "EAUtils.jl")
+    using .EAUtils
+    export code_escapes, @code_escapes, __clear_cache!
+end
 
 end # baremodule EscapeAnalysis
