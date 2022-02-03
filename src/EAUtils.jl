@@ -43,17 +43,18 @@ function code_escapes(@nospecialize(args...);
                       debuginfo::Symbol = :none,
                       optimize::Bool = true)
     interp = EscapeAnalyzer(interp, optimize)
-    empty!(LOCAL_ESCAPE_CACHE)
     results = code_typed(args...; optimize=true, world, interp)
     isone(length(results)) || throw(ArgumentError("`code_escapes` only supports single analysis result"))
     return EscapeResult(interp.ir, interp.state, interp.linfo, debuginfo===:source)
 end
 
+# in order to run a whole analysis from ground zero (e.g. for benchmarking, etc.)
 __clear_cache!() = (empty!(GLOBAL_ESCAPE_CACHE); empty!(GLOBAL_CODE_CACHE))
 
 # AbstractInterpreter
 # -------------------
 
+# imports
 import .CC:
     AbstractInterpreter, NativeInterpreter, WorldView, WorldRange,
     InferenceParams, OptimizationParams, get_world_counter, get_inference_cache, code_cache,
@@ -66,17 +67,25 @@ import .CC:
     InferenceResult, OptimizationState, IRCode, copy as cccopy,
     @timeit, convert_to_ircode, slot2reg, compact!, ssa_inlining_pass!, sroa_pass!,
     adce_pass!, type_lift_pass!, JLOptions, verify_ir, verify_linetable
-import .EA:
-    analyze_escapes, cache_escapes!, LOCAL_ESCAPE_CACHE, GLOBAL_ESCAPE_CACHE
+import .EA: analyze_escapes, ArgEscapeInfo, EscapeInfo, EscapeState
+
+# when working outside of Core.Compiler,
+# cache entire escape state for later inspection and debugging
+struct EscapeCache
+    argescapes::Vector{ArgEscapeInfo}
+    state::EscapeState # preserved just for debugging purpose
+    ir::IRCode         # preserved just for debugging purpose
+end
 
 mutable struct EscapeAnalyzer{State} <: AbstractInterpreter
     native::NativeInterpreter
+    cache::IdDict{InferenceResult,EscapeCache}
     optimize::Bool
     ir::IRCode
     state::State
     linfo::MethodInstance
     EscapeAnalyzer(native::NativeInterpreter, optimize::Bool) =
-        new{EscapeState}(native, optimize)
+        new{EscapeState}(native, IdDict{InferenceResult,EscapeCache}(), optimize)
 end
 
 CC.InferenceParams(interp::EscapeAnalyzer)    = InferenceParams(interp.native)
@@ -149,8 +158,37 @@ function CC.optimize(interp::EscapeAnalyzer,
 end
 
 function CC.cache_result!(interp::EscapeAnalyzer, caller::InferenceResult)
-    GLOBAL_ESCAPE_CACHE[caller.linfo] = LOCAL_ESCAPE_CACHE[caller]
+    if haskey(interp.cache, caller)
+        GLOBAL_ESCAPE_CACHE[caller.linfo] = interp.cache[caller]
+    end
     return Base.@invoke CC.cache_result!(interp::AbstractInterpreter, caller::InferenceResult)
+end
+
+const GLOBAL_ESCAPE_CACHE = IdDict{MethodInstance,EscapeCache}()
+
+"""
+    cache_escapes!(caller::InferenceResult, estate::EscapeState, cacheir::IRCode)
+
+Transforms escape information of call arguments of `caller`,
+and then caches it into a global cache for later interprocedural propagation.
+"""
+function cache_escapes!(interp::EscapeAnalyzer,
+    caller::InferenceResult, estate::EscapeState, cacheir::IRCode)
+    argescapes = EscapeAnalysis.to_interprocedural(estate)
+    cache = EscapeCache(argescapes, estate, cacheir)
+    interp.cache[caller] = cache
+    return argescapes
+end
+
+function getargescapes(interp::EscapeAnalyzer)
+    return function (linfo::Union{InferenceResult,MethodInstance})
+        if isa(linfo, InferenceResult)
+            ecache = get(interp.cache, linfo, nothing)
+        else
+            ecache = get(GLOBAL_ESCAPE_CACHE, linfo, nothing)
+        end
+        return ecache !== nothing ? ecache.argescapes : nothing
+    end
 end
 
 function run_passes_with_ea(interp::EscapeAnalyzer, ci::CodeInfo, sv::OptimizationState,
@@ -162,15 +200,13 @@ function run_passes_with_ea(interp::EscapeAnalyzer, ci::CodeInfo, sv::Optimizati
     nargs = let def = sv.linfo.def; isa(def, Method) ? Int(def.nargs) : 0; end
     local state
     try
-        @timeit "[IPO EA]" state, callinfo = analyze_escapes(ir, nargs, true)
-        Core.eval(Main, :(callinfo = $callinfo; ir = $(cccopy(ir))))
+        @timeit "[IPO EA]" state = analyze_escapes(ir, nargs, false, getargescapes(interp))
+        cache_escapes!(interp, caller, state, cccopy(ir))
     catch err
         @error "error happened within [IPO EA], insepct `Main.ir` and `Main.nargs`"
         @eval Main (ir = $ir; nargs = $nargs)
         rethrow(err)
     end
-    # cache this result
-    cache_escapes!(caller, state, cccopy(ir))
     if !interp.optimize
         # return back the result
         interp.ir = cccopy(ir)
@@ -181,7 +217,7 @@ function run_passes_with_ea(interp::EscapeAnalyzer, ci::CodeInfo, sv::Optimizati
     # @timeit "verify 2" verify_ir(ir)
     @timeit "compact 2" ir = compact!(ir)
     try
-        @timeit "[Local EA]" state, = analyze_escapes(ir, nargs, false)
+        @timeit "[Local EA]" state = analyze_escapes(ir, nargs, true, getargescapes(interp))
     catch err
         @error "error happened within [Local EA], insepct `Main.ir` and `Main.nargs`"
         @eval Main (ir = $ir; nargs = $nargs)
@@ -208,10 +244,6 @@ end
 
 import Core: Argument, SSAValue
 import .CC: widenconst, singleton_type
-import .EA: EscapeInfo, EscapeState, EscapeCache
-
-# in order to run a whole analysis from ground zero (e.g. for benchmarking, etc.)
-__clear_caches!() = (__clear_code_cache!(); EA.__clear_escape_cache!())
 
 function get_name_color(x::EscapeInfo, symbol::Bool = false)
     getname(x) = string(nameof(x))
@@ -272,8 +304,7 @@ Base.show(io::IO, result::EscapeResult) = print_with_info(io, result)
 @eval Base.iterate(res::EscapeResult, state=1) =
     return state > $(fieldcount(EscapeResult)) ? nothing : (getfield(res, state), state+1)
 
-Base.show(io::IO, cached::EscapeCache) =
-    show(io, EscapeResult(cached.ir, cached.state, nothing))
+Base.show(io::IO, cached::EscapeCache) = show(io, EscapeResult(cached.ir, cached.state, nothing))
 
 # adapted from https://github.com/JuliaDebug/LoweredCodeUtils.jl/blob/4612349432447e868cf9285f647108f43bd0a11c/src/codeedges.jl#L881-L897
 function print_with_info(io::IO, (; ir, state, linfo, source)::EscapeResult)

@@ -2317,7 +2317,7 @@ end
 # =========
 # run EA before inlining
 
-import EscapeAnalysis: ignore_argescape
+import .EA: ignore_argescape
 const Gx = Ref{Any}()
 noescape(a) = nothing
 noescape(a, b) = nothing
@@ -2454,14 +2454,21 @@ end
         return true
     end
     target_modules = (EscapeAnalysis,)
-    test_opt(only(methods(EscapeAnalysis.analyze_escapes)).sig;
+    interp = EscapeAnalysis.EAUtils.EscapeAnalyzer(Core.Compiler.NativeInterpreter(), true)
+    getargescapes = EscapeAnalysis.EAUtils.getargescapes(interp)
+    sig = Tuple{typeof(analyze_escapes), Core.Compiler.IRCode, Int, Bool, typeof(getargescapes)}
+    test_opt(sig;
         function_filter,
         target_modules,
         # skip_nonconcrete_calls=false,
         )
     for m in methods(EscapeAnalysis.escape_builtin!)
-        Base._methods_by_ftype(m.sig, 1, Base.get_world_counter()) === false && continue
-        test_opt(m.sig;
+        sig = m.sig
+        Base._methods_by_ftype(sig, 1, Base.get_world_counter()) === false && continue
+        types = collect(sig.parameters)
+        types[2] = EscapeAnalysis.AnalysisState{typeof(getargescapes)}
+        sig = Tuple{types...}
+        test_opt(sig;
             function_filter,
             target_modules,
             # skip_nonconcrete_calls=false,
