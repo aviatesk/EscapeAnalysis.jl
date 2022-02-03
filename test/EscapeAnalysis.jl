@@ -2294,24 +2294,25 @@ end # @static if isdefined(Core, :ImmutableArray)
     end
 end
 
-# # TODO implement a finalizer elision pass
-# mutable struct WithFinalizer
-#     v
-#     function WithFinalizer(v)
-#         x = new(v)
-#         f(t) = @async println("Finalizing $t.")
-#         return finalizer(x, x)
-#     end
-# end
-# make_m(v = 10) = MyMutable(v)
-# function simple(cond)
-#     m = make_m()
-#     if cond
-#         # println(m.v)
-#         return nothing # <= insert `finalize` call here
-#     end
-#     return m
-# end
+mutable struct WithFinalizer
+    v
+    function WithFinalizer(v)
+        x = new(v)
+        f(t) = @async println("Finalizing $t.")
+        return finalizer(f, x)
+    end
+end
+function simple(cond)
+    obj = WithFinalizer(42)
+    if cond
+        # println(m.v)
+        return nothing # <= insert `finalize` call here
+    end
+    return obj
+end
+let result = code_escapes(simple, (Bool,))
+    @test has_finalizer_escape(result.state[SSAValue(2)]) # m
+end
 
 # IPO cache
 # =========
