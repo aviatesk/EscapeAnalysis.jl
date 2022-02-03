@@ -24,7 +24,8 @@ import ._TOP_MOD:     # Base definitions
     @label, @goto, !, !==, !=, ≠, +, -, *, ≤, <, ≥, >, &, |, include, error, missing, copy,
     Vector, BitSet, IdDict, IdSet, UnitRange, Csize_t, Callable, ∪, ⊆, ∩, :, ∈, ∉,
     in, length, get, first, last, haskey, keys, get!, isempty, isassigned,
-    pop!, push!, pushfirst!, empty!, delete!, max, min, enumerate
+    pop!, push!, pushfirst!, empty!, delete!, max, min, enumerate, unwrap_unionall,
+    ismutabletype
 import Core.Compiler: # Core.Compiler specific definitions
     Bottom, InferenceResult, IRCode, Instruction, Signature,
     MethodResultPure, MethodMatchInfo, UnionSplitInfo, ConstCallInfo, InvokeCallInfo,
@@ -584,6 +585,23 @@ function to_interprocedural(estate::EscapeState)
         argescapes[i] = ArgEscapeInfo(info, ArgAliasing)
     end
     return argescapes
+end
+
+# checks if `ir` has any argument that is "interesting" in terms of their escapability
+function is_ipo_profitable(ir::IRCode, nargs::Int)
+    for i = 1:nargs
+        t = unwrap_unionall(widenconst(ir.argtypes[i]))
+        t <: IO && return false # bail out IO-related functions
+        is_ipo_profitable_type(t) && return true
+    end
+    return false
+end
+function is_ipo_profitable_type(@nospecialize t)
+    if isa(t, Union)
+        return is_ipo_profitable_type(t.a) && is_ipo_profitable_type(t.b)
+    end
+    (t === String || t === Symbol) && return false
+    return ismutabletype(t)
 end
 
 abstract type Change end
