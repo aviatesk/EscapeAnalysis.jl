@@ -2,7 +2,6 @@ baremodule EscapeAnalysis
 
 export
     analyze_escapes,
-    cache_escapes!,
     getaliases,
     isaliased,
     has_no_escape,
