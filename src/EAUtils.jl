@@ -228,14 +228,14 @@ function run_passes_with_ea(interp::EscapeAnalyzer, ci::CodeInfo, sv::Optimizati
     @timeit "Inlining"  ir = ssa_inlining_pass!(ir, ir.linetable, sv.inlining, ci.propagate_inbounds)
     # @timeit "verify 2" verify_ir(ir)
     @timeit "compact 2" ir = compact!(ir)
-    try
-        @timeit "[Local EA]" state = analyze_escapes(ir, nargs, true, getargescapes(interp))
-    catch err
-        @error "error happened within [Local EA], insepct `Main.ir` and `Main.nargs`"
-        @eval Main (ir = $ir; nargs = $nargs)
-        rethrow(err)
-    end
     if caller.linfo.specTypes === interp.entry_tt && interp.optimize
+        try
+            @timeit "[Local EA]" state = analyze_escapes(ir, nargs, true, getargescapes(interp))
+        catch err
+            @error "error happened within [Local EA], insepct `Main.ir` and `Main.nargs`"
+            @eval Main (ir = $ir; nargs = $nargs)
+            rethrow(err)
+        end
         # return back the result
         interp.ir = cccopy(ir)
         interp.state = state
