@@ -2455,8 +2455,8 @@ end
     end
     target_modules = (EscapeAnalysis,)
     interp = EscapeAnalysis.EAUtils.EscapeAnalyzer(Core.Compiler.NativeInterpreter(), Tuple{}, true)
-    getargescapes = EscapeAnalysis.EAUtils.getargescapes(interp)
-    sig = Tuple{typeof(analyze_escapes), Core.Compiler.IRCode, Int, Bool, typeof(getargescapes)}
+    get_escape_cache = EscapeAnalysis.EAUtils.get_escape_cache(interp)
+    sig = Tuple{typeof(analyze_escapes), Core.Compiler.IRCode, Int, Bool, typeof(get_escape_cache)}
     test_opt(sig;
         function_filter,
         target_modules,
@@ -2466,7 +2466,7 @@ end
         sig = m.sig
         Base._methods_by_ftype(sig, 1, Base.get_world_counter()) === false && continue
         types = collect(sig.parameters)
-        types[2] = EscapeAnalysis.AnalysisState{typeof(getargescapes)}
+        types[2] = EscapeAnalysis.AnalysisState{typeof(get_escape_cache)}
         sig = Tuple{types...}
         test_opt(sig;
             function_filter,

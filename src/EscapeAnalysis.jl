@@ -22,7 +22,7 @@ import Core:
 import ._TOP_MOD:     # Base definitions
     @__MODULE__, @eval, @assert, @specialize, @nospecialize, @inbounds, @inline, @noinline,
     @label, @goto, !, !==, !=, ≠, +, -, *, ≤, <, ≥, >, &, |, <<, include, error, missing, copy,
-    Vector, BitSet, IdDict, IdSet, UnitRange, Csize_t, Callable, ∪, ⊆, ∩, :, ∈, ∉,
+    Vector, BitSet, IdDict, IdSet, UnitRange, Csize_t, Callable, ∪, ⊆, ∩, :, ∈, ∉, =>,
     in, length, get, first, last, haskey, keys, get!, isempty, isassigned,
     pop!, push!, pushfirst!, empty!, delete!, max, min, enumerate, unwrap_unionall,
     ismutabletype
@@ -538,22 +538,15 @@ isaliased(x::Union{Argument,SSAValue}, y::Union{Argument,SSAValue}, estate::Esca
 isaliased(xidx::Int, yidx::Int, estate::EscapeState) =
     in_same_set(estate.aliasset, xidx, yidx)
 
-"""
-    ArgEscapeInfo(x::EscapeInfo) -> x′::ArgEscapeInfo
-
-The data structure for caching `x::EscapeInfo` for interprocedural propagation,
-which is slightly more efficient than the original `x::EscapeInfo` object.
-"""
 struct ArgEscapeInfo
     EscapeBits::UInt8
-    ArgAliasing::Union{Nothing,Vector{Int}}
 end
-function ArgEscapeInfo(x::EscapeInfo, ArgAliasing::Union{Nothing,Vector{Int}})
-    x === ⊤ && return ArgEscapeInfo(ARG_ALL_ESCAPE, nothing)
+function ArgEscapeInfo(x::EscapeInfo)
+    x === ⊤ && return ArgEscapeInfo(ARG_ALL_ESCAPE)
     EscapeBits = 0x00
     has_return_escape(x) && (EscapeBits |= ARG_RETURN_ESCAPE)
     has_thrown_escape(x) && (EscapeBits |= ARG_THROWN_ESCAPE)
-    return ArgEscapeInfo(EscapeBits, ArgAliasing)
+    return ArgEscapeInfo(EscapeBits)
 end
 
 const ARG_ALL_ESCAPE    = 0x01 << 0
@@ -565,24 +558,31 @@ has_all_escape(x::ArgEscapeInfo)    = x.EscapeBits & ARG_ALL_ESCAPE    ≠ 0
 has_return_escape(x::ArgEscapeInfo) = x.EscapeBits & ARG_RETURN_ESCAPE ≠ 0
 has_thrown_escape(x::ArgEscapeInfo) = x.EscapeBits & ARG_THROWN_ESCAPE ≠ 0
 
-function to_interprocedural(estate::EscapeState)
+struct ArgAliasing
+    aidx::Int
+    bidx::Int
+end
+
+struct ArgEscapeCache
+    argescapes::Vector{ArgEscapeInfo}
+    argaliases::Vector{ArgAliasing}
+end
+
+function ArgEscapeCache(estate::EscapeState)
     nargs = estate.nargs
     argescapes = Vector{ArgEscapeInfo}(undef, nargs)
+    argaliases = ArgAliasing[]
     for i = 1:nargs
         info = estate.escapes[i]
         @assert info.AliasInfo === true
-        ArgAliasing = nothing
+        argescapes[i] = ArgEscapeInfo(info)
         for j = (i+1):nargs
             if isaliased(i, j, estate)
-                if ArgAliasing === nothing
-                    ArgAliasing = Int[]
-                end
-                push!(ArgAliasing, j)
+                push!(argaliases, ArgAliasing(i, j))
             end
         end
-        argescapes[i] = ArgEscapeInfo(info, ArgAliasing)
     end
-    return argescapes
+    return ArgEscapeCache(argescapes, argaliases)
 end
 
 # checks if `ir` has any argument that is "interesting" in terms of their escapability
@@ -625,7 +625,7 @@ struct AnalysisState{T<:Callable}
     ir::IRCode
     estate::EscapeState
     changes::Changes
-    getargescapes::T
+    get_escape_cache::T
 end
 
 function getinst(ir::IRCode, idx::Int)
@@ -638,22 +638,22 @@ function getinst(ir::IRCode, idx::Int)
 end
 
 """
-    analyze_escapes(ir::IRCode, nargs::Int, call_resolved::Bool, getargescapes::Callable)
+    analyze_escapes(ir::IRCode, nargs::Int, call_resolved::Bool, get_escape_cache::Callable)
         -> estate::EscapeState
 
 Analyzes escape information in `ir`:
 - `nargs`: the number of actual arguments of the analyzed call
 - `call_resolved`: if interprocedural calls are already resolved by `ssa_inlining_pass!`
-- `getargescapes(::Union{InferenceResult,MethodInstance})`: retrieves argument escape cache
+- `get_escape_cache(::Union{InferenceResult,MethodInstance})`: retrieves argument escape cache
 """
-function analyze_escapes(ir::IRCode, nargs::Int, call_resolved::Bool, getargescapes::T) where T<:Callable
+function analyze_escapes(ir::IRCode, nargs::Int, call_resolved::Bool, get_escape_cache::T) where T<:Callable
     stmts = ir.stmts
     nstmts = length(stmts) + length(ir.new_nodes.stmts)
 
     tryregions, arrayinfo, callinfo = compute_frameinfo(ir, call_resolved)
     estate = EscapeState(nargs, nstmts, arrayinfo)
     changes = Changes() # keeps changes that happen at current statement
-    astate = AnalysisState(ir, estate, changes, getargescapes)
+    astate = AnalysisState(ir, estate, changes, get_escape_cache)
 
     local debug_itr_counter = 0
     while true
@@ -1227,15 +1227,15 @@ escape_invoke!(astate::AnalysisState, pc::Int, args::Vector{Any}) =
 function escape_invoke!(astate::AnalysisState, pc::Int, args::Vector{Any},
     linfo::Linfo, first_idx::Int, last_idx::Int = length(args))
     if isa(linfo, InferenceResult)
-        argescapes = astate.getargescapes(linfo)
+        cache = astate.get_escape_cache(linfo)
         linfo = linfo.linfo
     else
-        argescapes = astate.getargescapes(linfo)
+        cache = astate.get_escape_cache(linfo)
     end
-    if argescapes === nothing
+    if cache === nothing
         return add_conservative_changes!(astate, pc, args, 2)
     else
-        argescapes = argescapes::Vector{ArgEscapeInfo}
+        cache = cache::ArgEscapeCache
     end
     ret = SSAValue(pc)
     retinfo = astate.estate[ret] # escape information imposed on the call statement
@@ -1248,7 +1248,7 @@ function escape_invoke!(astate::AnalysisState, pc::Int, args::Vector{Any},
             # COMBAK will this be invalid once we take alias information into account?
             i = nargs
         end
-        arginfo = argescapes[i]
+        arginfo = cache.argescapes[i]
         info = from_interprocedural(arginfo, retinfo, pc)
         if has_return_escape(arginfo)
             # if this argument can be "returned", in addition to propagating
@@ -1261,12 +1261,9 @@ function escape_invoke!(astate::AnalysisState, pc::Int, args::Vector{Any},
             # the escape information imposed on this call argument within the callee
             add_escape_change!(astate, arg, info)
         end
-        ArgAliasing = arginfo.ArgAliasing
-        if ArgAliasing !== nothing
-            for j in ArgAliasing
-                add_alias_change!(astate, arg, args[j-(first_idx-1)])
-            end
-        end
+    end
+    for (; aidx, bidx) in cache.argaliases
+        add_alias_change!(astate, args[aidx-(first_idx-1)], args[bidx-(first_idx-1)])
     end
     # we should disable the alias analysis on this newly introduced object
     add_escape_change!(astate, ret, EscapeInfo(retinfo, true))

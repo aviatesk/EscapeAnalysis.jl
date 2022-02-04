@@ -74,12 +74,12 @@ import .CC:
     InferenceResult, OptimizationState, IRCode, copy as cccopy,
     @timeit, convert_to_ircode, slot2reg, compact!, ssa_inlining_pass!, sroa_pass!,
     adce_pass!, type_lift_pass!, JLOptions, verify_ir, verify_linetable
-import .EA: analyze_escapes, ArgEscapeInfo, EscapeInfo, EscapeState, is_ipo_profitable
+import .EA: analyze_escapes, ArgEscapeCache, EscapeInfo, EscapeState, is_ipo_profitable
 
 # when working outside of Core.Compiler,
 # cache entire escape state for later inspection and debugging
 struct EscapeCache
-    argescapes::Vector{ArgEscapeInfo}
+    cache::ArgEscapeCache
     state::EscapeState # preserved just for debugging purpose
     ir::IRCode         # preserved just for debugging purpose
 end
@@ -182,20 +182,20 @@ and then caches it into a global cache for later interprocedural propagation.
 """
 function cache_escapes!(interp::EscapeAnalyzer,
     caller::InferenceResult, estate::EscapeState, cacheir::IRCode)
-    argescapes = EscapeAnalysis.to_interprocedural(estate)
-    cache = EscapeCache(argescapes, estate, cacheir)
-    interp.cache[caller] = cache
-    return argescapes
+    cache = ArgEscapeCache(estate)
+    ecache = EscapeCache(cache, estate, cacheir)
+    interp.cache[caller] = ecache
+    return cache
 end
 
-function getargescapes(interp::EscapeAnalyzer)
+function get_escape_cache(interp::EscapeAnalyzer)
     return function (linfo::Union{InferenceResult,MethodInstance})
         if isa(linfo, InferenceResult)
             ecache = get(interp.cache, linfo, nothing)
         else
             ecache = get(GLOBAL_ESCAPE_CACHE, linfo, nothing)
         end
-        return ecache !== nothing ? ecache.argescapes : nothing
+        return ecache !== nothing ? ecache.cache : nothing
     end
 end
 
@@ -210,7 +210,7 @@ function run_passes_with_ea(interp::EscapeAnalyzer, ci::CodeInfo, sv::Optimizati
     if is_ipo_profitable(ir, nargs) || caller.linfo.specTypes === interp.entry_tt
         try
             @timeit "[IPO EA]" begin
-                state = analyze_escapes(ir, nargs, false, getargescapes(interp))
+                state = analyze_escapes(ir, nargs, false, get_escape_cache(interp))
                 cache_escapes!(interp, caller, state, cccopy(ir))
             end
         catch err
@@ -230,7 +230,7 @@ function run_passes_with_ea(interp::EscapeAnalyzer, ci::CodeInfo, sv::Optimizati
     @timeit "compact 2" ir = compact!(ir)
     if caller.linfo.specTypes === interp.entry_tt && interp.optimize
         try
-            @timeit "[Local EA]" state = analyze_escapes(ir, nargs, true, getargescapes(interp))
+            @timeit "[Local EA]" state = analyze_escapes(ir, nargs, true, get_escape_cache(interp))
         catch err
             @error "error happened within [Local EA], insepct `Main.ir` and `Main.nargs`"
             @eval Main (ir = $ir; nargs = $nargs)

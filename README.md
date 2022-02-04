@@ -516,7 +516,6 @@ it is more ideal if it runs once and succeeding optimization passes incrementall
 Core.Compiler.EscapeAnalysis.analyze_escapes
 Core.Compiler.EscapeAnalysis.EscapeState
 Core.Compiler.EscapeAnalysis.EscapeInfo
-Core.Compiler.EscapeAnalysis.ArgEscapeInfo
 ```
 
 [^LatticeDesign]: Our type inference implementation takes the alternative approach,
