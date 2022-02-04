@@ -50,15 +50,12 @@ struct IndexableElements
     infos::IdDict{Int,AInfo}
 end
 struct Unindexable
-    array::Bool
     info::AInfo
 end
+Unindexable() = Unindexable(AInfo())
 
-merge_to_unindexable(AliasInfo::IndexableFields) = Unindexable(false, merge_to_unindexable(AliasInfo.infos))
-function merge_to_unindexable(AliasInfo::Unindexable, AliasInfos::IndexableFields)
-    @assert !AliasInfo.array "invalid merge_to_unindexable"
-    return Unindexable(false, merge_to_unindexable(AliasInfo.info, AliasInfos.infos))
-end
+merge_to_unindexable(AliasInfo::IndexableFields) = Unindexable(merge_to_unindexable(AliasInfo.infos))
+merge_to_unindexable(AliasInfo::Unindexable, AliasInfos::IndexableFields) = Unindexable(merge_to_unindexable(AliasInfo.info, AliasInfos.infos))
 merge_to_unindexable(infos::Vector{AInfo}) = merge_to_unindexable(AInfo(), infos)
 function merge_to_unindexable(info::AInfo, infos::Vector{AInfo})
     for i = 1:length(infos)
@@ -66,11 +63,8 @@ function merge_to_unindexable(info::AInfo, infos::Vector{AInfo})
     end
     return info
 end
-merge_to_unindexable(AliasInfo::IndexableElements) = Unindexable(true, merge_to_unindexable(AliasInfo.infos))
-function merge_to_unindexable(AliasInfo::Unindexable, AliasInfos::IndexableElements)
-    @assert AliasInfo.array "invalid merge_to_unindexable"
-    return Unindexable(true, merge_to_unindexable(AliasInfo.info, AliasInfos.infos))
-end
+merge_to_unindexable(AliasInfo::IndexableElements) = Unindexable(merge_to_unindexable(AliasInfo.infos))
+merge_to_unindexable(AliasInfo::Unindexable, AliasInfos::IndexableElements) = Unindexable(merge_to_unindexable(AliasInfo.info, AliasInfos.infos))
 merge_to_unindexable(infos::IdDict{Int,AInfo}) = merge_to_unindexable(AInfo(), infos)
 function merge_to_unindexable(info::AInfo, infos::IdDict{Int,AInfo})
     for idx in keys(infos)
@@ -232,7 +226,6 @@ x::EscapeInfo == y::EscapeInfo = begin
     else
         xa = xa::Unindexable
         isa(ya, Unindexable) || return false
-        xa.array === ya.array || return false
         xa.info == ya.info || return false
     end
     xl, yl = x.Liveness, y.Liveness
@@ -284,7 +277,6 @@ x::EscapeInfo ⊑ₑ y::EscapeInfo = begin
         elseif isa(ya, IndexableElements)
             return false
         elseif isa(ya, Unindexable)
-            ya.array && return false
             xinfos, yinfo = xa.infos, ya.info
             for i = length(xinfos)
                 xinfos[i] ⊆ yinfo || return false
@@ -302,7 +294,6 @@ x::EscapeInfo ⊑ₑ y::EscapeInfo = begin
         elseif isa(ya, IndexableFields)
             return false
         elseif isa(ya, Unindexable)
-            ya.array || return false
             xinfos, yinfo = xa.infos, ya.info
             for idx in keys(xinfos)
                 xinfos[idx] ⊆ yinfo || return false
@@ -313,7 +304,6 @@ x::EscapeInfo ⊑ₑ y::EscapeInfo = begin
     else
         xa = xa::Unindexable
         if isa(ya, Unindexable)
-            xa.array === ya.array || return false
             xinfo, yinfo = xa.info, ya.info
             xinfo ⊆ yinfo || return false
         else
@@ -390,7 +380,7 @@ x::EscapeInfo ⊔ₑ y::EscapeInfo = begin
                 end
             end
             AliasInfo = IndexableFields(infos)
-        elseif isa(ya, Unindexable) && !ya.array
+        elseif isa(ya, Unindexable)
             xinfos, yinfo = xa.infos, ya.info
             AliasInfo = merge_to_unindexable(ya, xa)
         else
@@ -412,23 +402,22 @@ x::EscapeInfo ⊔ₑ y::EscapeInfo = begin
                 infos[idx] = yinfos[idx]
             end
             AliasInfo = IndexableElements(infos)
-        elseif isa(ya, Unindexable) && ya.array
+        elseif isa(ya, Unindexable)
             AliasInfo = merge_to_unindexable(ya, xa)
         else
             AliasInfo = true # handle conflicting case conservatively
         end
     else
         xa = xa::Unindexable
-        if isa(ya, IndexableFields) && !xa.array
+        if isa(ya, IndexableFields)
             AliasInfo = merge_to_unindexable(xa, ya)
-        elseif isa(ya, IndexableElements) && xa.array
+        elseif isa(ya, IndexableElements)
             AliasInfo = merge_to_unindexable(xa, ya)
-        elseif isa(ya, Unindexable) && xa.array === ya.array
+        else
+            ya = ya::Unindexable
             xinfo, yinfo = xa.info, ya.info
             info = xinfo ∪ yinfo
-            AliasInfo = Unindexable(xa.array, info)
-        else
-            AliasInfo = true # handle conflicting case conservatively
+            AliasInfo = Unindexable(info)
         end
     end
     xl, yl = x.Liveness, y.Liveness
@@ -572,7 +561,7 @@ function to_interprocedural(estate::EscapeState)
     argescapes = Vector{ArgEscapeInfo}(undef, nargs)
     for i = 1:nargs
         info = estate.escapes[i]
-        @assert isa(info.AliasInfo, Bool)
+        @assert info.AliasInfo === true
         ArgAliasing = nothing
         for j = (i+1):nargs
             if isaliased(i, j, estate)
@@ -1323,7 +1312,7 @@ function escape_new!(astate::AnalysisState, pc::Int, args::Vector{Any})
             add_liveness_change!(astate, arg, pc)
         end
         add_escape_change!(astate, obj, EscapeInfo(objinfo, AliasInfo)) # update with new AliasInfo
-    elseif isa(AliasInfo, Unindexable) && !AliasInfo.array
+    elseif isa(AliasInfo, Unindexable)
         # fields are known partially: propagate escape information imposed on recorded possibilities to all fields values
         info = AliasInfo.info
         objinfo′ = ignore_aliasinfo(objinfo)
@@ -1568,7 +1557,7 @@ end
 function analyze_fields(ir::IRCode, @nospecialize(typ), @nospecialize(fld))
     nfields = fieldcount_noerror(typ)
     if nfields === nothing
-        return Unindexable(false, AInfo()), 0
+        return Unindexable(), 0
     end
     if isa(typ, DataType)
         fldval = try_compute_field(ir, fld)
@@ -1577,7 +1566,7 @@ function analyze_fields(ir::IRCode, @nospecialize(typ), @nospecialize(fld))
         fidx = nothing
     end
     if fidx === nothing
-        return Unindexable(false, AInfo()), 0
+        return Unindexable(), 0
     end
     return IndexableFields(AInfo[AInfo() for _ in 1:nfields]), fidx
 end
@@ -1635,7 +1624,7 @@ function escape_builtin!(::typeof(getfield), astate::AnalysisState, pc::Int, arg
         @label record_indexable_use
         push!(AliasInfo.infos[fidx], pc) # record use
         add_escape_change!(astate, obj, EscapeInfo(objinfo, AliasInfo)) # update with new AliasInfo
-    elseif isa(AliasInfo, Unindexable) && !AliasInfo.array
+    elseif isa(AliasInfo, Unindexable)
         @label record_unindexable_use
         push!(AliasInfo.info, pc) # record use
         add_escape_change!(astate, obj, EscapeInfo(objinfo, AliasInfo)) # update with new AliasInfo
@@ -1685,7 +1674,7 @@ function escape_builtin!(::typeof(setfield!), astate::AnalysisState, pc::Int, ar
         add_escape_change!(astate, obj, objinfo) # update with new AliasInfo
         # propagate the escape information of this object ignoring field information
         add_escape_change!(astate, val, ignore_aliasinfo(objinfo))
-    elseif isa(AliasInfo, Unindexable) && !AliasInfo.array
+    elseif isa(AliasInfo, Unindexable)
         info = AliasInfo.info
         @label escape_unindexable_def
         add_alias_escapes!(astate, val, AliasInfo.info)
@@ -1747,7 +1736,7 @@ function escape_builtin!(::typeof(arrayref), astate::AnalysisState, pc::Int, arg
             AliasInfo = IndexableElements(IdDict{Int,AInfo}())
             @goto record_indexable_use
         end
-        AliasInfo = Unindexable(true, AInfo())
+        AliasInfo = Unindexable()
         @goto record_unindexable_use
     elseif isa(AliasInfo, IndexableElements)
         idx = array_nd_index(astate, ary, args[4:end])
@@ -1759,7 +1748,7 @@ function escape_builtin!(::typeof(arrayref), astate::AnalysisState, pc::Int, arg
         info = get!(()->AInfo(), AliasInfo.infos, idx)
         push!(info, pc) # record use
         add_escape_change!(astate, ary, EscapeInfo(aryinfo, AliasInfo)) # update with new AliasInfo
-    elseif isa(AliasInfo, Unindexable) && AliasInfo.array
+    elseif isa(AliasInfo, Unindexable)
         @label record_unindexable_use
         push!(AliasInfo.info, pc) # record use
         add_escape_change!(astate, ary, EscapeInfo(aryinfo, AliasInfo)) # update with new AliasInfo
@@ -1812,7 +1801,7 @@ function escape_builtin!(::typeof(arrayset), astate::AnalysisState, pc::Int, arg
             AliasInfo = IndexableElements(IdDict{Int,AInfo}())
             @goto escape_indexable_def
         end
-        AliasInfo = Unindexable(true, AInfo())
+        AliasInfo = Unindexable()
         @goto escape_unindexable_def
     elseif isa(AliasInfo, IndexableElements)
         idx = array_nd_index(astate, ary, args[5:end])
@@ -1827,7 +1816,7 @@ function escape_builtin!(::typeof(arrayset), astate::AnalysisState, pc::Int, arg
         add_escape_change!(astate, ary, EscapeInfo(aryinfo, AliasInfo)) # update with new AliasInfo
         # propagate the escape information of this array ignoring elements information
         add_escape_change!(astate, val, ignore_aliasinfo(aryinfo))
-    elseif isa(AliasInfo, Unindexable) && AliasInfo.array
+    elseif isa(AliasInfo, Unindexable)
         @label escape_unindexable_def
         add_alias_escapes!(astate, val, AliasInfo.info)
         push!(AliasInfo.info, -pc) # record def
