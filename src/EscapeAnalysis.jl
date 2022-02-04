@@ -21,7 +21,7 @@ import Core:
     sizeof, ifelse, arrayset, arrayref, arraysize
 import ._TOP_MOD:     # Base definitions
     @__MODULE__, @eval, @assert, @specialize, @nospecialize, @inbounds, @inline, @noinline,
-    @label, @goto, !, !==, !=, ≠, +, -, *, ≤, <, ≥, >, &, |, include, error, missing, copy,
+    @label, @goto, !, !==, !=, ≠, +, -, *, ≤, <, ≥, >, &, |, <<, include, error, missing, copy,
     Vector, BitSet, IdDict, IdSet, UnitRange, Csize_t, Callable, ∪, ⊆, ∩, :, ∈, ∉,
     in, length, get, first, last, haskey, keys, get!, isempty, isassigned,
     pop!, push!, pushfirst!, empty!, delete!, max, min, enumerate, unwrap_unionall,
@@ -545,16 +545,25 @@ The data structure for caching `x::EscapeInfo` for interprocedural propagation,
 which is slightly more efficient than the original `x::EscapeInfo` object.
 """
 struct ArgEscapeInfo
-    AllEscape::Bool
-    ReturnEscape::Bool
-    ThrownEscape::Bool
+    EscapeBits::UInt8
     ArgAliasing::Union{Nothing,Vector{Int}}
 end
 function ArgEscapeInfo(x::EscapeInfo, ArgAliasing::Union{Nothing,Vector{Int}})
-    x === ⊤ && return ArgEscapeInfo(true, true, true, nothing)
-    ThrownEscape = isempty(x.ThrownEscape) ? false : true
-    return ArgEscapeInfo(false, x.ReturnEscape, ThrownEscape, ArgAliasing)
+    x === ⊤ && return ArgEscapeInfo(ARG_ALL_ESCAPE, nothing)
+    EscapeBits = 0x00
+    has_return_escape(x) && (EscapeBits |= ARG_RETURN_ESCAPE)
+    has_thrown_escape(x) && (EscapeBits |= ARG_THROWN_ESCAPE)
+    return ArgEscapeInfo(EscapeBits, ArgAliasing)
 end
+
+const ARG_ALL_ESCAPE    = 0x01 << 0
+const ARG_RETURN_ESCAPE = 0x01 << 1
+const ARG_THROWN_ESCAPE = 0x01 << 2
+
+has_no_escape(x::ArgEscapeInfo)     = !has_all_escape(x) && !has_return_escape(x) && !has_thrown_escape(x)
+has_all_escape(x::ArgEscapeInfo)    = x.EscapeBits & ARG_ALL_ESCAPE    ≠ 0
+has_return_escape(x::ArgEscapeInfo) = x.EscapeBits & ARG_RETURN_ESCAPE ≠ 0
+has_thrown_escape(x::ArgEscapeInfo) = x.EscapeBits & ARG_THROWN_ESCAPE ≠ 0
 
 function to_interprocedural(estate::EscapeState)
     nargs = estate.nargs
@@ -1241,7 +1250,7 @@ function escape_invoke!(astate::AnalysisState, pc::Int, args::Vector{Any},
         end
         arginfo = argescapes[i]
         info = from_interprocedural(arginfo, retinfo, pc)
-        if arginfo.ReturnEscape
+        if has_return_escape(arginfo)
             # if this argument can be "returned", in addition to propagating
             # the escape information imposed on this call argument within the callee,
             # we should also account for possible aliasing of this argument and the returned value
@@ -1271,9 +1280,9 @@ in the context of the caller frame, where `retinfo` is the escape information im
 the return value and `pc` is the SSA statement number of the return value.
 """
 function from_interprocedural(arginfo::ArgEscapeInfo, retinfo::EscapeInfo, pc::Int)
-    arginfo.AllEscape && return ⊤
+    has_all_escape(arginfo) && return ⊤
 
-    ThrownEscape = arginfo.ThrownEscape ? LivenessSet(pc) : BOT_THROWN_ESCAPE
+    ThrownEscape = has_thrown_escape(arginfo) ? LivenessSet(pc) : BOT_THROWN_ESCAPE
 
     return EscapeInfo(
         #=Analyzed=#true, #=ReturnEscape=#false, ThrownEscape,
