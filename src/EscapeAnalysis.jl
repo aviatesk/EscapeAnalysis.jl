@@ -176,6 +176,7 @@ end
 struct Unindexable
     info::AInfo
 end
+IndexableFields(nfields::Int) = IndexableFields(AInfo[AInfo() for _ in 1:nfields])
 Unindexable() = Unindexable(AInfo())
 
 merge_to_unindexable(AliasInfo::IndexableFields) = Unindexable(merge_to_unindexable(AliasInfo.infos))
@@ -357,67 +358,7 @@ x::EscapeInfo ⊔ₑ y::EscapeInfo = begin
     else
         ThrownEscape = xt ∪ yt
     end
-    xa, ya = x.AliasInfo, y.AliasInfo
-    if xa === true || ya === true
-        AliasInfo = true
-    elseif xa === false
-        AliasInfo = ya
-    elseif ya === false
-        AliasInfo = xa
-    elseif isa(xa, IndexableFields)
-        if isa(ya, IndexableFields)
-            xinfos, yinfos = xa.infos, ya.infos
-            xn, yn = length(xinfos), length(yinfos)
-            nmax, nmin = max(xn, yn), min(xn, yn)
-            infos = Vector{AInfo}(undef, nmax)
-            for i in 1:nmax
-                if i > nmin
-                    infos[i] = (xn > yn ? xinfos : yinfos)[i]
-                else
-                    infos[i] = xinfos[i] ∪ yinfos[i]
-                end
-            end
-            AliasInfo = IndexableFields(infos)
-        elseif isa(ya, Unindexable)
-            xinfos, yinfo = xa.infos, ya.info
-            AliasInfo = merge_to_unindexable(ya, xa)
-        else
-            AliasInfo = true # handle conflicting case conservatively
-        end
-    elseif isa(xa, IndexableElements)
-        if isa(ya, IndexableElements)
-            xinfos, yinfos = xa.infos, ya.infos
-            infos = IdDict{Int,AInfo}()
-            for idx in keys(xinfos)
-                if !haskey(yinfos, idx)
-                    infos[idx] = xinfos[idx]
-                else
-                    infos[idx] = xinfos[idx] ∪ yinfos[idx]
-                end
-            end
-            for idx in keys(yinfos)
-                haskey(xinfos, idx) && continue # unioned already
-                infos[idx] = yinfos[idx]
-            end
-            AliasInfo = IndexableElements(infos)
-        elseif isa(ya, Unindexable)
-            AliasInfo = merge_to_unindexable(ya, xa)
-        else
-            AliasInfo = true # handle conflicting case conservatively
-        end
-    else
-        xa = xa::Unindexable
-        if isa(ya, IndexableFields)
-            AliasInfo = merge_to_unindexable(xa, ya)
-        elseif isa(ya, IndexableElements)
-            AliasInfo = merge_to_unindexable(xa, ya)
-        else
-            ya = ya::Unindexable
-            xinfo, yinfo = xa.info, ya.info
-            info = xinfo ∪ yinfo
-            AliasInfo = Unindexable(info)
-        end
-    end
+    AliasInfo = merge_alias_info(x.AliasInfo, y.AliasInfo)
     xl, yl = x.Liveness, y.Liveness
     if xl === TOP_LIVENESS || yl === TOP_LIVENESS
         Liveness = TOP_LIVENESS
@@ -435,6 +376,69 @@ x::EscapeInfo ⊔ₑ y::EscapeInfo = begin
         AliasInfo,
         Liveness,
         )
+end
+
+function merge_alias_info(@nospecialize(xa), @nospecialize(ya))
+    if xa === true || ya === true
+        return true
+    elseif xa === false
+        return ya
+    elseif ya === false
+        return xa
+    elseif isa(xa, IndexableFields)
+        if isa(ya, IndexableFields)
+            xinfos, yinfos = xa.infos, ya.infos
+            xn, yn = length(xinfos), length(yinfos)
+            nmax, nmin = max(xn, yn), min(xn, yn)
+            infos = Vector{AInfo}(undef, nmax)
+            for i in 1:nmax
+                if i > nmin
+                    infos[i] = (xn > yn ? xinfos : yinfos)[i]
+                else
+                    infos[i] = xinfos[i] ∪ yinfos[i]
+                end
+            end
+            return IndexableFields(infos)
+        elseif isa(ya, Unindexable)
+            xinfos, yinfo = xa.infos, ya.info
+            return merge_to_unindexable(ya, xa)
+        else
+            return true # handle conflicting case conservatively
+        end
+    elseif isa(xa, IndexableElements)
+        if isa(ya, IndexableElements)
+            xinfos, yinfos = xa.infos, ya.infos
+            infos = IdDict{Int,AInfo}()
+            for idx in keys(xinfos)
+                if !haskey(yinfos, idx)
+                    infos[idx] = xinfos[idx]
+                else
+                    infos[idx] = xinfos[idx] ∪ yinfos[idx]
+                end
+            end
+            for idx in keys(yinfos)
+                haskey(xinfos, idx) && continue # unioned already
+                infos[idx] = yinfos[idx]
+            end
+            return IndexableElements(infos)
+        elseif isa(ya, Unindexable)
+            return merge_to_unindexable(ya, xa)
+        else
+            return true # handle conflicting case conservatively
+        end
+    else
+        xa = xa::Unindexable
+        if isa(ya, IndexableFields)
+            return merge_to_unindexable(xa, ya)
+        elseif isa(ya, IndexableElements)
+            return merge_to_unindexable(xa, ya)
+        else
+            ya = ya::Unindexable
+            xinfo, yinfo = xa.info, ya.info
+            info = xinfo ∪ yinfo
+            return Unindexable(info)
+        end
+    end
 end
 
 const AliasSet = IntDisjointSet{Int}
@@ -1379,8 +1383,19 @@ function escape_new!(astate::AnalysisState, pc::Int, args::Vector{Any})
     AliasInfo = objinfo.AliasInfo
     nargs = length(args)
     if isa(AliasInfo, Bool)
-        @goto conservative_propagation
+        AliasInfo && @goto conservative_propagation
+        # AliasInfo of this object hasn't been analyzed yet: set AliasInfo now
+        typ = widenconst(argextype(obj, astate.ir))
+        nfields = fieldcount_noerror(typ)
+        if nfields === nothing
+            AliasInfo = Unindexable()
+            @goto escape_unindexable_def
+        else
+            AliasInfo = IndexableFields(nfields)
+            @goto escape_indexable_def
+        end
     elseif isa(AliasInfo, IndexableFields)
+        @label escape_indexable_def
         # fields are known precisely: propagate escape information imposed on recorded possibilities to the exact field values
         infos = AliasInfo.infos
         nf = length(infos)
@@ -1396,6 +1411,7 @@ function escape_new!(astate::AnalysisState, pc::Int, args::Vector{Any})
         end
         add_escape_change!(astate, obj, EscapeInfo(objinfo, AliasInfo)) # update with new AliasInfo
     elseif isa(AliasInfo, Unindexable)
+        @label escape_unindexable_def
         # fields are known partially: propagate escape information imposed on recorded possibilities to all fields values
         info = AliasInfo.info
         objinfo′ = ignore_aliasinfo(objinfo)
@@ -1445,7 +1461,7 @@ function analyze_fields(ir::IRCode, @nospecialize(typ), @nospecialize(fld))
     if fidx === nothing
         return Unindexable(), 0
     end
-    return IndexableFields(AInfo[AInfo() for _ in 1:nfields]), fidx
+    return IndexableFields(nfields), fidx
 end
 
 function reanalyze_fields(ir::IRCode, AliasInfo::IndexableFields, @nospecialize(typ), @nospecialize(fld))
@@ -1488,7 +1504,7 @@ function escape_builtin!(::typeof(getfield), astate::AnalysisState, pc::Int, arg
     AliasInfo = objinfo.AliasInfo
     if isa(AliasInfo, Bool)
         AliasInfo && @goto conservative_propagation
-        # the fields of this object haven't been analyzed yet: analyze them now
+        # AliasInfo of this object hasn't been analyzed yet: set AliasInfo now
         AliasInfo, fidx = analyze_fields(ir, typ, args[3])
         if isa(AliasInfo, IndexableFields)
             @goto record_indexable_use
@@ -1532,7 +1548,7 @@ function escape_builtin!(::typeof(setfield!), astate::AnalysisState, pc::Int, ar
     AliasInfo = objinfo.AliasInfo
     if isa(AliasInfo, Bool)
         AliasInfo && @goto conservative_propagation
-        # the fields of this object haven't been analyzed yet: analyze them now
+        # AliasInfo of this object hasn't been analyzed yet: set AliasInfo now
         typ = widenconst(argextype(obj, ir))
         AliasInfo, fidx = analyze_fields(ir, typ, args[3])
         if isa(AliasInfo, IndexableFields)
@@ -1607,7 +1623,7 @@ function escape_builtin!(::typeof(arrayref), astate::AnalysisState, pc::Int, arg
     AliasInfo = aryinfo.AliasInfo
     if isa(AliasInfo, Bool)
         AliasInfo && @goto conservative_propagation
-        # the elements of this array haven't been analyzed yet: set AliasInfo now
+        # AliasInfo of this array hasn't been analyzed yet: set AliasInfo now
         idx = array_nd_index(astate, ary, args[4:end])
         if isa(idx, Int)
             AliasInfo = IndexableElements(IdDict{Int,AInfo}())
@@ -1672,7 +1688,7 @@ function escape_builtin!(::typeof(arrayset), astate::AnalysisState, pc::Int, arg
     AliasInfo = aryinfo.AliasInfo
     if isa(AliasInfo, Bool)
         AliasInfo && @goto conservative_propagation
-        # the elements of this array haven't been analyzed yet: set AliasInfo now
+        # AliasInfo of this array hasn't been analyzed yet: set AliasInfo now
         idx = array_nd_index(astate, ary, args[5:end])
         if isa(idx, Int)
             AliasInfo = IndexableElements(IdDict{Int,AInfo}())
