@@ -1328,8 +1328,7 @@ end
         i = only(findall(isnew, result.ir.stmts.inst))
         r = only(findall(isreturn, result.ir.stmts.inst))
         @test has_return_escape(result.state[Argument(2)], r)
-        # NOTE we can't scalar replace `obj`, but still we may want to stack allocate it
-        @test_broken is_load_forwardable(result.state[SSAValue(i)])
+        @test !has_return_escape(result.state[SSAValue(i)], r)
     end
 
     # TODO interprocedural field analysis
@@ -1338,7 +1337,7 @@ end
             global GV = s[]
             nothing
         end
-        @test_broken !has_all_escape(result.state[Argument(2)])
+        @test !has_all_escape(result.state[Argument(2)])
     end
 
     # aliasing between arguments
@@ -1854,7 +1853,7 @@ end
         ref = only(findall(iscall((result.ir, Base.arrayref)), result.ir.stmts.inst))
         ret = only(findall(isreturn, result.ir.stmts.inst))
         @test_broken !has_thrown_escape(result.state[SSAValue(i)], ref)
-        @test_broken !has_return_escape(result.state[SSAValue(i)], ret)
+        @test !has_return_escape(result.state[SSAValue(i)], ret)
         @test has_thrown_escape(result.state[Argument(2)], ref)
         @test has_return_escape(result.state[Argument(2)], ret)
     end
@@ -2053,7 +2052,7 @@ end
         end
         r = only(findall(isreturn, result.ir.stmts.inst))
         i = only(findall(isarrayalloc, result.ir.stmts.inst))
-        @test_broken !has_return_escape(result.state[SSAValue(i)], r)
+        @test !has_return_escape(result.state[SSAValue(i)], r)
         @test !is_load_forwardable(result.state[SSAValue(i)])
     end
 
@@ -2440,6 +2439,50 @@ let result = code_escapes((Union{SafeRef{String},Vector{String}},); optimize=fal
         return nothing
     end
     @test has_all_escape(result.state[Argument(2)])
+end
+
+# IPO alias analysis
+# ==================
+
+@noinline escapex!(x) = (GR[] = x[])
+@noinline mksaferef1(s) = SafeRef(s)
+@noinline mksaferef2(s) = (x = SafeRef("julia"); x[] = s; return x)
+@noinline setsaferef!(x, s) = x[] = s
+let result = code_escapes(getindex, (SafeRef{String},); optimize=false)
+    @test !has_return_escape(result.state[Argument(2)])
+end
+let result = code_escapes(escapex!, (SafeRef{String},); optimize=false)
+    @test !has_all_escape(result.state[Argument(2)])
+end
+let result = code_escapes((String,); optimize=false) do x
+        getindex(SafeRef(x))
+    end
+    @test has_return_escape(result.state[Argument(2)])
+end
+let result = code_escapes((String,); optimize=false) do x
+        getindex(mksaferef1(x))
+    end
+    @test has_return_escape(result.state[Argument(2)])
+end
+let result = code_escapes((String,); optimize=false) do x
+        getindex(mksaferef2(x))
+    end
+    @test has_return_escape(result.state[Argument(2)])
+end
+let result = code_escapes((SafeRef{String},String,); optimize=false) do x, s
+        setsaferef!(x, s)
+        getindex(x)
+    end
+    @test !has_return_escape(result.state[Argument(2)])
+    @test has_return_escape(result.state[Argument(3)])
+end
+let result = code_escapes((String,)) do s
+        x = SafeRef(s)
+        return escapex!(x)
+    end
+    i = only(findall(isnew, result.ir.stmts.inst))
+    @test has_all_escape(result.state[Argument(2)]) # s
+    @test !has_return_escape(result.state[SSAValue(i)]) # x
 end
 
 # code quality test
