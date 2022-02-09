@@ -3,7 +3,6 @@ import Core: Argument, SSAValue, ReturnNode
 const EA = EscapeAnalysis
 
 isT(T) = (@nospecialize x) -> x === T
-issubT(T) = (@nospecialize x) -> x <: T
 isreturn(@nospecialize x) = isa(x, Core.ReturnNode) && isdefined(x, :val)
 isthrow(@nospecialize x) = Meta.isexpr(x, :call) && Core.Compiler.is_throw_call(x)
 isnew(@nospecialize x) = Meta.isexpr(x, :new)
@@ -59,6 +58,9 @@ let setup_ex = quote
         end
         Base.getindex(s::SafeRefs, idx::Int) = getfield(s, idx)
         Base.setindex!(s::SafeRefs, x, idx::Int) = setfield!(s, idx, x)
+
+        global GV::Any
+        const global GR = Ref{Any}()
     end
     global function EATModule(setup_ex = setup_ex)
         M = Module()

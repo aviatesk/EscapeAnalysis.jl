@@ -18,24 +18,24 @@ include(normpath(@__DIR__, "setup.jl"))
     end
     let # global store
         result = code_escapes((Any,)) do a
-            global aa = a
+            global GV = a
             nothing
         end
         @test has_all_escape(result.state[Argument(2)])
     end
     let # global load
         result = code_escapes() do
-            global gr
-            return gr
+            global GV
+            return GV
         end
         i = only(findall(has_return_escape, map(i->result.state[SSAValue(i)], 1:length(result.ir.stmts))))
         @test has_all_escape(result.state[SSAValue(i)])
     end
     let # global store / load (https://github.com/aviatesk/EscapeAnalysis.jl/issues/56)
         result = code_escapes((Any,)) do s
-            global v
-            v = s
-            return v
+            global GV
+            GV = s
+            return GV
         end
         r = only(findall(isreturn, result.ir.stmts.inst))
         @test has_return_escape(result.state[Argument(2)], r)
@@ -180,7 +180,7 @@ end
         @test_broken has_no_escape(result.state[SSAValue(i)])
     end
     let result = @eval Module() begin
-            @noinline f_GlobalEscape_a(a) = (global globala = a) # obvious escape
+            @noinline f_GlobalEscape_a(a) = (global GV = a) # obvious escape
             $code_escapes() do
                 f_GlobalEscape_a(Ref("Hi"))
             end
@@ -400,14 +400,14 @@ end
             try
                 rethrow()
             catch err
-                Gx[] = err
+                GR[] = err
             end
         end
         @noinline function current_exceptions_escape!()
             excs = Base.current_exceptions()
-            Gx[] = excs
+            GR[] = excs
         end
-        const Gx = Ref{Any}()
+        const GR = Ref{Any}()
         @__MODULE__
     end
 
@@ -435,7 +435,7 @@ end
                 s = unsafeget(r)
                 ret = sizeof(s)
             catch err
-                global g = err
+                global GV = err
             end
             nothing
         end
@@ -453,7 +453,7 @@ end
                     throw(err1)
                 end
             catch err2
-                Gx[] = err2
+                GR[] = err2
             end
         end
         i = only(findall(isnew, result.ir.stmts.inst))
@@ -469,7 +469,7 @@ end
                     rethrow(err1)
                 end
             catch err2
-                Gx[] = err2
+                GR[] = err2
             end
         end
         i = only(findall(isnew, result.ir.stmts.inst))
@@ -508,7 +508,7 @@ end
                 r = Ref{String}()
                 unsafeget(r)
             catch
-                Gx[] = Base.current_exceptions()
+                GR[] = Base.current_exceptions()
             end
         end
         i = only(findall(isnew, result.ir.stmts.inst))
@@ -536,7 +536,7 @@ end
                 s1 = unsafeget(r1)
                 ret = sizeof(s1)
             catch err
-                global g = err
+                global GV = err
             end
             s2 = unsafeget(r2)
             return s2, r2
@@ -577,7 +577,7 @@ end
                 s1 = unsafeget(r1)
                 ret = sizeof(s1)
             catch err1
-                global g = err1
+                global GV = err1
             end
             try
                 s2 = unsafeget(r2)
@@ -665,7 +665,7 @@ end
 
     # escaped object should escape its fields as well
     let result = code_escapes((Any,)) do a
-            global g = SafeRef{Any}(a)
+            global GV = SafeRef{Any}(a)
             nothing
         end
         i = only(findall(isnew, result.ir.stmts.inst))
@@ -673,16 +673,16 @@ end
         @test has_all_escape(result.state[Argument(2)])
     end
     let result = code_escapes((Any,)) do a
-            global g = (a,)
+            global GV = (a,)
             nothing
         end
-        i = only(findall(issubT(Tuple), result.ir.stmts.type))
+        i = only(findall(iscall((result.ir, tuple)), result.ir.stmts.inst))
         @test has_all_escape(result.state[SSAValue(i)])
         @test has_all_escape(result.state[Argument(2)])
     end
     let result = code_escapes((Any,)) do a
             o0 = SafeRef{Any}(a)
-            global g = SafeRef(o0)
+            global GV = SafeRef(o0)
             nothing
         end
         is = findall(isnew, result.ir.stmts.inst)
@@ -694,10 +694,10 @@ end
     end
     let result = code_escapes((Any,)) do a
             t0 = (a,)
-            global g = (t0,)
+            global GV = (t0,)
             nothing
         end
-        inds = findall(issubT(Tuple), result.ir.stmts.type)
+        inds = findall(iscall((result.ir, tuple)), result.ir.stmts.inst)
         @assert length(inds) == 2
         for i in inds; @test has_all_escape(result.state[SSAValue(i)]); end
         @test has_all_escape(result.state[Argument(2)])
@@ -705,7 +705,7 @@ end
     # global escape through `setfield!`
     let result = code_escapes((Any,)) do a
             r = SafeRef{Any}(:init)
-            global g = r
+            global GV = r
             r[] = a
             nothing
         end
@@ -715,7 +715,7 @@ end
     end
     let result = code_escapes((Any,Any)) do a, b
             r = SafeRef{Any}(a)
-            global g = r
+            global GV = r
             r[] = b
             nothing
         end
@@ -1083,7 +1083,7 @@ end
         @test isaliased(Argument(2), val, result.state)       # a <-> r
     end
     let result = code_escapes((Any,)) do a
-            global g
+            global GV
             (g::SafeRef{Any})[] = a
             nothing
         end
@@ -1166,7 +1166,7 @@ end
         @test isaliased(Argument(2), rval, result.state)
     end
     let result = code_escapes((String,)) do x
-            global g
+            global GV
             l = g
             if isa(l, SafeRef{String})
                 l[] = x
@@ -1332,7 +1332,7 @@ end
     # TODO interprocedural field analysis
     let result = code_escapes((SafeRef{String},)) do s
             s[] = "bar"
-            global g = s[]
+            global GV = s[]
             nothing
         end
         @test_broken !has_all_escape(result.state[Argument(2)])
@@ -2267,7 +2267,7 @@ end # @static if isdefined(Core, :ImmutableArray)
 # by compensating the lack of yet unimplemented analyses
 @testset "special-casing bitstype" begin
     let result = code_escapes((Nothing,)) do a
-            global bb = a
+            global GV = a
         end
         @test !(has_all_escape(result.state[Argument(2)]))
     end
@@ -2318,11 +2318,10 @@ end
 # run EA before inlining
 
 import .EA: ignore_argescape
-const Gx = Ref{Any}()
 noescape(a) = nothing
 noescape(a, b) = nothing
 function global_escape!(x)
-    Gx[] = x
+    GR[] = x
     return nothing
 end
 union_escape!(x) = global_escape!(x)
@@ -2423,7 +2422,7 @@ let result = code_escapes((SafeRef{String},); optimize=false) do x
         try
             identity_if_string(x)
         catch err
-            global gx = err
+            global GV = err
         end
         return nothing
     end
@@ -2433,7 +2432,7 @@ let result = code_escapes((Union{SafeRef{String},Vector{String}},); optimize=fal
         try
             identity_if_string(x)
         catch err
-            global gx = err
+            global GV = err
         end
         return nothing
     end
