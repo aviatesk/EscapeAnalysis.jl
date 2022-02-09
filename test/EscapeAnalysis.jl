@@ -2404,6 +2404,7 @@ let result = code_escapes((SafeRef{String},); optimize=false) do x
 end
 
 # ThrownEscape via potential MethodError
+# no method error
 identity_if_string(x::SafeRef) = nothing
 let result = code_escapes((SafeRef{String},); optimize=false) do x
         identity_if_string(x)
@@ -2440,6 +2441,30 @@ let result = code_escapes((Union{SafeRef{String},Vector{String}},); optimize=fal
         return nothing
     end
     @test has_all_escape(result.state[Argument(2)])
+end
+# method ambiguity error
+ambig_error_test(a::SafeRef, b) = nothing
+ambig_error_test(a, b::SafeRef) = nothing
+ambig_error_test(a, b) = nothing
+let result = code_escapes((SafeRef{String},Any); optimize=false) do x, y
+        ambig_error_test(x, y)
+    end
+    i = only(findall(iscall((result.ir, ambig_error_test)), result.ir.stmts.inst))
+    r = only(findall(isreturn, result.ir.stmts.inst))
+    @test has_thrown_escape(result.state[Argument(2)], i)  # x
+    @test has_thrown_escape(result.state[Argument(3)], i)  # y
+    @test !has_return_escape(result.state[Argument(2)], r)  # x
+    @test !has_return_escape(result.state[Argument(3)], r)  # y
+end
+let result = code_escapes((SafeRef{String},Any); optimize=false) do x, y
+        try
+            ambig_error_test(x, y)
+        catch err
+            global GV = err
+        end
+    end
+    @test has_all_escape(result.state[Argument(2)])  # x
+    @test has_all_escape(result.state[Argument(3)])  # y
 end
 
 # code quality test

@@ -9,7 +9,7 @@ import Core.Compiler:
 const Linfo = Union{MethodInstance,InferenceResult}
 struct CallInfo
     linfos::Vector{Linfo}
-    fully_covered::Bool
+    nothrow::Bool
 end
 
 function resolve_call(ir::IRCode, stmt::Expr, @nospecialize(info))
@@ -76,59 +76,44 @@ function analyze_const_call(sig::Signature, cinfo::ConstCallInfo)
     linfos = Linfo[]
     (; call, results) = cinfo
     infos = isa(call, MethodMatchInfo) ? MethodMatchInfo[call] : call.matches
-    local fully_covered = true # required to account for potential escape via MethodError
-    local signature_union = Bottom
+    local nothrow = true # required to account for potential escape via MethodError
     local j = 0
     for i in 1:length(infos)
         meth = infos[i].results
-        if meth.ambig
-            # Too many applicable methods
-            # Or there is a (partial?) ambiguity
-            return missing
-        end
+        nothrow &= !meth.ambig
         nmatch = Core.Compiler.length(meth)
         if nmatch == 0 # No applicable methods
             # mark this call may potentially throw, and the try next union split
-            fully_covered = false
+            nothrow = false
             continue
         end
         for i = 1:nmatch
             j += 1
             result = results[j]
+            match = Core.Compiler.getindex(meth, i)
             if result === nothing
-                match = Core.Compiler.getindex(meth, i)
                 mi = analyze_match(match, length(sig.argtypes))
                 mi === nothing && return missing
                 push!(linfos, mi)
-                signature_union = Union{signature_union, match.spec_types}
             else
                 push!(linfos, result)
-                signature_union = Union{signature_union, result.linfo.specTypes}
             end
+            nothrow &= match.fully_covers
         end
     end
-    if fully_covered
-        atype = argtypes_to_type(sig.argtypes)
-        fully_covered &= atype <: signature_union
-    end
-    return CallInfo(linfos, fully_covered)
+    return CallInfo(linfos, nothrow)
 end
 
 function analyze_call(sig::Signature, infos::Vector{MethodMatchInfo})
     linfos = Linfo[]
-    local fully_covered = true # required to account for potential escape via MethodError
-    local signature_union = Bottom
+    local nothrow = true # required to account for potential escape via MethodError
     for i in 1:length(infos)
         meth = infos[i].results
-        if meth.ambig
-            # Too many applicable methods
-            # Or there is a (partial?) ambiguity
-            return missing
-        end
+        nothrow &= !meth.ambig
         nmatch = Core.Compiler.length(meth)
         if nmatch == 0 # No applicable methods
             # mark this call may potentially throw, and the try next union split
-            fully_covered = false
+            nothrow = false
             continue
         end
         for i = 1:nmatch
@@ -136,14 +121,10 @@ function analyze_call(sig::Signature, infos::Vector{MethodMatchInfo})
             mi = analyze_match(match, length(sig.argtypes))
             mi === nothing && return missing
             push!(linfos, mi)
-            signature_union = Union{signature_union, match.spec_types}
+            nothrow &= match.fully_covers
         end
     end
-    if fully_covered
-        atype = argtypes_to_type(sig.argtypes)
-        fully_covered &= atype <: signature_union
-    end
-    return CallInfo(linfos, fully_covered)
+    return CallInfo(linfos, nothrow)
 end
 
 function analyze_match(match::MethodMatch, npassedargs::Int)
