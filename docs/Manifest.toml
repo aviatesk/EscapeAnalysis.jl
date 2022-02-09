@@ -1,6 +1,6 @@
 # This file is machine-generated - editing it directly is not advised
 
-julia_version = "1.8.0-DEV.1344"
+julia_version = "1.8.0-DEV.1472"
 manifest_format = "2.0"
 project_hash = "a8b3efa47a453bb1ea616ddad9b3bc811e2b2ddf"
 
@@ -30,9 +30,7 @@ version = "0.27.12"
 
 [[deps.EscapeAnalysis]]
 deps = ["InteractiveUtils"]
-git-tree-sha1 = "2796651056e0030b8a79febf82b6d357cf014927"
-repo-rev = "avi/docs"
-repo-url = ".."
+path = ".."
 uuid = "c6a77b2f-5d97-4bf0-b260-35fa9cc0f3d0"
 version = "0.0.0"
 
@@ -72,9 +70,9 @@ version = "1.2.0"
 
 [[deps.Parsers]]
 deps = ["Dates"]
-git-tree-sha1 = "92f91ba9e5941fc781fecf5494ac1da87bdac775"
+git-tree-sha1 = "0b5cfbb704034b5b4c1869e36634438a047df065"
 uuid = "69de0a69-1ddd-5017-9359-2bf0b02dc9f0"
-version = "2.2.0"
+version = "2.2.1"
 
 [[deps.Printf]]
 deps = ["Unicode"]

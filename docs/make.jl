@@ -1,15 +1,15 @@
 using EscapeAnalysis, Documenter
 
 let
-    local README_PATH = normpath(@__DIR__, "src", "index.md")
+    local INDEX_PATH = normpath(@__DIR__, "src", "index.md")
+    local s = read(INDEX_PATH, String)
     try
-        let s = read(normpath(@__DIR__, "..", "README.md"), String)
-            s = replace(s,
+        let s = replace(s,
                 "Core.Compiler.EscapeAnalysis." => "EscapeAnalysis.",
                 r"include\(.+\)" => "",
                 "using EAUtils" => "using EscapeAnalysis",
                 )
-            write(README_PATH, s)
+            write(INDEX_PATH, s)
         end
         makedocs(; modules = [EscapeAnalysis],
                    sitename = "EscapeAnalysis.jl",
@@ -22,7 +22,7 @@ let
     catch err
         rethrow(err)
     finally
-        rm(README_PATH)
+        write(INDEX_PATH, s)
     end
 end
 
