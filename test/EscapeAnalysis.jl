@@ -396,14 +396,14 @@ end
 @testset "escape through exceptions" begin
     M = @eval Module() begin
         unsafeget(x) = isassigned(x) ? x[] : throw(x)
-        @noinline function rethrow_escape!()
+        @noinline function escape_rethrow!()
             try
                 rethrow()
             catch err
                 GR[] = err
             end
         end
-        @noinline function current_exceptions_escape!()
+        @noinline function escape_current_exceptions!()
             excs = Base.current_exceptions()
             GR[] = excs
         end
@@ -481,7 +481,7 @@ end
                 r = Ref{String}()
                 unsafeget(r)
             catch
-                rethrow_escape!()
+                escape_rethrow!()
             end
         end
         i = only(findall(isnew, result.ir.stmts.inst))
@@ -495,7 +495,7 @@ end
                 t = unsafeget(r)
             catch err
                 t = typeof(err)
-                rethrow_escape!()
+                escape_rethrow!()
             end
             return t
         end
@@ -520,7 +520,7 @@ end
                 r = Ref{String}()
                 unsafeget(r)
             catch
-                current_exceptions_escape!()
+                escape_current_exceptions!()
             end
         end
         i = only(findall(isnew, result.ir.stmts.inst))
