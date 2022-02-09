@@ -143,7 +143,7 @@ const ARG_LIVENESS = LivenessSet(0)
 # the constructors
 NotAnalyzed() = EscapeInfo(false, false, BOT_THROWN_ESCAPE, false, BOT_LIVENESS) # not formally part of the lattice
 NoEscape() = EscapeInfo(true, false, BOT_THROWN_ESCAPE, false, BOT_LIVENESS)
-ArgEscape() = EscapeInfo(true, false, BOT_THROWN_ESCAPE, true, ARG_LIVENESS)
+ArgEscape() = EscapeInfo(true, false, BOT_THROWN_ESCAPE, false, ARG_LIVENESS)
 ReturnEscape(pc::Int) = EscapeInfo(true, true, BOT_THROWN_ESCAPE, false, LivenessSet(pc))
 AllReturnEscape() = EscapeInfo(true, true, BOT_THROWN_ESCAPE, false, TOP_LIVENESS)
 ThrownEscape(pc::Int) = EscapeInfo(true, false, LivenessSet(pc), false, BOT_LIVENESS)
@@ -163,7 +163,7 @@ has_all_escape(x::EscapeInfo) = ⊤ ⊑ₑ x
 # utility lattice constructors
 ignore_argescape(x::EscapeInfo) = EscapeInfo(x; Liveness=delete!(copy(x.Liveness), 0))
 ignore_thrownescapes(x::EscapeInfo) = EscapeInfo(x; ThrownEscape=BOT_THROWN_ESCAPE)
-ignore_aliasinfo(x::EscapeInfo) = EscapeInfo(x, false)
+ignore_aliasinfo(x::EscapeInfo) = EscapeInfo(x, false; ReturnEscape=false)
 ignore_liveness(x::EscapeInfo) = EscapeInfo(x; Liveness=BOT_LIVENESS)
 
 # AliasInfo
@@ -540,25 +540,139 @@ isaliased(x::Union{Argument,SSAValue}, y::Union{Argument,SSAValue}, estate::Esca
 isaliased(xidx::Int, yidx::Int, estate::EscapeState) =
     in_same_set(estate.aliasset, xidx, yidx)
 
-struct ArgEscapeInfo
-    EscapeBits::UInt8
+struct InterEscapeInfo
+    AllEscape::Bool
+    ReturnEscape::Bool
+    ThrownEscape::Bool
 end
-function ArgEscapeInfo(x::EscapeInfo)
-    x === ⊤ && return ArgEscapeInfo(ARG_ALL_ESCAPE)
-    EscapeBits = 0x00
-    has_return_escape(x) && (EscapeBits |= ARG_RETURN_ESCAPE)
-    has_thrown_escape(x) && (EscapeBits |= ARG_THROWN_ESCAPE)
-    return ArgEscapeInfo(EscapeBits)
-end
+
+has_no_escape(x::InterEscapeInfo)     = !has_all_escape(x) && !has_return_escape(x) && !has_thrown_escape(x)
+has_all_escape(x::InterEscapeInfo)    = x.AllEscape
+has_return_escape(x::InterEscapeInfo) = x.ReturnEscape
+has_thrown_escape(x::InterEscapeInfo) = x.ThrownEscape
 
 const ARG_ALL_ESCAPE    = 0x01 << 0
 const ARG_RETURN_ESCAPE = 0x01 << 1
 const ARG_THROWN_ESCAPE = 0x01 << 2
 
-has_no_escape(x::ArgEscapeInfo)     = !has_all_escape(x) && !has_return_escape(x) && !has_thrown_escape(x)
-has_all_escape(x::ArgEscapeInfo)    = x.EscapeBits & ARG_ALL_ESCAPE    ≠ 0
-has_return_escape(x::ArgEscapeInfo) = x.EscapeBits & ARG_RETURN_ESCAPE ≠ 0
-has_thrown_escape(x::ArgEscapeInfo) = x.EscapeBits & ARG_THROWN_ESCAPE ≠ 0
+function encode_escape_bits(x::EscapeInfo)
+    x === ⊤ && return ARG_ALL_ESCAPE
+    EscapeBits = 0x00
+    has_return_escape(x) && (EscapeBits |= ARG_RETURN_ESCAPE)
+    has_thrown_escape(x) && (EscapeBits |= ARG_THROWN_ESCAPE)
+    return EscapeBits
+end
+
+function decode_escape_bits(EscapeBits::UInt8)
+    return InterEscapeInfo(
+        EscapeBits & ARG_ALL_ESCAPE    ≠ 0,
+        EscapeBits & ARG_RETURN_ESCAPE ≠ 0,
+        EscapeBits & ARG_THROWN_ESCAPE ≠ 0
+        )
+end
+
+struct ArgEscapeInfo
+    EscapeBits::UInt8
+    ArgAliasInfo # ::Union{Bool,InterIndexableFields,InterIndexableElements,InterUnindexable}
+    ArgEscapeInfo(EscapeBits::UInt8, @nospecialize(AliasInfo)) = new(EscapeBits, AliasInfo)
+end
+
+has_no_escape(x::ArgEscapeInfo)     = has_no_escape(decode_escape_bits(x.EscapeBits))
+has_all_escape(x::ArgEscapeInfo)    = has_all_escape(decode_escape_bits(x.EscapeBits))
+has_return_escape(x::ArgEscapeInfo) = has_return_escape(decode_escape_bits(x.EscapeBits))
+has_thrown_escape(x::ArgEscapeInfo) = has_thrown_escape(decode_escape_bits(x.EscapeBits))
+
+ArgEscapeInfo(x::EscapeInfo, estate::EscapeState) =
+    ArgEscapeInfo(encode_escape_bits(x), inter_alias_info(x.AliasInfo, estate))
+
+function RetAliasInfo(ir::IRCode, estate::EscapeState)
+    retinfo = ⊥
+    for idx in 1:(length(ir.stmts)+length(ir.new_nodes.stmts))
+        stmt = getinst(ir, idx)[:inst]
+        if isa(stmt, ReturnNode) && isdefined(stmt, :val)
+            nextretinfo = estate[stmt.val]
+            nextretinfo === nothing && continue
+            retinfo = retinfo ⊔ₑ nextretinfo
+        end
+    end
+    return inter_alias_info(retinfo.AliasInfo, estate)
+end
+
+# ArgAliasInfo / RetAliasInfo
+# TODO handle nested AliasInfo?
+struct InterAInfo
+    UseEscapeBits::UInt8
+    DefArguments::Vector{Int}
+end
+struct InterIndexableFields
+    infos::Vector{InterAInfo}
+    complete::Bool
+end
+struct InterIndexableElements
+    infos::IdDict{Int,InterAInfo}
+    complete::Bool
+end
+struct InterUnindexable
+    info::InterAInfo
+    complete::Bool
+end
+
+function inter_alias_info(@nospecialize(AliasInfo), estate::EscapeState)
+    if isa(AliasInfo, Bool)
+        return AliasInfo
+    elseif isa(AliasInfo, IndexableFields)
+        complete = true
+        infos = Vector{InterAInfo}(undef, length(AliasInfo.infos))
+        for i = 1:length(AliasInfo.infos)
+            infoᵢ, completeᵢ = inter_ainfo(AliasInfo.infos[i], estate)
+            infos[i] = infoᵢ
+            complete &= completeᵢ
+        end
+        return InterIndexableFields(infos, complete)
+    elseif isa(AliasInfo, IndexableElements)
+        @assert false "invalid AliasInfo, Argument shouldn't have arrayinfo available"
+    else
+        AliasInfo = AliasInfo::Unindexable
+        return InterUnindexable(inter_ainfo(AliasInfo.info, estate)...)
+    end
+end
+
+function inter_ainfo(AInfo::AInfo, estate::EscapeState)
+    UseEscapeBits = 0x0
+    DefArguments = Int[]
+    complete = true
+    for x in AInfo
+        if isa(x, LocalUse)
+            UseEscapeBits |= encode_escape_bits(estate[SSAValue(x.idx)])
+        elseif isa(x, InterUse)
+            UseEscapeBits |= x.EscapeBits
+        else
+            x = x::Definition
+            v = x.val
+            if isa(v, Argument) || isa(v, SSAValue)
+                aliases = getaliases(v, estate)
+                if aliases === nothing
+                    if isa(v, Argument)
+                        push!(DefArguments, v.n)
+                    else
+                        complete = false
+                    end
+                else
+                    for v in aliases
+                        if isa(v, Argument)
+                            push!(DefArguments, v.n)
+                        else
+                            complete = false
+                        end
+                    end
+                end
+            else # TODO maybe propagate constant
+                complete = false
+            end
+        end
+    end
+    return InterAInfo(UseEscapeBits, DefArguments), complete
+end
 
 struct ArgAliasing
     aidx::Int
@@ -568,23 +682,23 @@ end
 struct ArgEscapeCache
     argescapes::Vector{ArgEscapeInfo}
     argaliases::Vector{ArgAliasing}
+    RetAliasInfo # ::Union{Bool,InterIndexableFields,InterIndexableElements,InterUnindexable}
 end
 
-function ArgEscapeCache(estate::EscapeState)
+function ArgEscapeCache(ir::IRCode, estate::EscapeState)
     nargs = estate.nargs
     argescapes = Vector{ArgEscapeInfo}(undef, nargs)
     argaliases = ArgAliasing[]
     for i = 1:nargs
         info = estate.escapes[i]
-        @assert info.AliasInfo === true
-        argescapes[i] = ArgEscapeInfo(info)
+        argescapes[i] = ArgEscapeInfo(info, estate)
         for j = (i+1):nargs
             if isaliased(i, j, estate)
                 push!(argaliases, ArgAliasing(i, j))
             end
         end
     end
-    return ArgEscapeCache(argescapes, argaliases)
+    return ArgEscapeCache(argescapes, argaliases, RetAliasInfo(ir, estate))
 end
 
 """
@@ -606,8 +720,9 @@ function is_ipo_profitable_type(@nospecialize t)
     if isa(t, Union)
         return is_ipo_profitable_type(t.a) && is_ipo_profitable_type(t.b)
     end
-    (t === String || t === Symbol || t === Module || t === SimpleVector) && return false
-    return ismutabletype(t)
+    return !isbitstype(t) # TODO optimize me (use ismutabletype when it don't have `AliasInfo`)
+    # (t === String || t === Symbol || t === Module || t === SimpleVector) && return false
+    # return ismutabletype(t)
 end
 
 abstract type Change end
@@ -991,19 +1106,45 @@ function add_alias_change!(astate::AnalysisState, @nospecialize(x), @nospecializ
     return nothing
 end
 
-struct LocalDef
+struct Definition
     idx::Int
+    val
+    Definition(idx::Int, @nospecialize(val)) = new(idx, val)
 end
 struct LocalUse
     idx::Int
 end
+struct InterUse
+    idx::Int
+    EscapeBits::UInt8
+end
 
-function add_alias_escapes!(astate::AnalysisState, @nospecialize(v), ainfo::AInfo)
-    estate = astate.estate
-    for x in ainfo
-        isa(x, LocalUse) || continue # ignore def
-        x = SSAValue(x.idx) # obviously this won't be true once we implement interprocedural AliasInfo
-        add_alias_change!(astate, v, x)
+function add_alias_escapes!(astate::AnalysisState, @nospecialize(v), AInfo::AInfo)
+    for x in AInfo
+        if isa(x, LocalUse)
+            pc = x.idx
+            add_alias_change!(astate, v, SSAValue(pc))
+        elseif isa(x, InterUse)
+            pc = x.idx
+            InterEscapeInfo = decode_escape_bits(x.EscapeBits)
+            ret = SSAValue(pc)
+            if has_all_escape(InterEscapeInfo)
+                add_escape_change!(astate, v, ⊤)
+                add_alias_change!(astate, v, ret)
+            else
+                ThrownEscape = has_thrown_escape(InterEscapeInfo) ? LivenessSet(pc) : BOT_THROWN_ESCAPE
+                interinfo = EscapeInfo(
+                    #=Analyzed=#true, #=ReturnEscape=#false, ThrownEscape,
+                    #=AliasInfo=#true, #=Liveness=#LivenessSet(pc)) # TODO handle nested AliasInfo?
+                if has_return_escape(InterEscapeInfo)
+                    add_alias_change!(astate, ret, v)
+                end
+                add_escape_change!(astate, v, interinfo)
+            end
+        else
+            @assert isa(x, Definition)
+            continue # ignore def
+        end
     end
 end
 
@@ -1165,62 +1306,140 @@ function escape_invoke!(astate::AnalysisState, pc::Int, args::Vector{Any},
     else
         cache = astate.get_escape_cache(linfo)
     end
-    if cache === nothing
-        return add_conservative_changes!(astate, pc, args, 2)
-    else
-        cache = cache::ArgEscapeCache
-    end
+    cache === nothing && return add_conservative_changes!(astate, pc, args, 2)
+    cache = cache::ArgEscapeCache
     ret = SSAValue(pc)
     retinfo = astate.estate[ret] # escape information imposed on the call statement
     method = linfo.def::Method
     nargs = Int(method.nargs)
-    for (i, argidx) in enumerate(first_idx:last_idx)
-        arg = args[argidx]
-        if i > nargs
-            # handle isva signature
+    args = args[first_idx:last_idx]
+    for i = 1:length(args)
+        if i > nargs # handle isva signature
             # COMBAK will this be invalid once we take alias information into account?
             i = nargs
         end
-        arginfo = cache.argescapes[i]
-        info = from_interprocedural(arginfo, pc)
-        if has_return_escape(arginfo)
-            # if this argument can be "returned", in addition to propagating
-            # the escape information imposed on this call argument within the callee,
-            # we should also account for possible aliasing of this argument and the returned value
-            add_escape_change!(astate, arg, info)
-            add_alias_change!(astate, ret, arg)
-        else
-            # if this is simply passed as the call argument, we can just propagate
-            # the escape information imposed on this call argument within the callee
-            add_escape_change!(astate, arg, info)
+        interinfo = cache.argescapes[i]
+        arg = args[i]
+        if !(isa(arg, SSAValue) || isa(arg, Argument))
+            # handle this unanalyzable value (e.g. obj::GlobalRef) conservatively
+            has_return_escape(interinfo) && add_alias_change!(astate, arg, ret)
+            InterAliasInfo = interinfo.ArgAliasInfo
+            if isa(InterAliasInfo, Bool)
+            elseif isa(InterAliasInfo, InterIndexableElements)
+                @assert false "invalid AliasInfo, Argument shouldn't have arrayinfo available"
+            elseif isa(InterAliasInfo, InterIndexableFields)
+                for InterAInfo in InterAliasInfo.infos
+                    for n in InterAInfo.DefArguments
+                        add_alias_change!(astate, arg, args[n])
+                    end
+                end
+            else
+                InterAInfo = (InterAliasInfo::InterUnindexable).info
+                for n in InterAInfo.DefArguments
+                    add_alias_change!(astate, arg, args[n])
+                end
+            end
+            continue
         end
+        arginfo = astate.estate[arg]
+        if has_all_escape(interinfo)
+            newinfo = ⊤
+        else
+            ThrownEscape = has_thrown_escape(interinfo) ? LivenessSet(pc) : BOT_THROWN_ESCAPE
+            AliasInfo = add_interalias_escapes!(astate, pc, arg, args, arginfo.AliasInfo, interinfo.ArgAliasInfo)
+            newinfo = EscapeInfo(
+                #=Analyzed=#true, #=ReturnEscape=#false, ThrownEscape,
+                AliasInfo, #=Liveness=#LivenessSet(pc))
+        end
+        if has_return_escape(interinfo)
+            # if this argument can be "returned", in addition to propagating escape
+            # information imposed on this call argument within the callee, we also need
+            # to account for possible aliasing of this argument and the returned value
+            add_alias_change!(astate, ret, arg)
+        end
+        # propagate escape information imposed on this call argument within the callee
+        add_escape_change!(astate, arg, newinfo)
     end
+    # accounts for aliasing between arguments (as a result of looser alias analysis)
     for (; aidx, bidx) in cache.argaliases
-        add_alias_change!(astate, args[aidx-(first_idx-1)], args[bidx-(first_idx-1)])
+        add_alias_change!(astate, args[aidx], args[bidx])
     end
-    # we should disable the alias analysis on this newly introduced object
-    add_escape_change!(astate, ret, EscapeInfo(retinfo, true))
+    # accounts for aliasing via return value
+    AliasInfo = add_interalias_escapes!(astate, pc, ret, args, retinfo.AliasInfo, cache.RetAliasInfo)
+    add_escape_change!(astate, ret, EscapeInfo(retinfo, AliasInfo))
 end
 
-"""
-    from_interprocedural(arginfo::ArgEscapeInfo, pc::Int) -> x::EscapeInfo
+function add_interalias_escapes!(astate::AnalysisState, pc::Int,
+    @nospecialize(val::Union{SSAValue,Argument}), args::Vector{Any},
+    @nospecialize(AliasInfo), @nospecialize(InterAliasInfo))
+    AliasInfo = merge_alias_info(AliasInfo, local_alias_info(astate, pc, args, InterAliasInfo))
+    if isa(InterAliasInfo, Bool)
+    elseif isa(InterAliasInfo, InterIndexableElements)
+        @assert false "invalid InterAliasInfo, Argument shouldn't have arrayinfo available"
+    elseif isa(InterAliasInfo, InterIndexableFields)
+        infos = InterAliasInfo.infos
+        ninfos = length(infos)
+        for i = 1:ninfos
+            InterAInfo = infos[i]
+            for n in InterAInfo.DefArguments
+                arg = args[n]
+                if AliasInfo === true
+                    add_alias_change!(astate, val, arg)
+                elseif isa(AliasInfo, IndexableFields)
+                    AInfo = AliasInfo.infos[i]
+                    add_alias_escapes!(astate, arg, AInfo)
+                else
+                    @assert isa(AliasInfo, Unindexable) "invalid merge_alias_info"
+                    AInfo = AliasInfo.info
+                    add_alias_escapes!(astate, arg, AInfo)
+                end
+            end
+        end
+    else
+        InterAInfo = (InterAliasInfo::InterUnindexable).info
+        for n in InterAInfo.DefArguments
+            arg = args[n]
+            if AliasInfo === true
+                add_alias_change!(astate, val, arg)
+            else
+                @assert isa(AliasInfo, Unindexable) "invalid merge_alias_info"
+                AInfo = AliasInfo.info
+                add_alias_escapes!(astate, arg, AInfo)
+            end
+        end
+    end
+    return AliasInfo
+end
 
-Reinterprets the escape information imposed on the call argument which is cached as `arginfo`
-in the context of the caller frame, where `pc` is the SSA statement number of the return value.
-"""
-function from_interprocedural(arginfo::ArgEscapeInfo, pc::Int)
-    has_all_escape(arginfo) && return ⊤
-
-    ThrownEscape = has_thrown_escape(arginfo) ? LivenessSet(pc) : BOT_THROWN_ESCAPE
-
-    return EscapeInfo(
-        #=Analyzed=#true, #=ReturnEscape=#false, ThrownEscape,
-        # FIXME implement interprocedural memory effect-analysis
-        # currently, this essentially disables the entire field analysis
-        # it might be okay from the SROA point of view, since we can't remove the allocation
-        # as far as it's passed to a callee anyway, but still we may want some field analysis
-        # for e.g. stack allocation or some other IPO optimizations
-        #=AliasInfo=#true, #=Liveness=#LivenessSet(pc))
+function local_alias_info(astate::AnalysisState, pc::Int, args::Vector{Any},
+    @nospecialize(InterAliasInfo))
+    if isa(InterAliasInfo, Bool)
+        return InterAliasInfo
+    elseif isa(InterAliasInfo, InterIndexableElements)
+        @assert false "invalid AliasInfo, Argument shouldn't have arrayinfo available"
+    elseif isa(InterAliasInfo, InterIndexableFields)
+        infos = InterAliasInfo.infos
+        ninfos = length(infos)
+        AliasInfo = IndexableFields(ninfos)
+        for i = 1:ninfos
+            newinfo = AliasInfo.infos[i]
+            InterAInfo = infos[i]
+            push!(newinfo, InterUse(pc, InterAInfo.UseEscapeBits))
+            for n in InterAInfo.DefArguments
+                push!(newinfo, Definition(pc, args[n]))
+            end
+        end
+        return AliasInfo
+    else
+        InterAInfo = (InterAliasInfo::InterUnindexable).info
+        AliasInfo = Unindexable()
+        newinfo = AliasInfo.info
+        push!(newinfo, InterUse(pc, InterAInfo.UseEscapeBits))
+        for n in InterAInfo.DefArguments
+            push!(newinfo, Definition(pc, args[n]))
+        end
+        return AliasInfo
+    end
 end
 
 # escape every argument `(args[6:length(args[3])])` and the name `args[1]`
@@ -1404,7 +1623,7 @@ function escape_new!(astate::AnalysisState, pc::Int, args::Vector{Any})
             i-1 > nf && break # may happen when e.g. ϕ-node merges values with different types
             arg = args[i]
             add_alias_escapes!(astate, arg, infos[i-1])
-            push!(infos[i-1], LocalDef(pc))
+            push!(infos[i-1], Definition(pc, arg))
             # propagate the escape information of this object ignoring field information
             add_escape_change!(astate, arg, objinfo′)
             add_liveness_change!(astate, arg, pc)
@@ -1418,7 +1637,7 @@ function escape_new!(astate::AnalysisState, pc::Int, args::Vector{Any})
         for i in 2:nargs
             arg = args[i]
             add_alias_escapes!(astate, arg, info)
-            push!(info, LocalDef(pc))
+            push!(info, Definition(pc, arg))
             # propagate the escape information of this object ignoring field information
             add_escape_change!(astate, arg, objinfo′)
             add_liveness_change!(astate, arg, pc)
@@ -1541,7 +1760,7 @@ function escape_builtin!(::typeof(setfield!), astate::AnalysisState, pc::Int, ar
     if isa(obj, SSAValue) || isa(obj, Argument)
         objinfo = estate[obj]
     else
-        # unanalyzable object (e.g. obj::GlobalRef): escape field value conservatively
+        # handle this unanalyzable object (e.g. obj::GlobalRef) conservatively
         add_escape_change!(astate, val, ⊤)
         @goto add_thrown_escapes
     end
@@ -1562,7 +1781,7 @@ function escape_builtin!(::typeof(setfield!), astate::AnalysisState, pc::Int, ar
         isa(AliasInfo, Unindexable) && @goto escape_unindexable_def
         @label escape_indexable_def
         add_alias_escapes!(astate, val, AliasInfo.infos[fidx])
-        push!(AliasInfo.infos[fidx], LocalDef(pc))
+        push!(AliasInfo.infos[fidx], Definition(pc, val))
         objinfo = EscapeInfo(objinfo, AliasInfo)
         add_escape_change!(astate, obj, objinfo) # update with new AliasInfo
         # propagate the escape information of this object ignoring field information
@@ -1571,7 +1790,7 @@ function escape_builtin!(::typeof(setfield!), astate::AnalysisState, pc::Int, ar
         info = AliasInfo.info
         @label escape_unindexable_def
         add_alias_escapes!(astate, val, AliasInfo.info)
-        push!(AliasInfo.info, LocalDef(pc))
+        push!(AliasInfo.info, Definition(pc, val))
         objinfo = EscapeInfo(objinfo, AliasInfo)
         add_escape_change!(astate, obj, objinfo) # update with new AliasInfo
         # propagate the escape information of this object ignoring field information
@@ -1681,7 +1900,7 @@ function escape_builtin!(::typeof(arrayset), astate::AnalysisState, pc::Int, arg
     if isa(ary, SSAValue) || isa(ary, Argument)
         aryinfo = estate[ary]
     else
-        # unanalyzable object (e.g. obj::GlobalRef): escape field value conservatively
+        # handle this unanalyzable object (e.g. obj::GlobalRef) conservatively
         add_escape_change!(astate, val, ⊤)
         return true
     end
@@ -1705,14 +1924,14 @@ function escape_builtin!(::typeof(arrayset), astate::AnalysisState, pc::Int, arg
         @label escape_indexable_def
         info = get!(()->AInfo(), AliasInfo.infos, idx)
         add_alias_escapes!(astate, val, info)
-        push!(info, LocalDef(pc))
+        push!(info, Definition(pc, val))
         add_escape_change!(astate, ary, EscapeInfo(aryinfo, AliasInfo)) # update with new AliasInfo
         # propagate the escape information of this array ignoring elements information
         add_escape_change!(astate, val, ignore_aliasinfo(aryinfo))
     elseif isa(AliasInfo, Unindexable)
         @label escape_unindexable_def
         add_alias_escapes!(astate, val, AliasInfo.info)
-        push!(AliasInfo.info, LocalDef(pc))
+        push!(AliasInfo.info, Definition(pc, val))
         add_escape_change!(astate, ary, EscapeInfo(aryinfo, AliasInfo)) # update with new AliasInfo
         # propagate the escape information of this array ignoring elements information
         add_escape_change!(astate, val, ignore_aliasinfo(aryinfo))

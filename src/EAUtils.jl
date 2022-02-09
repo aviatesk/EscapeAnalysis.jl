@@ -52,7 +52,7 @@ function code_escapes(@nospecialize(f), @nospecialize(types=Base.default_tt(f));
     interp = EscapeAnalyzer(interp, tt, optimize)
     results = Base.code_typed_by_type(tt; optimize=true, world, interp)
     isone(length(results)) || throw(ArgumentError("`code_escapes` only supports single analysis result"))
-    return EscapeResult(interp.ir, interp.state, interp.linfo, debuginfo===:source)
+    return EscapeResult(interp.ir, interp.state, interp.linfo, interp, debuginfo===:source)
 end
 
 # in order to run a whole analysis from ground zero (e.g. for benchmarking, etc.)
@@ -182,7 +182,7 @@ and then caches it into a global cache for later interprocedural propagation.
 """
 function cache_escapes!(interp::EscapeAnalyzer,
     caller::InferenceResult, estate::EscapeState, cacheir::IRCode)
-    cache = ArgEscapeCache(estate)
+    cache = ArgEscapeCache(cacheir, estate)
     ecache = EscapeCache(cache, estate, cacheir)
     interp.cache[caller] = ecache
     return cache
@@ -305,11 +305,13 @@ struct EscapeResult
     ir::IRCode
     state::EscapeState
     linfo::Union{Nothing,MethodInstance}
+    interp::Union{Nothing,EscapeAnalyzer}
     source::Bool
     function EscapeResult(ir::IRCode, state::EscapeState,
         linfo::Union{Nothing,MethodInstance} = nothing,
+        interp::Union{Nothing,EscapeAnalyzer} = nothing,
         source::Bool=false)
-        return new(ir, state, linfo, source)
+        return new(ir, state, linfo, interp, source)
     end
 end
 Base.show(io::IO, result::EscapeResult) = print_with_info(io, result)
