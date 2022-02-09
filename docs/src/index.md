@@ -212,7 +212,7 @@ first does an additional simple linear scan to analyze dimensions of allocated a
 firing up the main analysis routine so that the succeeding escape analysis can precisely
 analyze operations on those arrays.
 
-However, such precise "per-element" alias analyis is often hard.
+However, such precise "per-element" alias analysis is often hard.
 Essentially, the main difficulty inherit to array is that array dimension and index are often non-constant:
 - loop often produces loop-variant, non-constant array indices
 - (specific to vectors) array resizing changes array dimension and invalidates its constant-ness
@@ -250,7 +250,7 @@ end
 ```
 
 In order to address these difficulties, we need inference to be aware of array dimensions
-and propagate array dimenstions in a flow-sensitive way[^ArrayDimension], as well as come
+and propagate array dimensions in a flow-sensitive way[^ArrayDimension], as well as come
 up with nice representation of loop-variant values.
 
 `EscapeAnalysis` at this moment quickly switches to the more imprecise analysis that doesn't
@@ -264,19 +264,17 @@ It would be also worth noting how `EscapeAnalysis` handles possible escapes via 
 Naively it seems enough to propagate escape information imposed on `:the_exception` object to
 all values that may be thrown in a corresponding `try` block.
 But there are actually several other ways to access to the exception object in Julia,
-such as `Base.current_exceptions` and manual catch of `rethrow`n object.
+such as `Base.current_exceptions` and `rethrow`.
 For example, escape analysis needs to account for potential escape of `r` in the example below:
 ```@repl EAUtils
-const Gx = Ref{Any}();
-
+const GR = Ref{Any}();
 @noinline function rethrow_escape!()
     try
         rethrow()
     catch err
-        Gx[] = err
+        GR[] = err
     end
 end;
-
 get′(x) = isassigned(x) ? x[] : throw(x);
 
 code_escapes() do
