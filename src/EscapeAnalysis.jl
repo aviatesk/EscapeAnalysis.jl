@@ -606,7 +606,7 @@ function is_ipo_profitable_type(@nospecialize t)
     if isa(t, Union)
         return is_ipo_profitable_type(t.a) && is_ipo_profitable_type(t.b)
     end
-    (t === String || t === Symbol) && return false
+    (t === String || t === Symbol || t === Module || t === SimpleVector) && return false
     return ismutabletype(t)
 end
 
