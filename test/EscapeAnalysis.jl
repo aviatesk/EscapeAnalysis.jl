@@ -158,6 +158,7 @@ let # simple allocation
 end
 
 @testset "inter-procedural" begin
+    # FIXME handle _apply_iterate
     # FIXME currently we can't prove the effect-freeness of `getfield(RefValue{String}, :x)`
     # because of this check https://github.com/JuliaLang/julia/blob/94b9d66b10e8e3ebdb268e4be5f7e1f43079ad4e/base/compiler/tfuncs.jl#L745
     # and thus it leads to the following two broken tests
@@ -168,7 +169,8 @@ end
             end
         end
         i = only(findall(isnew, result.ir.stmts.inst))
-        @test_broken has_no_escape(result.state[SSAValue(i)])
+        @test_broken !has_return_escape(result.state[SSAValue(i)])
+        @test_broken !has_thrown_escape(result.state[SSAValue(i)])
     end
     let result = @eval Module() begin
             @noinline broadcast_NoEscape2(b) = broadcast(identity, b)
@@ -177,7 +179,8 @@ end
             end
         end
         i = only(findall(isnew, result.ir.stmts.inst))
-        @test_broken has_no_escape(result.state[SSAValue(i)])
+        @test_broken !has_return_escape(result.state[SSAValue(i)])
+        @test_broken !has_thrown_escape(result.state[SSAValue(i)])
     end
     let result = @eval Module() begin
             @noinline f_GlobalEscape_a(a) = (global GV = a) # obvious escape
@@ -186,7 +189,7 @@ end
             end
         end
         i = only(findall(isnew, result.ir.stmts.inst))
-        @test has_return_escape(result.state[SSAValue(i)]) && has_thrown_escape(result.state[SSAValue(i)])
+        @test has_all_escape(result.state[SSAValue(i)])
     end
     # if we can't determine the matching method statically, we should be conservative
     let result = @eval Module() $code_escapes((Ref{Any},)) do a
