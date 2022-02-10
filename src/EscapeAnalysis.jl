@@ -1290,8 +1290,8 @@ function escape_call!(astate::AnalysisState, pc::Int, args::Vector{Any}, callinf
         for linfo in info.linfos
             escape_invoke!(astate, pc, args, linfo, 1)
         end
-        # if this call signature isn't fully convered, there is a potential escape via MethodError
-        info.fully_covered || add_thrown_escapes!(astate, pc, args)
+        # accounts for a potential escape via MethodError
+        info.nothrow || add_thrown_escapes!(astate, pc, args)
         return
     else
         @assert info === missing
