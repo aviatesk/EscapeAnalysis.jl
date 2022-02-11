@@ -21,7 +21,7 @@ import Core:
     sizeof, ifelse, arrayset, arrayref, arraysize
 import ._TOP_MOD:     # Base definitions
     @__MODULE__, @eval, @assert, @specialize, @nospecialize, @inbounds, @inline, @noinline,
-    @label, @goto, !, !==, !=, ≠, +, -, *, ≤, <, ≥, >, &, |, <<, include, error, missing, copy,
+    @label, @goto, !, !==, !=, ≠, +, -, *, ≤, <, ≥, >, &, |, <<, error, missing, copy,
     Vector, BitSet, IdDict, IdSet, UnitRange, Csize_t, Callable, ∪, ⊆, ∩, :, ∈, ∉, =>,
     in, length, get, first, last, haskey, keys, get!, isempty, isassigned,
     pop!, push!, pushfirst!, empty!, delete!, max, min, enumerate, unwrap_unionall,
@@ -33,10 +33,11 @@ import Core.Compiler: # Core.Compiler specific definitions
     intrinsic_nothrow, array_builtin_common_typecheck, arrayset_typecheck,
     setfield!_nothrow, alloc_array_ndims, stmt_effect_free, check_effect_free!
 
+include(x) = _TOP_MOD.include(@__MODULE__, x)
 if _TOP_MOD === Core.Compiler
-    include(@__MODULE__, "compiler/ssair/EscapeAnalysis/disjoint_set.jl")
+    include("compiler/ssair/EscapeAnalysis/disjoint_set.jl")
 else
-    include(@__MODULE__, "disjoint_set.jl")
+    include("disjoint_set.jl")
 end
 
 const AInfo = IdSet{Any}
@@ -868,9 +869,9 @@ end
 
 # define resolve_call
 if _TOP_MOD === Core.Compiler
-    include(@__MODULE__, "compiler/ssair/EscapeAnalysis/interprocedural.jl")
+    include("compiler/ssair/EscapeAnalysis/interprocedural.jl")
 else
-    include(@__MODULE__, "interprocedural.jl")
+    include("interprocedural.jl")
 end
 
 # propagate changes, and check convergence
@@ -1901,7 +1902,7 @@ end # if isdefined(Core, :ImmutableArray)
 
 if _TOP_MOD !== Core.Compiler
     # NOTE define fancy package utilities when developing EA as an external package
-    include(@__MODULE__, "EAUtils.jl")
+    include("EAUtils.jl")
     using .EAUtils
     export code_escapes, @code_escapes, __clear_cache!
 end
