@@ -177,7 +177,7 @@ end
 struct Unindexable
     info::AInfo
 end
-IndexableFields(nfields::Int) = IndexableFields(AInfo[AInfo() for _ in 1:nfields])
+IndexableFields(nflds::Int) = IndexableFields(AInfo[AInfo() for _ in 1:nflds])
 Unindexable() = Unindexable(AInfo())
 
 merge_to_unindexable(AliasInfo::IndexableFields) = Unindexable(merge_to_unindexable(AliasInfo.infos))
@@ -1387,12 +1387,12 @@ function escape_new!(astate::AnalysisState, pc::Int, args::Vector{Any})
         AliasInfo && @goto conservative_propagation
         # AliasInfo of this object hasn't been analyzed yet: set AliasInfo now
         typ = widenconst(argextype(obj, astate.ir))
-        nfields = fieldcount_noerror(typ)
-        if nfields === nothing
+        nflds = fieldcount_noerror(typ)
+        if nflds === nothing
             AliasInfo = Unindexable()
             @goto escape_unindexable_def
         else
-            AliasInfo = IndexableFields(nfields)
+            AliasInfo = IndexableFields(nflds)
             @goto escape_indexable_def
         end
     elseif isa(AliasInfo, IndexableFields)
@@ -1449,8 +1449,8 @@ function escape_builtin!(::typeof(tuple), astate::AnalysisState, pc::Int, args::
 end
 
 function analyze_fields(ir::IRCode, @nospecialize(typ), @nospecialize(fld))
-    nfields = fieldcount_noerror(typ)
-    if nfields === nothing
+    nflds = fieldcount_noerror(typ)
+    if nflds === nothing
         return Unindexable(), 0
     end
     if isa(typ, DataType)
@@ -1462,12 +1462,12 @@ function analyze_fields(ir::IRCode, @nospecialize(typ), @nospecialize(fld))
     if fidx === nothing
         return Unindexable(), 0
     end
-    return IndexableFields(nfields), fidx
+    return IndexableFields(nflds), fidx
 end
 
 function reanalyze_fields(ir::IRCode, AliasInfo::IndexableFields, @nospecialize(typ), @nospecialize(fld))
-    nfields = fieldcount_noerror(typ)
-    if nfields === nothing
+    nflds = fieldcount_noerror(typ)
+    if nflds === nothing
         return merge_to_unindexable(AliasInfo), 0
     end
     if isa(typ, DataType)
@@ -1481,8 +1481,8 @@ function reanalyze_fields(ir::IRCode, AliasInfo::IndexableFields, @nospecialize(
     end
     infos = AliasInfo.infos
     ninfos = length(infos)
-    if nfields > ninfos
-        for _ in 1:(nfields-ninfos)
+    if nflds > ninfos
+        for _ in 1:(nflds-ninfos)
             push!(infos, AInfo())
         end
     end
