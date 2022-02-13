@@ -1,6 +1,7 @@
 using Test, EscapeAnalysis
 import Core: Argument, SSAValue, ReturnNode
 const EA = EscapeAnalysis
+import .EA: ignore_argescape
 
 isT(T) = (@nospecialize x) -> x === T
 isreturn(@nospecialize x) = isa(x, Core.ReturnNode) && isdefined(x, :val)

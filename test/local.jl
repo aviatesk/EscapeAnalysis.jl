@@ -182,23 +182,19 @@ end
     end
 
     let # :===
-        result = code_escapes((Bool, String)) do cond, s
-            m = cond ? SafeRef(s) : nothing
+        result = code_escapes((Bool, SafeRef{String})) do cond, s
+            m = cond ? s : nothing
             c = m === nothing
             return c
         end
-        i = only(findall(isnew, result.ir.stmts.inst))
-        @test has_no_escape(result.state[SSAValue(i)])
+        @test has_no_escape(ignore_argescape(result.state[Argument(2)]))
     end
 
     let # sizeof
-        ary = [0,1,2]
-        result = @eval code_escapes() do
-            ary = $(QuoteNode(ary))
-            sizeof(ary)
+        result = code_escapes((Vector{Any},)) do xs
+            sizeof(xs)
         end
-        i = only(findall(isT(Core.Const(ary)), result.ir.stmts.type))
-        @test has_no_escape(result.state[SSAValue(i)])
+        @test has_no_escape(ignore_argescape(result.state[Argument(2)]))
     end
 
     let # ifelse
@@ -661,14 +657,15 @@ end
         @test is_load_forwardable(result.state[SSAValue(i)])
     end
     let result = code_escapes((String,)) do a
-            t = (a,)
-            f = t[1]
+            t = SafeRef((a,))
+            f = t[][1]
             return f
         end
         i = only(findall(iscall((result.ir, tuple)), result.ir.stmts.inst))
         r = only(findall(isreturn, result.ir.stmts.inst))
         @test has_return_escape(result.state[Argument(2)], r)
         @test is_load_forwardable(result.state[SSAValue(i)])
+        result.state[SSAValue(i)].AliasInfo
     end
     let result = code_escapes((String, String)) do a, b
             obj = SafeRefs(a, b)
