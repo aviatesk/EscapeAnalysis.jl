@@ -40,7 +40,6 @@ Queries if `x` is elibigle for store-to-load forwarding optimization.
 """
 function is_load_forwardable(x::EA.EscapeInfo)
     AliasInfo = x.AliasInfo
-    AliasInfo === false && return true # allows this query to work for immutables since we don't impose escape on them
     # NOTE technically we also need to check `!has_thrown_escape(x)` here as well,
     # but we can also do equivalent check during forwarding
     return isa(AliasInfo, EA.IndexableFields) || isa(AliasInfo, EA.IndexableElements)

@@ -1376,44 +1376,50 @@ function compute(T, ax, ay, bx, by)
     a = T(ax, ay)
     b = T(bx, by)
     for i in 0:(100000000-1)
-        a = add(add(a, b), b)
+        c = add(a, b) # replaceable
+        a = add(c, b) # replaceable
     end
     a.x, a.y
+end
+let result = @code_escapes compute(MPoint, 1+.5im, 2+.5im, 2+.25im, 4+.75im)
+    for i in findall(1:length(result.ir.stmts)) do idx
+                 inst = EscapeAnalysis.getinst(result.ir, idx)
+                 stmt = inst[:inst]
+                 return (isnew(stmt) || isϕ(stmt)) && inst[:type] <: MPoint
+             end
+        @test is_load_forwardable(result.state[SSAValue(i)])
+    end
 end
 function compute(a, b)
     for i in 0:(100000000-1)
-        a = add(add(a, b), b) # unreplaceable, since it can be the call argument
+        c = add(a, b) # replaceable
+        a = add(c, b) # unreplaceable (aliased to the call argument `a`)
     end
     a.x, a.y
 end
+let result = @code_escapes compute(MPoint(1+.5im, 2+.5im), MPoint(2+.25im, 4+.75im))
+    idxs = findall(1:length(result.ir.stmts)) do idx
+        inst = EscapeAnalysis.getinst(result.ir, idx)
+        stmt = inst[:inst]
+        return isnew(stmt) && inst[:type] <: MPoint
+    end
+    @assert length(idxs) == 2
+    @test count(i->is_load_forwardable(result.state[SSAValue(i)]), idxs) == 1
+end
 function compute!(a, b)
     for i in 0:(100000000-1)
-        a′ = add(add(a, b), b)
+        c = add(a, b)  # replaceable
+        a′ = add(c, b) # replaceable
         a.x = a′.x
         a.y = a′.y
     end
 end
-let result = @code_escapes compute(MPoint, 1+.5im, 2+.5im, 2+.25im, 4+.75im)
-    for i in findall(isnew, result.ir.stmts.inst)
-        @test is_load_forwardable(result.state[SSAValue(i)])
-    end
-    for i in findall(isϕ, result.ir.stmts.inst)
-        @test is_load_forwardable(result.state[SSAValue(i)])
-    end
-end
-let result = @code_escapes compute(MPoint(1+.5im, 2+.5im), MPoint(2+.25im, 4+.75im))
-    for i in findall(1:length(result.ir.stmts)) do i
-                 isϕ(result.ir.stmts[i][:inst]) && isT(MPoint{ComplexF64})(result.ir.stmts[i][:type])
-             end
-        @test !is_load_forwardable(result.state[SSAValue(i)])
-    end
-end
 let result = @code_escapes compute!(MPoint(1+.5im, 2+.5im), MPoint(2+.25im, 4+.75im))
-    # FIXME with a proper interprocedural alias analysis
-    # for i in findall(isnew, result.ir.stmts.inst)
-    #     @test is_load_forwardable(result.state[SSAValue(i)])
-    # end
-    for i in findall(isϕ, result.ir.stmts.inst)
+    for i in findall(1:length(result.ir.stmts)) do idx
+                 inst = EscapeAnalysis.getinst(result.ir, idx)
+                 stmt = inst[:inst]
+                 return isnew(stmt) && inst[:type] <: MPoint
+             end
         @test is_load_forwardable(result.state[SSAValue(i)])
     end
 end

@@ -952,11 +952,12 @@ end
     return false
 end
 
-function add_escape_change!(astate::AnalysisState, @nospecialize(x), xinfo::EscapeInfo)
+function add_escape_change!(astate::AnalysisState, @nospecialize(x), xinfo::EscapeInfo,
+    force::Bool = false)
     xinfo === ⊥ && return nothing # performance optimization
     xidx = iridx(x, astate.estate)
     if xidx !== nothing
-        if !isbitstype(widenconst(argextype(x, astate.ir)))
+        if force || !isbitstype(widenconst(argextype(x, astate.ir)))
             push!(astate.changes, EscapeChange(xidx, xinfo))
         end
     end
@@ -982,12 +983,14 @@ function add_alias_change!(astate::AnalysisState, @nospecialize(x), @nospecializ
     estate = astate.estate
     xidx = iridx(x, estate)
     yidx = iridx(y, estate)
-    if xidx !== nothing && yidx !== nothing && !isaliased(xidx, yidx, astate.estate)
-        pushfirst!(astate.changes, AliasChange(xidx, yidx))
+    if xidx !== nothing && yidx !== nothing
+        if !isaliased(xidx, yidx, astate.estate)
+            pushfirst!(astate.changes, AliasChange(xidx, yidx))
+        end
         # add new escape change here so that it's shared among the expanded `aliasset` in `propagate_escape_change!`
         xinfo = estate.escapes[xidx]
         yinfo = estate.escapes[yidx]
-        add_escape_change!(astate, x, xinfo ⊔ₑ yinfo)
+        add_escape_change!(astate, x, xinfo ⊔ₑ yinfo, #=force=#true)
     end
     return nothing
 end
