@@ -242,7 +242,7 @@ end
 """
     x::EscapeInfo ⊑ₑ y::EscapeInfo -> Bool
 
-The non-strict partial order over `EscapeInfo`.
+The non-strict partial order over [`EscapeInfo`](@ref).
 """
 x::EscapeInfo ⊑ₑ y::EscapeInfo = begin
     # fast pass: better to avoid top comparison
@@ -322,7 +322,7 @@ end
 """
     x::EscapeInfo ⊏ₑ y::EscapeInfo -> Bool
 
-The strict partial order over `EscapeInfo`.
+The strict partial order over [`EscapeInfo`](@ref).
 This is defined as the irreflexive kernel of `⊏ₑ`.
 """
 x::EscapeInfo ⊏ₑ y::EscapeInfo = x ⊑ₑ y && !(y ⊑ₑ x)
@@ -338,7 +338,7 @@ x::EscapeInfo ⋤ₑ y::EscapeInfo = !(y ⊑ₑ x)
 """
     x::EscapeInfo ⊔ₑ y::EscapeInfo -> EscapeInfo
 
-Computes the join of `x` and `y` in the partial order defined by `EscapeInfo`.
+Computes the join of `x` and `y` in the partial order defined by [`EscapeInfo`](@ref).
 """
 x::EscapeInfo ⊔ₑ y::EscapeInfo = begin
     # fast pass: better to avoid top join

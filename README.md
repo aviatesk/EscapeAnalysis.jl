@@ -8,14 +8,14 @@
 
 This escape analysis aims to:
 - leverage Julia's high-level semantics, especially reason about escapes and aliasing via
-  interprocedural calls
+  inter-procedural calls
 - be versatile enough to be used for various optimizations including
-  [alias-aware SROA of mutable objects](https://github.com/JuliaLang/julia/pull/43888),
-  [early `finaliz`ing](https://github.com/JuliaLang/julia/pull/44056),
+  [alias-aware SROA](https://github.com/JuliaLang/julia/pull/43888),
+  [early `finalize` call insertion](https://github.com/JuliaLang/julia/pull/44056),
   [copy-free `ImmutableArray` construction](https://github.com/JuliaLang/julia/pull/42465),
   stack allocation of mutable objects,
   and so on.
-- achieve a simple implementation based on a fully backward data-flow analysis
+- achieve a simple implementation based on a fully backward data-flow analysis implementation
   as well as a new lattice design that combines orthogonal lattice properties
 
 Documentations on EA's design and usage are available at

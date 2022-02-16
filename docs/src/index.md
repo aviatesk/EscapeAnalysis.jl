@@ -1,6 +1,20 @@
 `Core.Compiler.EscapeAnalysis` is a compiler utility module that aims to analyze
 escape information of [Julia's SSA-form IR](@ref Julia-SSA-form-IR) a.k.a. `IRCode`.
 
+This escape analysis aims to:
+- leverage Julia's high-level semantics, especially reason about escapes and aliasing via
+  inter-procedural calls
+- be versatile enough to be used for various optimizations including
+  [alias-aware SROA](https://github.com/JuliaLang/julia/pull/43888),
+  [early `finalize` insertion](https://github.com/JuliaLang/julia/pull/44056),
+  [copy-free `ImmutableArray` construction](https://github.com/JuliaLang/julia/pull/42465),
+  stack allocation of mutable objects,
+  and so on.
+- achieve a simple implementation based on a fully backward data-flow analysis implementation
+  as well as a new lattice design that combines orthogonal lattice properties
+
+## Try it out!
+
 You can give a try to the escape analysis by loading the `EAUtils.jl` utility script that
 define the convenience entries `code_escapes` and `@code_escapes` for testing and debugging purposes:
 ```@repl EAUtils
@@ -52,7 +66,8 @@ result.state[Core.SSAValue(3)] # get EscapeInfo of `r3`
 ### Lattice Design
 
 `EscapeAnalysis` is implemented as a [data-flow analysis](https://en.wikipedia.org/wiki/Data-flow_analysis)
-that works on a lattice of `x::EscapeInfo`, which is composed of the following properties:
+that works on a lattice of [`x::EscapeInfo`](@ref Core.Compiler.EscapeAnalysis.EscapeInfo),
+which is composed of the following properties:
 - `x.Analyzed::Bool`: not formally part of the lattice, only indicates `x` has not been analyzed or not
 - `x.ReturnEscape::BitSet`: records SSA statements where `x` can escape to the caller via return
 - `x.ThrownEscape::BitSet`: records SSA statements where `x` can be thrown as exception
@@ -318,21 +333,41 @@ end
 
 ## Analysis Usage
 
-When using `EscapeAnalysis` in Julia's high-level compilation pipeline, we can run
-`analyze_escapes(ir::IRCode) -> estate::EscapeState` to analyze escape information of each SSA-IR element in `ir`.
+`analyze_escapes` is the entry point to analyze escape information of SSA-IR elements.
 
-Note that it should be most effective if `analyze_escapes` runs after inlining,
-as `EscapeAnalysis`'s interprocedural escape information handling is limited at this moment.
+Most optimizations like SROA (`sroa_pass!`) are more effective when applied to
+an optimized source that the inlining pass (`ssa_inlining_pass!`) has simplified
+by resolving inter-procedural calls and expanding callee sources.
+Accordingly, `analyze_escapes` is also able to analyze post-inlining IR and collect
+escape information that is useful for certain memory-related optimizations.
+
+However, since certain optimization passes like inlining can change control flows and eliminate dead code,
+they can break the inter-procedural validity of escape information. In particularity,
+in order to collect inter-procedurally valid escape information, we need to analyze a pre-inlining IR.
+
+Because of this reason, `analyze_escapes` can analyze `IRCode` at any Julia-level optimization stage,
+and especially, it is supposed to be used at the following two stages:
+- `IPO EA`: analyze pre-inlining IR to generate IPO-valid escape information cache
+- `Local EA`: analyze post-inlining IR to collect locally-valid escape information
+
+Escape information derived by `IPO EA` is transformed to the `ArgEscapeCache` data structure and cached globally.
+By passing an appropriate `get_escape_cache` callback to `analyze_escapes`,
+the escape analysis can improve analysis accuracy by utilizing cached inter-procedural information of
+non-inlined callees that has been derived by previous `IPO EA`.
+More interestingly, it is also valid to use `IPO EA` escape information for type inference,
+e.g., inference accuracy can be improved by forming `Const`/`PartialStruct`/`MustAlias` of mutable object.
 
 Since the computational cost of `analyze_escapes` is not that cheap,
-it is more ideal if it runs once and succeeding optimization passes incrementally update
-    the escape information upon IR transformation.
-
+both `IPO EA` and `Local EA` are better to run only when there is any profitability.
+Currently `EscapeAnalysis` provides the `is_ipo_profitable` heuristic to check a profitability of `IPO EA`.
 ```@docs
 Core.Compiler.EscapeAnalysis.analyze_escapes
 Core.Compiler.EscapeAnalysis.EscapeState
 Core.Compiler.EscapeAnalysis.EscapeInfo
+Core.Compiler.EscapeAnalysis.is_ipo_profitable
 ```
+
+--------------------------------------------------------------------------------------------
 
 [^LatticeDesign]: Our type inference implementation takes the alternative approach,
     where each lattice property is represented by a special lattice element type object.
