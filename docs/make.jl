@@ -6,8 +6,7 @@ let
     try
         let s = replace(s,
                 "Core.Compiler.EscapeAnalysis." => "EscapeAnalysis.",
-                r"include\(.+\)" => "",
-                "using EAUtils" => "using EscapeAnalysis",
+                """include(normpath(Sys.BINDIR, "..", "share", "julia", "test", "compiler", "EscapeAnalysis", "EAUtils.jl")); using .EAUtils""" => "using EscapeAnalysis",
                 )
             write(INDEX_PATH, s)
         end
